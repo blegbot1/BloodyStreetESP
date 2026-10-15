@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.7
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.8
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -197,46 +197,33 @@ G.BS.SilentShot = G.BS.SilentShot or false
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
 
--- БЕЗ КУЛДАУНА (рапид-файр). Игра сама стреляет с паузой; скрипт
--- дополнительно шлёт выстрел СВОИМ вызовом ремоута FireWeapon — тем
--- же набором аргументов, что и игра (шаблон снимается с настоящего
--- выстрела), с направлением в цель. Если сервер сам режет темп —
--- лишние выстрелы просто не засчитаются.
-G.BS.RapidFire  = G.BS.RapidFire or false
--- Пауза между нашими выстрелами (сек). 0.1 = 10 выстрелов в секунду.
-G.BS.FireRate   = tonumber(G.BS.FireRate) or 0.1
--- РАСШИРИТЕЛЬ ХИТБОКСА: НЕВИДИМАЯ часть на ГОЛОВЕ каждого игрока
+-- РАСШИРИТЕЛЬ ХИТБОКСА: НЕВИДИМАЯ часть на ГОЛОВЕ каждого врага
 -- (тело не трогаем — игроки выглядят как обычно). Работает на нашей
 -- стороне; если игру считает сервер — он видит обычные хитбоксы, и
 -- толк будет только если попадание считает клиент.
 G.BS.Hitbox      = G.BS.Hitbox or false
 G.BS.HitboxScale = tonumber(G.BS.HitboxScale) or 2
--- СПУФИНГ ТОЧКИ ВЫЛЕТА (прострел стен).
--- По логу ремоутов видно подпись FireWeapon:
+-- СПУФИНГ ТОЧКИ ВЫЛЕТА (прострел стен) — теперь ЧАСТЬ КЛИЕНТ АЙМА,
+-- отдельной галочки нет. Подпись FireWeapon:
 --   1: Vector3 — точка вылета (рядом с нами)
 --   2: Vector3 — направление (единичный вектор с разбросом)
 --   3: number  — seed разброса
 --   4: table   — данные
 --   5: number  — время выстрела
--- Сервер пускает луч ОТ аргумента №1. Если подменить его на точку
--- рядом с целью, стена между нами и целью перестаёт мешать: луч
--- стартует уже за стеной. Если сервер проверяет, что точка вылета
--- рядом с игроком, выстрел просто не засчитается — тогда выключи.
-G.BS.OriginSpoof = G.BS.OriginSpoof or false
--- Насколько «за» целью ставить точку вылета (в студax).
+-- Точку вылета ставим чуть ПОЗАДИ цели: луч стартует уже за стеной.
+-- Отключить спуфинг можно из консоли:
+--   getgenv().BS.SpoofBack = 0
 G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 6
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
--- значения (AimLead=0 и т.п.) перебивали новые дефолты.
-if G.BS.CfgV ~= 6 then
-    G.BS.CfgV      = 6
+-- значения перебивали новые дефолты.
+if G.BS.CfgV ~= 7 then
+    G.BS.CfgV      = 7
     G.BS.AimLead   = 0.15
     G.BS.AimSpeed  = 2000
-    G.BS.RapidFire = true
-    G.BS.FireRate  = 0.1
     G.BS.Hitbox    = true
     G.BS.HitboxScale = 2
-    G.BS.OriginSpoof = true
+    G.BS.RapidFire = false   -- «без кулдауна» удалено из GUI
     G.BS.SpoofBack = 6
 end
 
@@ -1149,6 +1136,153 @@ local function scanAll()
 end
 
 -- ============================================================
+--  ГЛУБОКОЕ СКАНИРОВАНИЕ (кнопка в ESP)
+-- ============================================================
+-- Перечитывает ВСЁ, что нужно для аима: структуру игры, модули
+-- (через require с дампом таблиц), что лежит в руках/рюкзаке.
+-- По этому выводу видно, чем сервер проверяет выстрел и почему
+-- стена не пробивается.
+local function valToStr(v)
+    local t = typeof(v)
+    if t == "Vector3" then
+        return string.format("Vector3(%.1f, %.1f, %.1f)", v.X, v.Y, v.Z)
+    elseif t == "number" then
+        return string.format("%.3f", v)
+    elseif t == "string" then
+        return string.format("%s", v)
+    elseif t == "boolean" then
+        return tostring(v)
+    elseif t == "Instance" then
+        return v.ClassName .. " " .. v.Name
+    elseif t == "Player" then
+        return "Player " .. v.Name
+    elseif t == "function" then
+        return "<функция>"
+    end
+    return t
+end
+
+local function dumpTable(label, t, maxKeys, depth)
+    if type(t) ~= "table" then return end
+    local n = 0
+    pcall(function()
+        for k, v in pairs(t) do
+            n = n + 1
+            if n > maxKeys then break end
+            if type(v) == "table" and depth > 0 then
+                print("    " .. label .. "." .. tostring(k) .. " = {таблица}")
+                dumpTable(label .. "." .. tostring(k), v, maxKeys, depth - 1)
+            else
+                print("    " .. label .. "." .. tostring(k) .. " = " .. valToStr(v))
+            end
+        end
+    end)
+end
+
+local function dumpInst(inst, prefix)
+    local okA, at = pcall(function() return inst:GetAttributes() end)
+    if okA and type(at) == "table" then
+        for k, v in pairs(at) do
+            print("    " .. prefix .. tostring(k) .. " = " .. valToStr(v))
+        end
+    end
+    local okC, kids = pcall(function() return inst:GetChildren() end)
+    if okC and type(kids) == "table" then
+        for _, c in ipairs(kids) do
+            local extra = ""
+            if c:IsA("BasePart") then
+                extra = string.format("  size=(%.1f, %.1f, %.1f)",
+                    c.Size.X, c.Size.Y, c.Size.Z)
+            elseif c:IsA("ValueBase") then
+                local okV, v = pcall(function() return c.Value end)
+                if okV then extra = " = " .. valToStr(v) end
+            end
+            print("    " .. prefix .. c.Name .. " [" .. c.ClassName .. "]" .. extra)
+            dumpInst(c, prefix .. "  ")
+        end
+    end
+end
+
+local function deepScan()
+    hr("ГЛУБОКОЕ СКАНИРОВАНИЕ")
+    local base = TRS:FindFirstChild("BloodyStreet")
+    if base then
+        hr("СТРУКТУРА ReplicatedStorage.BloodyStreet")
+        for _, d in ipairs(base:GetChildren()) do
+            print("  " .. d.Name .. "  [" .. d.ClassName .. "]")
+            local ok, kids = pcall(function() return d:GetChildren() end)
+            if ok and type(kids) == "table" and #kids > 0 then
+                local names = {}
+                for _, c in ipairs(kids) do
+                    names[#names + 1] = c.Name .. "[" .. c.ClassName .. "]"
+                end
+                table.sort(names)
+                local line = "     "
+                for i = 1, math.min(#names, 20) do
+                    line = line .. names[i] .. ", "
+                end
+                print(line)
+            end
+        end
+    else
+        print("[BS DEEP] ReplicatedStorage.BloodyStreet НЕ НАЙДЕН")
+    end
+
+    -- МОДУЛИ ПО ТЕМЕ: пробуем require и давим содержимое таблиц.
+    hr("МОДУЛИ: gun / weapon / fire / shoot / bullet / damage / combat")
+    local marks = { "gun", "weapon", "fire", "shoot", "bullet", "damage",
+                    "combat", "ammo", "recoil", "spread", "hit" }
+    local found = 0
+    local okl, all = pcall(function() return game:GetDescendants() end)
+    if okl and type(all) == "table" then
+        for _, d in ipairs(all) do
+            if d.ClassName == "ModuleScript" then
+                local low = string.lower(d.Name)
+                local hit = false
+                for i = 1, #marks do
+                    if string.find(low, marks[i], 1, true) then hit = true break end
+                end
+                if hit then
+                    found = found + 1
+                    if found <= 60 then
+                        local path = d.Name
+                        local okP, fp = pcall(function() return d:GetFullName() end)
+                        if okP and type(fp) == "string" then path = fp end
+                        print("  " .. path)
+                        if found <= 10 then
+                            local okr, mod = pcall(require, d)
+                            if okr and type(mod) == "table" then
+                                dumpTable(d.Name, mod, 40, 2)
+                            else
+                                print("     (require: " .. tostring(mod) .. ")")
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    print("  модулей найдено: " .. found)
+
+    -- ЧТО У МЕНЯ В РУКАХ
+    hr("МОЙ ПЕРСОНАЖ / РЮКЗАК (оружие, значения, атрибуты)")
+    local ch = LP and LP.Character
+    if ch then
+        print("  ПЕРСОНАЖ:")
+        dumpInst(ch, "    ")
+        local bp = LP:FindFirstChildOfClass("Backpack")
+        if bp then
+            print("  РЮКЗАК:")
+            dumpInst(bp, "    ")
+        end
+    else
+        print("  (персонажа нет)")
+    end
+
+    hr("ГЛУБОКОЕ СКАНИРОВАНИЕ ЗАКОНЧЕНО")
+end
+
+-- ============================================================
 --  КЛИЕНТ АИМ: ПОДМЕНА ПАТРОНА (Remotes.FireWeapon)
 -- ============================================================
 -- Сигнатуру FireWeapon мы не знаем, поэтому хук не угадывает один
@@ -1335,17 +1469,6 @@ local function ncFireWeapon(...)
     local out = {}
     for i = 1, n do out[i] = args[i] end
 
-    -- ШАБЛОН ВЫСТРЕЛА. Аргументов 28 и сигнатуру мы не знаем, поэтому
-    -- «без кулдауна» шлёт выстрел ТЕМ ЖЕ набором, что и игра, —
-    -- копией настоящих аргументов. Меняем в нём только направление
-    -- (это делает подмена ниже) и протухшую позицию ствола.
-    if not NC.sending then
-        local t = table.create(n)
-        for i = 1, n do t[i] = args[i] end
-        NC.tpl, NC.tplN = t, n
-        NC.tplSrc = pre and pre.src or nil
-    end
-
     -- ПОДМЕНА ПО ФАКТИЧЕСКОЙ СИГНАТУРЕ FireWeapon. По логу ремоутов:
     --   1: Vector3 — точка вылета (рядом с нами: ствол/камера)
     --   2: Vector3 — направление выстрела (единичный вектор с разбросом)
@@ -1391,14 +1514,16 @@ local function ncFireWeapon(...)
     end
 
     -- 2) ТОЧКА ВЫЛЕТА (прострел). Ставим её чуть ПОЗАДИ цели: луч
-    --    стартует уже за стеной и идёт сквозь цель.
-    if posIdx and G.BS.OriginSpoof then
-        local back = tonumber(G.BS.SpoofBack) or 6
-        if back < 1 then back = 1 end
-        if back > 100 then back = 100 end
-        out[posIdx] = pre.pos - pre.dir * back
-        replaced = true
-        bits[#bits + 1] = "точка вылета #" .. tostring(posIdx)
+    --    стартует уже за стеной и идёт сквозь цель. Это часть клиент
+    --    айма, отдельной галочки нет. Отключить: getgenv().BS.SpoofBack = 0
+    if posIdx then
+        local back = tonumber(G.BS.SpoofBack) or 0
+        if back > 0 then
+            if back > 100 then back = 100 end
+            out[posIdx] = pre.pos - pre.dir * back
+            replaced = true
+            bits[#bits + 1] = "точка вылета #" .. tostring(posIdx)
+        end
     end
 
     -- 3) нет распознанных векторов -> возможно цель передаётся объектом
@@ -1444,6 +1569,38 @@ local function ncFireWeapon(...)
         print("[BS BULLET] аргументов " .. n .. ": " .. table.concat(list, " | "))
         print(string.format("[BS BULLET] цель=%s дистанция=%.1f -> %s",
             pre.part.Name, pre.dist, how or "СИГНАТУРА НЕ РАСПОЗНАНА"))
+
+        -- ДАМП ТАБЛИЧНЫХ арГУМЕНТОВ. В FireWeapon 4-й аргумент — это
+        -- table: там может лежать цель, точка попадания, урон. Если
+        -- сервер доверяет этим данным, через них можно пробить стену.
+        for i = 1, n do
+            if typeof(args[i]) == "table" then
+                local keys, cnt = {}, 0
+                pcall(function()
+                    for k, v in pairs(args[i]) do
+                        cnt = cnt + 1
+                        if cnt <= 14 then
+                            local t = typeof(v)
+                            local s
+                            if t == "Vector3" then
+                                s = string.format("%.1f, %.1f, %.1f", v.X, v.Y, v.Z)
+                            elseif t == "number" or t == "string" or t == "boolean" then
+                                s = tostring(v)
+                            elseif t == "Instance" then
+                                s = v.ClassName .. " " .. v.Name
+                            elseif t == "Player" then
+                                s = "Player " .. v.Name
+                            elseif t == "table" then
+                                s = "{...}"
+                            end
+                            keys[#keys + 1] = tostring(k) .. "=" .. t .. (s and ("(" .. s .. ")") or "")
+                        end
+                    end
+                end)
+                print("[BS BULLET] таблица #" .. i .. " (" .. cnt .. " полей): "
+                    .. table.concat(keys, " | "))
+            end
+        end
     end
     if not replaced then return nil end
 
@@ -1674,85 +1831,7 @@ local function muteShotFX()
 end
 
 -- ============================================================
---  БЕЗ КУЛДАУНА (рапид-файр)
--- ============================================================
--- Игра сама стреляет с паузой (кулдаун оружия). Пока пауза идёт —
--- враг уходит. Поэтому, пока держишь ЛКМ, мы ДОПОЛНИТЕЛЬНО шлём
--- выстрел тем же ремоутом и тем же набором аргументов, что и игра
--- (шаблон снимается с настоящего выстрела), а направление подставляет
--- __namecall-хук — в цель и с опережением.
--- Если сервер сам режет темп, лишние выстрелы просто не засчитаются.
-local UIS = game:GetService("UserInputService")
-local rapidHeld = false
-
-local function sendTemplateShot()
-    local tpl, tn = NC.tpl, NC.tplN
-    if not (tpl and tn and NC.fw and NC.orig) then return false end
-    local pre = bulletPreShot
-    if not (pre and pre.part and pre.part.Parent and pre.dir) then return false end
-
-    local out = table.create(tn)
-    for i = 1, tn do out[i] = tpl[i] end
-
-    -- Позиция ствола в шаблоне протухла — она снята там, где мы стояли
-    -- в момент захвата. Всё, что рядом с той точкой, — это позиции,
-    -- заменяем на текущую точку вылета. Направление подменит хук.
-    local tsrc = NC.tplSrc
-    if tsrc then
-        for i = 1, tn do
-            local v = out[i]
-            if typeof(v) == "Vector3" and (v - tsrc).Magnitude < 25 then
-                out[i] = pre.src
-            end
-        end
-    end
-
-    NC.sending = true
-    local ok = pcall(function()
-        NC.fw:FireServer(table.unpack(out, 1, tn))
-    end)
-    NC.sending = false
-    if ok then G.BS.RapidShots = (G.BS.RapidShots or 0) + 1 end
-    return ok
-end
-
-local connRapidBegan, connRapidEnded
-local function installRapidInput()
-    if connRapidBegan then return end
-    connRapidBegan = UIS.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            rapidHeld = true
-        end
-    end)
-    connRapidEnded = UIS.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            rapidHeld = false
-        end
-    end)
-end
-installRapidInput()
-
-task.spawn(function()
-    while not STOPPED do
-        task.wait(0.02)
-        if rapidHeld and G.BS.RapidFire and G.BS.BulletSwap and NC.tpl then
-            local rate = tonumber(G.BS.FireRate) or 0.1
-            if rate < 0.03 then rate = 0.03 end
-            local now = os.clock()
-            if now - (NC.lastSend or 0) >= rate then
-                NC.lastSend = now
-                local ch = LP and LP.Character
-                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health > 0 then
-                    pcall(sendTemplateShot)
-                end
-            end
-        end
-    end
-end)
-
--- ============================================================
---  НЕВИДИМЫЙ ХИТБОКС (только голова)
+--  НЕВИДИМЫЙ ХИТБОКС (только голова, только враги)
 -- ============================================================
 -- Тело игроков НЕ трогаем — они выглядят как обычно. Вместо этого
 -- каждому вешаем НЕВИДИМУЮ часть на ГОЛОВУ (приварена к Head и
@@ -2032,7 +2111,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v9.7",
+    LoadingSubtitle = "ESP + Client Aim v9.8",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2124,6 +2203,10 @@ TB.CreateButton({ Name = "СКАНИРОВАТЬ ИГРУ (в консоль)", 
     pcall(scanAll)
     notify("Скан отработал, смотри консоль", 4)
 end })
+TB.CreateButton({ Name = "ГЛУБОКОЕ СКАНИРОВАНИЕ (найти модули оружия)", Callback = function()
+    pcall(deepScan)
+    notify("Глубокий скан отработал, смотри консоль", 4)
+end })
 TB.CreateToggle({ Name = "Сканировать при запуске", Flag = "BS_ScanOnStart",
     CurrentValue = G.BS.ScanOnStart,
     Callback = function(v)
@@ -2150,24 +2233,6 @@ AI.CreateToggle({
     end,
 })
 
-AI.CreateToggle({
-    Name = "Без кулдауна (рапид-файр)", Flag = "BS_RapidFire",
-    CurrentValue = G.BS.RapidFire,
-    Callback = function(v)
-        G.BS.RapidFire = v
-        if v then
-            pcall(installBulletHook)
-            notify("Рапид-файр: жми и держи ЛКМ", 4)
-        else
-            notify("Рапид-файр выключен", 2)
-        end
-    end,
-})
-AI.CreateSlider({ Name = "Пауза между выстрелами", Flag = "BS_FireRate",
-    Range = {3, 50}, Increment = 1,
-    CurrentValue = math.floor((G.BS.FireRate or 0.1) * 100),
-    Suffix = " x0.01 сек",
-    Callback = function(v) G.BS.FireRate = v / 100 end })
 AI.CreateSlider({ Name = "Опережение цели", Flag = "BS_AimLead",
     Range = {0, 50}, Increment = 1,
     CurrentValue = math.floor((G.BS.AimLead or 0.1) * 100),
@@ -2189,18 +2254,6 @@ AI.CreateSlider({ Name = "Масштаб хитбокса", Flag = "BS_HitboxSca
         G.BS.HitboxScale = v
         pcall(applyHitbox)
     end })
-AI.CreateToggle({
-    Name = "Спуфинг точки вылета (через стены)", Flag = "BS_OriginSpoof",
-    CurrentValue = G.BS.OriginSpoof,
-    Callback = function(v)
-        G.BS.OriginSpoof = v
-        notify(v and "Точка вылета ставится у цели (если урон пропал - выключи)" or "Точка вылета как обычно", 5)
-    end,
-})
-AI.CreateSlider({ Name = "Отступ точки вылета", Flag = "BS_SpoofBack",
-    Range = {1, 30}, Increment = 1, CurrentValue = G.BS.SpoofBack,
-    Suffix = " studs",
-    Callback = function(v) G.BS.SpoofBack = v end })
 
 AI.CreateToggle({
     Name = "Тихий выстрел (гасим вспышку/звук)", Flag = "BS_SilentShot",
@@ -2255,10 +2308,6 @@ G.BS_Stop = function()
     if connRemoving then pcall(function() connRemoving:Disconnect() end) end
     if connChar     then pcall(function() connChar:Disconnect() end) end
     connAdded, connRemoving, connChar = nil, nil, nil
-    if connRapidBegan then pcall(function() connRapidBegan:Disconnect() end) end
-    if connRapidEnded then pcall(function() connRapidEnded:Disconnect() end) end
-    connRapidBegan, connRapidEnded = nil, nil
-    rapidHeld = false
     G.BS.Hitbox = false
     pcall(clearAllHitboxes)
     for i = #netConns, 1, -1 do
@@ -2301,7 +2350,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v9.7 остановлен")
+    print("[BS HUB] v9.8 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2324,7 +2373,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v9.7 запущен | хуков=" .. #netConns
+print("[BS HUB] v9.8 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
