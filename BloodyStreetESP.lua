@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.6
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.7
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -160,20 +160,20 @@ G.BS.AimFOV        = G.BS.AimFOV or 160
 
 if G.BS_Stop then pcall(function() G.BS_Stop() end) end
 
--- ФЛАГИ ХУКОВ в LUA-ТАБЛИЦАХ, а НЕ на Instance.
--- Roblox ЗАПРЕЩАЕТ писать новые поля на Instance:
---   hum.__BS = true -> "__BS is not a valid member of Humanoid".
--- Чтение отсутствующего поля даёт nil (без ошибки), но ЗАПИСЬ
--- падает ВСЕГДА -> флаг навсегда оставался nil и хук ставился
--- заново каждый кадр (тысячи вложенных обёрток над TakeDamage).
-local hookedHumans = setmetatable({}, { __mode = "k" })
-local energyHooked  = setmetatable({}, { __mode = "k" })
-local fwHooked      = setmetatable({}, { __mode = "k" })
-local hookErr       = setmetatable({}, { __mode = "k" })
--- Исходный game.__namecall до установки нашего хука. Нужен, чтобы
--- G.BS_Stop() вернул всё как было: глобальный хук иначе остался бы
--- висеть и при повторном запуске скрипта хуки стыковались бы.
-local namecallOld   = nil
+-- ЕДИНЫЙ ХУК __namecall (заменил флаги-таблицы на Instance из v8.6:
+-- они были нужны из-за отдельных hookmetamethod, которые здесь не
+-- работают; теперь общего хука достаточно).
+--   orig      — исходный game.__namecall (нужен и для форвардинга
+--               ВСЕХ вызовов, и для корректного снятия хука).
+--   installed — хук реально стоит.
+--   fw/ue/myHum — кэш целей (внутри хука нельзя звать методы через ":").
+local NC = { orig = nil, installed = false, wrapper = nil,
+             fw = nil, ue = nil, myHum = nil }
+-- forward-декларация: реализация ниже (после всех зависимостей).
+-- Именно forward-декларация, а не `local installNamecall = function`,
+-- потому что так безопаснее: сначала имя в области видимости, потом
+-- присвоение.
+local installNamecall
 
 -- СОСТОЯНИЕ
 local by           = {}   -- [Player] = {char, role, conf, votes, lastStable, hl, gui, lbl, box}
@@ -819,54 +819,20 @@ if Remotes then
 end
 
 -- ============================================================
---  СТАМИНА: игра тратит энергию ЧЕРЕЗ Remotes.UseEnergy
+--  СТАМИНА (Remotes.UseEnergy) и ЗАЩИТА ОТ УРОНА (Humanoid:TakeDamage)
 -- ============================================================
-local energyPatched = false
-
-local function patchEnergy()
-    if energyPatched or not Remotes then return end
-    local ue = Remotes:FindFirstChild("UseEnergy")
-    if not ue or not ue:IsA("RemoteEvent") or energyHooked[ue] then return end
-    -- pcall ОБЯЗАТЕЛЕН: без него любая ошибка здесь убила бы весь
-    -- поток, а вместе с ним пересканирование стамины при респавне.
-    local ok, errS = pcall(function()
-        local old = hookmetamethod(ue, "FireServer", function(self, ...)
-            if G.BS.InfStamina then return end
-            return old(self, ...)
-        end)
-    end)
-    if ok then
-        energyHooked[ue] = true
-        energyPatched = true
-        if G.BS.StaminaDebug then
-            print("[BS STAM] Remotes.UseEnergy перехват (трата энергии блокируется)")
-        end
-    elseif G.BS.StaminaDebug then
-        print("[BS STAM] перехват НЕ встал. Причина: " .. tostring(errS))
-    end
-end
-
--- ============================================================
---  ЗАЩИТА ОТ УРОНА NPC
--- ============================================================
+-- Оба перехватываются ЕДИНЫМ хуком __namecall (см. ниже). Отдельные
+-- hookmetamethod(ue, "FireServer") / hookmetamethod(hum, "TakeDamage")
+-- в этом исполнителе НЕ работают: он принимает только имена
+-- метаметодов. Поэтому здесь только запуск общего хука.
 local damageBlocked = 0
 
+local function patchEnergy()
+    if installNamecall then pcall(installNamecall) end
+end
+
 local function installDamageHooks()
-    local ch = LP and LP.Character
-    if not ch then return end
-    local hum = ch:FindFirstChildOfClass("Humanoid")
-    if not hum or not hum.Parent then return end
-    if hookedHumans[hum] then return end
-    local ok = pcall(function()
-        local old = hookmetamethod(hum, "TakeDamage", function(self, amount)
-            if G.BS.HealthLock then
-                damageBlocked = damageBlocked + (tonumber(amount) or 0)
-                return 0
-            end
-            return old(self, amount)
-        end)
-    end)
-    if ok then hookedHumans[hum] = true end
+    if installNamecall then pcall(installNamecall) end
 end
 
 local function pumpHealth()
@@ -898,15 +864,13 @@ local function scanAll()
     for i = 1, #names do print(string.format("  %2d. %s", i, names[i])) end
 
     hr("ВЫРАН ЗАКЛЮЧЕНЫ ХУКИ")
-    local fwNow = Remotes and Remotes:FindFirstChild("FireWeapon")
-    print("  FireWeapon     : " .. tostring(fwHooked[fwNow or false] ~= nil))
-    print("  UseEnergy      : " .. tostring(energyPatched))
-    -- Причина сразу, иначе "false" ни о чём не говорит
-    if fwNow and hookErr[fwNow] then
-        print("  ПРИЧИНА        : " .. tostring(hookErr[fwNow]))
-    end
-    print("  newcclosure    : " .. tostring(type(newcclosure)))
+    print("  __namecall     : " .. tostring(NC.installed)
+        .. " (orig=" .. tostring(NC.orig ~= nil) .. ")")
+    print("  FireWeapon     : " .. tostring(NC.fw ~= nil))
+    print("  UseEnergy      : " .. tostring(NC.ue ~= nil))
     print("  getnamecallmethod: " .. tostring(type(getnamecallmethod)))
+    print("  getrawmetatable: " .. tostring(type(getrawmetatable)))
+    print("  setreadonly    : " .. tostring(type(setreadonly)))
 
     local ch = LP and LP.Character
     if ch then
@@ -1006,141 +970,202 @@ local function computeBulletPreShot()
     bulletPreShot = { part = best, dir = dir.Unit }
 end
 
--- Обёртка bsClosure УДАЛЕНА намеренно.
+-- ============================================================
+--  ЕДИНЫЙ ХУК __namecall
+--  (прострел стен / клиент айм + блок стамины + защита от урона)
+-- ============================================================
+-- ГЛАВНАЯ ПРИЧИНА ПАДЕНИЙ ИГРЫ (v8.6 и раньше) — это НЕ newcclosure,
+-- а область видимости локальной переменной в Lua:
 --
--- newcclosure создаёт замыкание БЕЗ upvalue. Из-за этого в хуках
--- `old` не захватывался и оставался nil:
---   return old(self, ...)  ->  "attempt to call a nil value"
--- Из-за этого падало ВСЁ в игре (GarlicController, ControlModule,
--- CameraModule, InputLock, HotbarController, SoundPingController).
--- Для хуков, которым нужен захват переменных, newcclosure нельзя.
+--   local old = hookmetamethod(game, "__namecall", function(self, ...)
+--       return old(self, ...)   -- <-- здесь old ГЛОБАЛЬНАЯ (nil)!
+--   end)
+--
+-- В Lua область видимости `local old` начинается ТОЛЬКО ПОСЛЕ
+-- объявления. Поэтому внутри функции справа `old` — не та переменная,
+-- что объявляется, а глобальная (nil). Итог: на КАЖДЫЙ вызов через
+-- ":" в игре (FindFirstChild, FireServer, ...) хук делал
+-- "attempt to call a nil value". Отсюда сыпались GarlicController,
+-- ControlModule, CameraModule, InputLock, HotbarController.
+--
+-- ЛЕЧЕНИЕ: forward-декларация (`local old` + отдельное присвоение) и
+-- получение оригинала из СЫРОЙ метатаблицы, чтобы вообще не зависеть
+-- от того, что вернёт hookmetamethod.
 
-local function installBulletHook()
-    if not Remotes then return end
-    local fw = Remotes:FindFirstChild("FireWeapon")
-    if not fw or not fw:IsA("RemoteEvent") then
-        if G.BS.BulletDebug then
-            print("[BS BULLET] Remotes.FireWeapon НЕ НАЙДЕН")
-        end
-        return
+-- ВАЖНО: внутри хука нельзя вызывать методы через ":" (FindFirstChild,
+-- FindFirstChildOfClass, ...) — это снова namecall и рекурсия. Поэтому
+-- все нужные Instance кэшируем снаружи, в refreshHookTargets().
+local function refreshHookTargets()
+    if Remotes then
+        NC.fw = Remotes:FindFirstChild("FireWeapon")
+        NC.ue = Remotes:FindFirstChild("UseEnergy")
     end
-    if fwHooked[fw] then return end
+    local ch = LP and LP.Character
+    NC.myHum = (ch and ch:FindFirstChildOfClass("Humanoid")) or nil
+end
 
-    local ok, err = pcall(function()
-        local lastNamecallOld = nil
-        -- ХУК ЧЕРЕЗ ГЛОБАЛЬНЫЙ __namecall.
-        --
-        -- Почему не hookmetamethod(fw, "FireServer", ...):
-        -- в этом исполнителе hookmetamethod принимает ТОЛЬКО имена
-        -- метаметодов (__namecall, __index, ...), а обычные методы
-        -- вроде FireServer — нет. Проверено, в консоль приходит:
-        --   "invalid argument #2 to 'hookmetamethod'
-        --    (Metamethod doesn't exist)"
-        --
-        -- Раньше глобальный __namecall ЛОМАЛ игру (падали
-        -- GarlicController, ControlModule, CameraModule, InputLock,
-        -- HotbarController) — но причина была не в самом __namecall,
-        -- а в том, что `old` НИКОГДА не присваивался:
-        --   hookmetamethod(game, "__namecall", function(self, ...)
-        --       return old(self, ...)   -- old == nil
-        -- Любой вызов через ":" в игре уходил в этот хук и падал.
-        --
-        -- ВАЖНО: здесь ОБЫЧНАЯ функция, а НЕ newcclosure.
-        -- `newcclosure` создаёт замыкание БЕЗ upvalue, поэтому `old`
-        -- в неё не попадал и оставался nil — снова "attempt to call
-        -- a nil value" на строке 1055 и сыпь ошибок по всей игре.
-        -- Для хуков, которым нужен захват переменных, newcclosure
-        -- использовать нельзя.
-        local old = hookmetamethod(game, "__namecall", function(self, ...)
-            local okM, method = pcall(getnamecallmethod)
-            -- всё, кроме нашего FireWeapon, идёт в оригинал без изменений
-            if not (okM and method == "FireServer" and self == fw
-                    and G.BS.BulletSwap) then
-                return old(self, ...)
-            end
-            local pre = bulletPreShot
-            if not (pre and pre.part and pre.part.Parent and pre.dir) then
-                return old(self, ...)
-            end
-            local n = select("#", ...)
-            if n < 1 then return old(self, ...) end
+-- Подмена аргументов выстрела. Возвращает (out, n) либо nil.
+local function ncFireWeapon(...)
+    local pre = bulletPreShot
+    if not (pre and pre.part and pre.part.Parent and pre.dir) then return nil end
+    local n = select("#", ...)
+    if n < 1 then return nil end
 
-            local args = table.pack(...)
-            local nargs = {}
-            for i = 1, n do nargs[i] = args[i] end
+    local args = table.pack(...)
+    local out = {}
+    for i = 1, n do out[i] = args[i] end
 
-            -- ищем последний Vector3: обычно это направление выстрела
-            local replaced = false
-            for i = n, 1, -1 do
-                if typeof(nargs[i]) == "Vector3" then
-                    local len = nargs[i].Magnitude
-                    if len > 0.01 and len < 1.5 then
-                        nargs[i] = pre.dir
-                    else
-                        nargs[i] = pre.part.Position
-                    end
-                    replaced = true
-                    break
-                end
+    -- последний Vector3 — обычно это направление выстрела
+    local replaced = false
+    for i = n, 1, -1 do
+        if typeof(out[i]) == "Vector3" then
+            local len = out[i].Magnitude
+            if len > 0.01 and len < 1.5 then
+                out[i] = pre.dir
+            else
+                out[i] = pre.part.Position
             end
-
-            -- нет Vector3 -> возможно передаётся цель объектом
-            if not replaced then
-                for i = n, 1, -1 do
-                    local t = typeof(nargs[i])
-                    if t == "Instance" or t == "Player" then
-                        nargs[i] = pre.part
-                        replaced = true
-                        break
-                    end
-                end
-            end
-
-            if replaced then
-                if G.BS.BulletDebug and not sigLogged then
-                    sigLogged = true
-                    local kinds = {}
-                    for i = 1, n do kinds[i] = typeof(args[i]) end
-                    print("[BS BULLET] подмена работает (" .. n
-                        .. " arg): " .. table.concat(kinds, ", "))
-                end
-                G.BS.SilentShots = G.BS.SilentShots + 1
-                return old(self, table.unpack(nargs, 1, n))
-            end
-
-            -- не узнали сигнатуру -> пишем раз за сессию
-            if G.BS.BulletDebug and not sigLogged then
-                sigLogged = true
-                local kinds = {}
-                for i = 1, n do kinds[i] = typeof(args[i]) end
-                print("[BS BULLET] сигнатура не распознана (" .. n
-                    .. " arg): " .. table.concat(kinds, ", "))
-            end
-            return old(self, ...)
-        end)
-        if not old then
-            error("hookmetamethod вернул nil (нет исходной функции)")
+            replaced = true
+            break
         end
-        lastNamecallOld = old
-        -- __namecall хукается глобально, fwHooked ставим только
-        -- если реально есть old.
-    end)
+    end
 
-    if ok then
-        fwHooked[fw] = true
-        hookErr[fw] = nil
-        namecallOld = lastNamecallOld
-        if G.BS.BulletDebug then
-            print("[BS BULLET] хук FireWeapon.FireServer установлен")
+    -- нет Vector3 -> возможно цель передаётся объектом
+    if not replaced then
+        for i = n, 1, -1 do
+            local t = typeof(out[i])
+            if t == "Instance" or t == "Player" then
+                out[i] = pre.part
+                replaced = true
+                break
+            end
         end
-    else
-        hookErr[fw] = tostring(err)
-        -- ПРИЧИНА ОБЯЗАТЕЛЬНО печатается: раньше pcall глотал ошибку
-        -- и в консоль уходило бесполезное "исполнитель заблокировал",
-        -- из-за чего невозможно было понять, что именно не так.
-        print("[BS BULLET] ХУК НЕ ВСТАЛ. Причина: " .. tostring(err))
+    end
+
+    if G.BS.BulletDebug and not sigLogged then
+        sigLogged = true
+        local kinds = {}
+        for i = 1, n do kinds[i] = typeof(args[i]) end
+        if replaced then
+            print("[BS BULLET] подмена работает (" .. n
+                .. " arg): " .. table.concat(kinds, ", "))
+        else
+            print("[BS BULLET] сигнатура не распознана (" .. n
+                .. " arg): " .. table.concat(kinds, ", "))
+        end
+    end
+    if not replaced then return nil end
+
+    G.BS.SilentShots = G.BS.SilentShots + 1
+    return out, n
+end
+
+-- Сам хук. Хот-путь максимально дешёвый: без ":"-вызовов и без pcall.
+local function ncWrapper(self, ...)
+    local method = getnamecallmethod()
+    if type(method) == "string" then
+        -- СТАМИНА: не даём игре списывать энергию
+        if method == "FireServer" and self == NC.ue then
+            if G.BS.InfStamina then return end
+        -- ПРОСТРЕЛ / КЛИЕНТ АЙМ
+        elseif method == "FireServer" and self == NC.fw then
+            if G.BS.BulletSwap then
+                local out, n = ncFireWeapon(...)
+                if out then
+                    return NC.orig(self, table.unpack(out, 1, n))
+                end
+            end
+        -- ЗАЩИТА ОТ УРОНА
+        elseif method == "TakeDamage" and self == NC.myHum then
+            if G.BS.HealthLock then
+                damageBlocked = damageBlocked + 1
+                return 0
+            end
+        end
+    end
+    -- ВСЕГДА возвращаем оригинал. Если orig вдруг nil — НЕ вызываем
+    -- его (иначе снова "attempt to call a nil value").
+    if NC.orig then
+        return NC.orig(self, ...)
     end
 end
+
+-- Установка хука. Пробуем два пути, ни один не оставляем «висеть»
+-- без оригинала.
+function installNamecall()
+    if NC.installed then return true end
+    if not NC.wrapper then NC.wrapper = ncWrapper end
+    -- без getnamecallmethod не понять, какой ремоут вызывают -> не хукаем
+    if type(getnamecallmethod) ~= "function" then
+        print("[BS HOOK] нет getnamecallmethod — хук не ставим")
+        return false
+    end
+
+    -- ШАГ 0: страховка. Пытаемся достать оригинал из СЫРОЙ
+    -- метатаблицы. Он нужен, если hookmetamethod установит хук, но не
+    -- вернёт оригинал: тогда нам всё равно будет чем форвардить.
+    local origRaw
+    pcall(function()
+        if type(getrawmetatable) ~= "function" then return end
+        local mt = getrawmetatable(game)
+        if type(mt) ~= "table" then return end
+        local v = rawget(mt, "__namecall")
+        if type(v) ~= "function" then
+            local okI, w = pcall(function() return mt.__namecall end)
+            if okI then v = w end
+        end
+        if type(v) == "function" then origRaw = v end
+    end)
+
+    -- ПУТЬ 1: сырая метатаблица (надёжнее всего, не зависит от
+    -- того, что возвращает hookmetamethod).
+    if origRaw then
+        local okA, resA = pcall(function()
+            local mt = getrawmetatable(game)
+            if type(mt) ~= "table" then return false end
+            NC.orig = origRaw
+            if type(setreadonly) == "function" then pcall(setreadonly, mt, false) end
+            mt.__namecall = NC.wrapper
+            if type(setreadonly) == "function" then pcall(setreadonly, mt, true) end
+            -- проверяем, что подмена реально применилась
+            return mt.__namecall == NC.wrapper
+        end)
+        if okA and resA then
+            NC.installed = true
+            print("[BS HOOK] __namecall перехвачен (сырая метатаблица)")
+            return true
+        end
+        NC.orig = nil
+    end
+
+    -- ПУТЬ 2: hookmetamethod + FORWARD-ДЕКЛАРАЦИЯ (ключевое отличие
+    -- от сломанных версий: `local old` ОТДЕЛЬНО от присвоения).
+    if type(hookmetamethod) == "function" then
+        local old
+        local okB, errB = pcall(function()
+            old = hookmetamethod(game, "__namecall", NC.wrapper)
+        end)
+        if okB then
+            -- страховка origRaw: даже если hookmetamethod вернул nil,
+            -- хук можно безопасно форвардить имеющимся оригиналом.
+            NC.orig = (type(old) == "function") and old or origRaw
+            if NC.orig then
+                NC.installed = true
+                print("[BS HOOK] __namecall перехвачен (hookmetamethod)")
+                return true
+            end
+            print("[BS HOOK] hookmetamethod не дал оригинал — хук не ставим")
+            return false
+        end
+        print("[BS HOOK] hookmetamethod ошибка: " .. tostring(errB))
+    end
+
+    print("[BS HOOK] не удалось перехватить __namecall (нет getrawmetatable/hookmetamethod)")
+    return false
+end
+
+-- Совместимость: раньше установщик звался installBulletHook.
+local installBulletHook = installNamecall
 
 -- ============================================================
 --  СКАН ИГРОКОВ
@@ -1199,6 +1224,9 @@ local conn = RunService.RenderStepped:Connect(function()
     local now = os.clock()
     local dt = math.min(0.1, math.max(0.001, now - lastT))
     lastT = now
+
+    -- держим кэш целей хука свежим (внутри хука ":"-вызовы нельзя)
+    if NC.installed then pcall(refreshHookTargets) end
 
     -- vyzhivanie
     if G.BS.InfStamina then pcall(patchEnergy) end
@@ -1315,7 +1343,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v8.6",
+    LoadingSubtitle = "ESP + Client Aim v8.7",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1467,17 +1495,34 @@ G.BS_Stop = function()
     Screen = nil
     Overlay = nil
     G.BS.MyRole = "?"
-    G.BS.BulletSwap = false
-    -- Снимаем глобальный __namecall, иначе он останется висеть
-    -- и при повторном запуске скрипта хуки стыкуются.
-    if namecallOld then
+    -- BulletSwap НЕ трогаем: getgenv() живёт между запусками, и если
+    -- выставить false, то при повторном запуске клиент айм не включится.
+    -- Снимаем __namecall, иначе он останется висеть и при повторном
+    -- запуске скрипта хуки состыкуются.
+    if NC.installed then
+        local orig = NC.orig
         pcall(function()
-            hookmetamethod(game, "__namecall", namecallOld)
+            if orig and type(getrawmetatable) == "function" then
+                local mt = getrawmetatable(game)
+                if type(mt) == "table" then
+                    if type(setreadonly) == "function" then
+                        pcall(setreadonly, mt, false)
+                    end
+                    mt.__namecall = orig
+                    if type(setreadonly) == "function" then
+                        pcall(setreadonly, mt, true)
+                    end
+                end
+            end
+            if orig and type(hookmetamethod) == "function" then
+                hookmetamethod(game, "__namecall", orig)
+            end
         end)
-        namecallOld = nil
+        NC.installed = false
+        NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v8.6 остановлен")
+    print("[BS HUB] v8.7 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1485,6 +1530,7 @@ task.spawn(function()
     pcall(patchEnergy)
     pcall(installDamageHooks)
     pcall(installBulletHook)
+    pcall(refreshHookTargets)
     if LP then
         LP.CharacterAdded:Connect(function()
             task.wait(0.5)
@@ -1498,7 +1544,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v8.6 запущен | хуков=" .. #netConns
+print("[BS HUB] v8.7 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
