@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.0
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.1
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -130,16 +130,24 @@ G.BS.MyRole      = G.BS.MyRole      or "?"
 G.BS.BulletSwap      = G.BS.BulletSwap      ~= false
 G.BS.BulletDebug     = G.BS.BulletDebug     or false
 G.BS.SilentShots     = G.BS.SilentShots     or 0
--- ПРОСТРЕЛ СТЕН по умолчанию ВКЛ. Иначе цель за стеной отбрасывалась,
--- и подмена не срабатывала там, где она нужнее всего.
-G.BS.Penetrate       = G.BS.Penetrate ~= false
+-- ПРОСТРЕЛ СТЕН — всегда ВКЛ.
+-- Переключателя в GUI больше нет, поэтому сохранённое в getgenv
+-- старое false только вредило: цель за стеной отбрасывалась.
+-- Для выстрелов через всю карту прострел обязателен.
+G.BS.Penetrate       = true
 -- ШИРОКИЙ ПОИСК: берём ближайшего противника в радиусе, даже если он
 -- вне экрана. Иначе цель за спиной не находится.
 G.BS.BulletWideAim   = G.BS.BulletWideAim ~= false
 G.BS.AimTargets      = pickOpt(G.BS.AimTargets, AIM_TARGETS, AIM_TARGETS[1])
 G.BS.AimPriority     = pickOpt(G.BS.AimPriority, AIM_PRIORITY, AIM_PRIORITY[1])
 G.BS.AimPart         = pickOpt(G.BS.AimPart, AIM_PART, AIM_PART[1])
-G.BS.AimMaxDist      = G.BS.AimMaxDist or 300
+-- ДАЛЬНОСТЬ ПОДМЕНЫ. 0 = БЕЗ ОГРАНИЧЕНИЯ (через всю карту).
+-- Раньше по умолчанию стояло 300, поэтому дальше 300 студов цель
+-- вообще не выбиралась и пуля не подменялась. Слайдер этой настройки
+-- удалён из GUI, значит 300 мог быть только старым дефолтом —
+-- мигрируем его в 0 (без ограничения).
+G.BS.AimMaxDist      = tonumber(G.BS.AimMaxDist) or 0
+if G.BS.AimMaxDist == 300 then G.BS.AimMaxDist = 0 end
 G.BS.RGBTarget       = pickOpt(G.BS.RGBTarget, RGB_TARGETS, RGB_TARGETS[1])
 
 -- ---------- RGB ----------
@@ -1066,11 +1074,15 @@ local function computeBulletPreShot()
     -- в дальнего врага уходил в ближнего, который стоял сбоку.
     local vp  = cam.ViewportSize
     local ccx, ccy = vp.X * 0.5, vp.Y * 0.5
-    local CONE = 220 -- пикселей: считаем, что цель «под прицелом»
+    -- «Под прицелом» = в пределах ~трети экрана от центра. Шире, чем
+    -- раньше (жёсткие 220 px): дальний враг на экране занимает всего
+    -- пару пикселей, и в узкий круг он не попадал.
+    local CONE = math.max(220, math.floor(vp.Y * 0.35))
     local CONE2 = CONE * CONE
 
-    local bestAim,  bestAimD    -- ближайший под прицелом
-    local bestNear, bestNearD   -- ближайший вообще
+    local bestAim,  bestAimS    -- под прицелом: у кого МЕНЬШЕ расстояние
+                                -- до центра экрана, тот и цель
+    local bestNear, bestNearD   -- иначе — ближайший по расстоянию
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP and by[plr] and isEnemy(plr) then
             local ch = plr.Character
@@ -1086,9 +1098,10 @@ local function computeBulletPreShot()
                         local sp = cam:WorldToViewportPoint(q.Position)
                         if sp.Z > 0 then
                             local dx, dy = sp.X - ccx, sp.Y - ccy
-                            if (dx * dx + dy * dy) <= CONE2 then
-                                if not bestAimD or d < bestAimD then
-                                    bestAim, bestAimD = q, d
+                            local s2 = dx * dx + dy * dy
+                            if s2 <= CONE2 then
+                                if not bestAimS or s2 < bestAimS then
+                                    bestAim, bestAimS = q, s2
                                 end
                             end
                         end
@@ -1204,10 +1217,12 @@ local function ncFireWeapon(...)
         -- этого вектора, то длина 1 = 1 студ, и сервер не видит
         -- попадания (трассер рисуется, урона нет).
         -- Теперь длина = расстояние до цели (и не меньше исходной).
+        -- Для выстрела через всю карту длина как раз и должна быть
+        -- равна дистанции — тогда пуля долетает до цели.
         local base = pickLen or 1
         if base < pre.dist then base = pre.dist end
         if base < 1 then base = 1 end
-        if base > 5000 then base = 5000 end
+        if base > 20000 then base = 20000 end
         out[pickIdx] = pre.dir * base
         replaced, how = true, "вектор #" .. tostring(pickIdx)
     end
@@ -1559,7 +1574,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v9.0",
+    LoadingSubtitle = "ESP + Client Aim v9.1",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1743,7 +1758,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v9.0 остановлен")
+    print("[BS HUB] v9.1 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1766,7 +1781,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v9.0 запущен | хуков=" .. #netConns
+print("[BS HUB] v9.1 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
