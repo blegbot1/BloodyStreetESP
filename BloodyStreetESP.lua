@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.1
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.2
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -111,6 +111,10 @@ G.BS.ShowHP      = G.BS.ShowHP      ~= false
 G.BS.Boxes       = G.BS.Boxes       ~= false
 G.BS.BoxThick    = G.BS.BoxThick    or 2
 G.BS.MaxDist     = G.BS.MaxDist     or 0
+-- Прозрачность заливки подсветки тела: 0 = тело залито цветом роли,
+-- 1 = заливки нет (остаётся только контур). Контур красится всегда.
+-- Меняется на ходу: getgenv().BS.FillTransparency = 0.4
+G.BS.FillTransparency = tonumber(G.BS.FillTransparency) or 0.7
 
 -- ---------- РОЛИ ----------
 G.BS.RoleSticks  = G.BS.RoleSticks  or 1
@@ -349,7 +353,12 @@ local function makeHighlight()
     if not ok or not h then return nil end
     h.Adornee      = nil
     h.FillColor    = Color3.new(1, 1, 1)
-    h.FillTransparency = 1
+    -- ВАЖНО: раньше заливка была ПОЛНОСТЬЮ прозрачной (1), а цвет роли
+    -- писался только в FillColor, то есть в невидимую заливку. При
+    -- этом OutlineColor — то, что реально видно — вообще не менялся
+    -- и оставался БЕЛЫМ. Из-за этого сам игрок по роли не красился:
+    -- красились только коробка (у неё свой color) и текст.
+    h.FillTransparency = tonumber(G.BS.FillTransparency) or 0.7
     h.OutlineColor = Color3.new(1, 1, 1)
     h.OutlineTransparency = 0
     h.DepthMode    = Enum.HighlightDepthMode.AlwaysOnTop
@@ -1510,7 +1519,10 @@ local conn = RunService.RenderStepped:Connect(function()
                 if d > G.BS.MaxDist then vis = false end
             end
 
-            e.hl.FillColor = color
+            e.hl.FillColor        = color
+            -- Красим И контур: именно он виден (заливка полупрозрачная).
+            e.hl.OutlineColor     = color
+            e.hl.FillTransparency = tonumber(G.BS.FillTransparency) or 0.7
             e.hl.Enabled   = vis
             e.gui.Enabled  = vis
 
@@ -1574,7 +1586,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v9.1",
+    LoadingSubtitle = "ESP + Client Aim v9.2",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1758,7 +1770,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v9.1 остановлен")
+    print("[BS HUB] v9.2 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1781,7 +1793,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v9.1 запущен | хуков=" .. #netConns
+print("[BS HUB] v9.2 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
