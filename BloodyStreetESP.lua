@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.8
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.9
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -324,7 +324,11 @@ local function makeBox()
     if not DRAW_OK then return nil end
     local b = {}
     b.lines = {}
-    for i = 1, 4 do
+    -- 12 РЁБЕР: 4 нижних + 4 верхних + 4 вертикальных.
+    -- Раньше тут создавалось только 4 линии, а drawBox рисовал ими 12
+    -- рёбер в цикле — линии затирали друг друга, и оставались лишь
+    -- 4 вертикальные стойки. Отсюда «нет полосок сверху».
+    for i = 1, 12 do
         local ok, ln = pcall(function() return Drawing.new("Line") end)
         if not ok or not ln then return nil end
         ln.Visible   = false
@@ -339,20 +343,13 @@ local function drawBox(b, root, cam)
     if not b or not b.lines then return end
     local pos, onScreen = workspace.CurrentCamera:WorldToViewportPoint(root.Position)
     if not onScreen or pos.Z <= 0 then
-        for i = 1, 4 do b.lines[i].Visible = false end
+        for i = 1, #b.lines do b.lines[i].Visible = false end
         return
     end
     local function project(x, y, z)
         local v = workspace.CurrentCamera:WorldToViewportPoint(
             root.Position + Vector3.new(x, y, z))
         return v
-    end
-    local function seg(i, a, b2)
-        local ln = b.lines[i]
-        if not ln then return end
-        ln.From = a
-        ln.To   = b2
-        ln.Visible = true
     end
     local s = 1.5
     local h = 2.75
@@ -370,7 +367,7 @@ local function drawBox(b, root, cam)
     for i = 1, 12 do
         local a = corners[idx[i][1]]
         local b2 = corners[idx[i][2]]
-        local ln = b.lines[((i - 1) % 4) + 1]
+        local ln = b.lines[i]
         if ln then
             ln.From = a
             ln.To   = b2
@@ -383,17 +380,18 @@ end
 
 local function hideBox(b)
     if not b or not b.lines then return end
-    for i = 1, 4 do
+    for i = 1, #b.lines do
         if b.lines[i] then b.lines[i].Visible = false end
     end
 end
 
 -- Полное уничтожение коробки. hideBox только прячет, а объекты Drawing
--- остаются жить -> при каждом респавне утекали 4 линии. Remove() их
+-- остаются жить -> при каждом респавне утекали линии. Remove() их
 -- освобождает.
 local function destroyBox(b)
     if not b or not b.lines then return end
-    for i = 1, 4 do
+    local n = #b.lines
+    for i = 1, n do
         if b.lines[i] then pcall(function() b.lines[i]:Remove() end) end
         b.lines[i] = nil
     end
@@ -1376,7 +1374,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v8.8",
+    LoadingSubtitle = "ESP + Client Aim v8.9",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1560,7 +1558,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v8.8 остановлен")
+    print("[BS HUB] v8.9 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1583,7 +1581,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v8.8 запущен | хуков=" .. #netConns
+print("[BS HUB] v8.9 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
