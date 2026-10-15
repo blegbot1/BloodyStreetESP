@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.6
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.7
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -1774,6 +1774,19 @@ local function clearAllHitboxes()
     hitboxBy = {}
 end
 
+-- УМНЫЙ ХИТБОКС: ставим его ТОЛЬКО ВРАГАМ. Ты вампир — хитбокс
+-- появляется только на людях, ты хантер — только на вампирах, своим
+-- и союзникам хитбокса нет. Пока твоя роль неизвестна (лобби), ставим
+-- всем остальным.
+local function hitboxIsEnemy(plr)
+    local me = string.lower(tostring(G.BS.MyRole or "?"))
+    if me == "?" or me == "none" or me == "" then return true end
+    local e = by[plr]
+    local r = (e and e.role) or roleFromAttr(plr)
+    if not r then return true end
+    return r ~= me
+end
+
 local function applyHitbox()
     local s = tonumber(G.BS.HitboxScale) or 2
     if s <= 1.001 then s = 1.001 end
@@ -1787,7 +1800,7 @@ local function applyHitbox()
                 if hitboxBy[plr] then clearHitbox(plr) end
             else
                 local box = hitboxBy[plr]
-                if not G.BS.Hitbox then
+                if not G.BS.Hitbox or not hitboxIsEnemy(plr) then
                     if box then clearHitbox(plr) end
                 elseif not box or not box.Parent then
                     local okI, np = pcall(function() return Instance.new("Part") end)
@@ -2019,7 +2032,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v9.6",
+    LoadingSubtitle = "ESP + Client Aim v9.7",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2161,12 +2174,12 @@ AI.CreateSlider({ Name = "Опережение цели", Flag = "BS_AimLead",
     Suffix = " x0.01 сек",
     Callback = function(v) G.BS.AimLead = v / 100 end })
 AI.CreateToggle({
-    Name = "Расширитель хитбокса (только голова)", Flag = "BS_Hitbox",
+    Name = "Умный хитбокс (только враги, голова)", Flag = "BS_Hitbox",
     CurrentValue = G.BS.Hitbox,
     Callback = function(v)
         G.BS.Hitbox = v
         pcall(applyHitbox)
-        notify(v and "Невидимый хитбокс на голове" or "Хитбокс выключен", 3)
+        notify(v and "Невидимый хитбокс на голове только у врагов" or "Хитбокс выключен", 3)
     end,
 })
 AI.CreateSlider({ Name = "Масштаб хитбокса", Flag = "BS_HitboxScale",
@@ -2288,7 +2301,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v9.6 остановлен")
+    print("[BS HUB] v9.7 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2311,7 +2324,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v9.6 запущен | хуков=" .. #netConns
+print("[BS HUB] v9.7 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
