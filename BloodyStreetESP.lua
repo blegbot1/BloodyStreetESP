@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.1
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.2
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -82,8 +82,7 @@ local AIM_TARGETS  = { "Противники по роли", "Только ва�
 local AIM_PRIORITY = { "Ближе к прицелу", "Ближе по расстоянию", "Больше HP" }
 local AIM_PART     = { "Head", "UpperTorso", "HumanoidRootPart", "Torso" }
 local RGB_TARGETS  = {
-    "Прицел: свободный",
-    "Прицел: захват цели",
+    "Метка: захват цели",
     "ESP вампиров",
     "ESP хантеров",
     "ESP игроков",
@@ -154,12 +153,10 @@ G.BS.HealthLock  = G.BS.HealthLock  or false
 G.BS.HealthMax   = G.BS.HealthMax   or 5000
 G.BS.ScanOnStart = G.BS.ScanOnStart or false
 
-G.BS.AimFovColor   = safeColor(G.BS.AimFovColor,   Color3.fromRGB(170, 0, 255))
 G.BS.AimLockColor  = safeColor(G.BS.AimLockColor,  Color3.fromRGB(255, 50, 50))
 G.BS.AimMarkColor  = safeColor(G.BS.AimMarkColor,  Color3.fromRGB(255, 200, 0))
-G.BS.AimFovThick   = G.BS.AimFovThick or 2
+-- Радиус захвата в пикселях. 600 = без ограничения.
 G.BS.AimFOV        = G.BS.AimFOV or 160
-G.BS.AimShowFOV    = G.BS.AimShowFOV ~= false
 
 if G.BS_Stop then pcall(function() G.BS_Stop() end) end
 
@@ -541,22 +538,6 @@ local function hideOverlay()
     if NameLabel then NameLabel.Visible = false end
 end
 
-local function drawFOV(cam, color, thick, alpha)
-    ensureOverlay()
-    hideFOV()
-    local vp = cam.ViewportSize
-    local c  = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
-    local r  = math.max(5, G.BS.AimFOV)
-    for i = 1, FOV_N do
-        local a1 = (i - 1) / FOV_N * math.pi * 2
-        local a2 = i / FOV_N * math.pi * 2
-        placeSeg(FOVSegs[i],
-            Vector2.new(c.X + math.cos(a1) * r, c.Y + math.sin(a1) * r),
-            Vector2.new(c.X + math.cos(a2) * r, c.Y + math.sin(a2) * r),
-            thick, color, alpha)
-    end
-end
-
 local function drawTarget(plr)
     ensureOverlay()
     if not plr then
@@ -676,12 +657,29 @@ local function pickTarget(cam)
         locked = nil
     end
     local best, bestScore = nil, nil
+    -- РАДИУС ЗАХВАТА. Раньше его не было вообще: слайдер «Радиус захвата»
+    -- не влиял ни на что, цель выбиралась из всех, кто просто перед камерой,
+    -- то есть радиус фактически был бесконечным (жалобы «через всю карту»).
+    -- Теперь 600 px = без ограничения, любое меньшее значение = реальный круг.
+    local vp  = cam.ViewportSize
+    local ccx, ccy = vp.X * 0.5, vp.Y * 0.5
+    local fov = tonumber(G.BS.AimFOV) or 160
+    if fov < 0 then fov = 0 end
+    local unlimited = fov >= 600
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP and by[plr] and isEnemy(plr) then
             local p = targetPart(plr, cam)
             if p then
                 local sp = cam:WorldToViewportPoint(p.Position)
                 if sp.Z > 0 then
+                    -- отсечка по радиусу, иначе берём кого угодно с карты
+                    if not unlimited then
+                        local dx, dy = sp.X - ccx, sp.Y - ccy
+                        if (dx * dx + dy * dy) > (fov * fov) then
+                            p = nil
+                        end
+                    end
+                    if p then
                     local dist = (p.Position - cam.CFrame.Position).Magnitude
                     local score
                     if G.BS.AimPriority == "Ближе по расстоянию" then
@@ -694,6 +692,7 @@ local function pickTarget(cam)
                     end
                     if not bestScore or score < bestScore then
                         bestScore, best = score, plr
+                    end
                     end
                 end
             end
@@ -1258,16 +1257,9 @@ local conn = RunService.RenderStepped:Connect(function()
         if NameLabel and locked then
             NameLabel.Text = locked.DisplayName
         end
-        drawFOV(cam,
-            (locked and G.BS.AimLockColor) or G.BS.AimFovColor,
-            G.BS.AimFovThick)
     else
         locked = nil
-        if G.BS.AimShowFOV then
-            drawFOV(cam, G.BS.AimFovColor, G.BS.AimFovThick, 0.55)
-        else
-            hideOverlay()
-        end
+        drawTarget(nil)
     end
 end)
 
@@ -1277,7 +1269,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v8.1",
+    LoadingSubtitle = "ESP + Client Aim v8.2",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1344,12 +1336,11 @@ end
 local function applyMainColor()
     local c = rgbColor()
     local t = G.BS.RGBTarget
-    if t == RGB_TARGETS[1] then G.BS.AimFovColor  = c
-    elseif t == RGB_TARGETS[2] then G.BS.AimLockColor = c
-    elseif t == RGB_TARGETS[3] then G.BS.VampColor    = c
-    elseif t == RGB_TARGETS[4] then G.BS.HunterColor  = c
-    elseif t == RGB_TARGETS[5] then G.BS.PlayerColor  = c
-    elseif t == RGB_TARGETS[6] then G.BS.AimMarkColor = c
+    if t == RGB_TARGETS[1] then G.BS.AimLockColor = c
+    elseif t == RGB_TARGETS[2] then G.BS.VampColor    = c
+    elseif t == RGB_TARGETS[3] then G.BS.HunterColor  = c
+    elseif t == RGB_TARGETS[4] then G.BS.PlayerColor  = c
+    elseif t == RGB_TARGETS[5] then G.BS.AimMarkColor = c
     end
 end
 
@@ -1529,9 +1520,10 @@ AI.CreateDropdown({
     Callback = function(v) G.BS.AimPriority = v; locked = nil end,
 })
 AI.CreateSlider({
-    Name = "Радиус захвата (FOV)", Flag = "BS_AimFOV",
+    Name = "Радиус захвата", Flag = "BS_AimFOV",
     Range = {10, 600}, Increment = 5, CurrentValue = G.BS.AimFOV,
-    Suffix = " px", Callback = function(v) G.BS.AimFOV = v end,
+    Suffix = " px (600 = без ограничения)",
+    Callback = function(v) G.BS.AimFOV = v end,
 })
 
 AI.CreateSection("Диагностика")
@@ -1543,12 +1535,6 @@ AI.CreateToggle({
         if v then pcall(installBulletHook) end
     end,
 })
-AI.CreateSlider({ Name = "Толщина кружка", Flag = "BS_AimFovThick",
-    Range = {1, 6}, Increment = 1, CurrentValue = G.BS.AimFovThick,
-    Suffix = " px", Callback = function(v) G.BS.AimFovThick = v end })
-AI.CreateColorPicker({ Name = "Цвет: свободный", Flag = "BS_AimFovColor",
-    Color = G.BS.AimFovColor,
-    Callback = function(c) G.BS.AimFovColor = c end })
 AI.CreateColorPicker({ Name = "Цвет: захват цели", Flag = "BS_AimLockColor",
     Color = G.BS.AimLockColor,
     Callback = function(c) G.BS.AimLockColor = c end })
@@ -1576,7 +1562,7 @@ G.BS_Stop = function()
     G.BS.MyRole = "?"
     G.BS.BulletSwap = false
     G.BS_Stop = nil
-    print("[BS HUB] v8.1 остановлен")
+    print("[BS HUB] v8.2 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1597,7 +1583,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v8.1 запущен | хуков=" .. #netConns
+print("[BS HUB] v8.2 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
