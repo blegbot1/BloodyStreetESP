@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.3
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.4
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -181,6 +181,15 @@ G.BS.AimLead       = tonumber(G.BS.AimLead) or 0
 -- Если пуля всё ещё уходит выше/ниже цели — переключи на ходу:
 --   getgenv().BS.AimOrigin = "head"
 G.BS.AimOrigin     = G.BS.AimOrigin or "camera"
+-- ТИХИЙ ВЫСТРЕЛ: гасим вспышку, трассер и звук оружия — выстрел
+-- перестаёт «светиться» у тебя. Вкладка AIM.
+-- ВАЖНО: скрыть выстрел от ДРУГИХ игроков так нельзя — их клиент
+-- рисует эффект сам, по команде сервера (Remotes.BurstFX). Для
+-- «выстрела без выстрела» нужен ОТДЕЛЬНЫЙ ремоут урона — ищем его
+-- через «Лог ремоутов».
+G.BS.SilentShot = G.BS.SilentShot or false
+-- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
+G.BS.RemoteLog  = G.BS.RemoteLog or false
 
 if G.BS_Stop then pcall(function() G.BS_Stop() end) end
 
@@ -962,6 +971,25 @@ local function scanAll()
     table.sort(names)
     for i = 1, #names do print(string.format("  %2d. %s", i, names[i])) end
 
+    -- ВСЕ ремоуты игры, не только папка Remotes: урон может уходить
+    -- отдельным ремоутом с другим путём.
+    hr("ВСЕ РЕМОУТЫ В ИГРЕ (RemoteEvent / RemoteFunction)")
+    local rc, shown = 0, 0
+    for _, d in ipairs(game:GetDescendants()) do
+        local cls = d.ClassName
+        if cls == "RemoteEvent" or cls == "RemoteFunction"
+           or cls == "UnreliableRemoteEvent" then
+            rc = rc + 1
+            if shown < 150 then
+                shown = shown + 1
+                local path = d:GetFullName()
+                if #path > 110 then path = "..." .. string.sub(path, -107) end
+                print("  " .. path)
+            end
+        end
+    end
+    print("  ВСЕГО: " .. rc)
+
     hr("ВЫРАН ЗАКЛЮЧЕНЫ ХУКИ")
     print("  __namecall     : " .. tostring(NC.installed)
         .. " (orig=" .. tostring(NC.orig ~= nil) .. ")")
@@ -1206,6 +1234,10 @@ local function refreshHookTargets()
     if Remotes then
         NC.fw = Remotes:FindFirstChild("FireWeapon")
         NC.ue = Remotes:FindFirstChild("UseEnergy")
+        -- BurstFX — ремоут вспышки выстрела. Клиент его только слушает
+        -- (OnClientEvent), но если игра шлёт его ещё и ОТ нас, блок
+        -- спрячет вспышку от других игроков.
+        NC.burst = Remotes:FindFirstChild("BurstFX")
     end
     local ch = LP and LP.Character
     NC.myHum = (ch and ch:FindFirstChildOfClass("Humanoid")) or nil
@@ -1307,9 +1339,62 @@ local function ncFireWeapon(...)
     return out, n
 end
 
+-- ============================================================
+--  ЛОГ РЕМОУТОВ (клиент -> сервер)
+-- ============================================================
+-- Печатает по 2 первых вызова каждого ремоута вместе с аргументами.
+-- Зачем: если у игры есть ОТДЕЛЬНЫЙ ремоут урона (как HitRemote в
+-- EliteHub: HitRemote:FireServer(head, 1)), то «тихий выстрел» можно
+-- сделать по-настоящему — урон без выстрела, и тогда его не увидит
+-- вообще никто.
+local logSeen = {}
+local function logRemoteCall(self, method, ...)
+    local name = "?"
+    if typeof(self) == "Instance" then
+        name = tostring(self.Name)
+        local p = self.Parent
+        if p then name = name .. "@" .. tostring(p.Name) end
+    end
+    local key = name .. "." .. tostring(method)
+    local c = logSeen[key] or 0
+    if c >= 2 then return end
+    logSeen[key] = c + 1
+
+    local n = select("#", ...)
+    local show = n
+    if show > 8 then show = 8 end
+    local list = {}
+    for i = 1, show do
+        local a = select(i, ...)
+        local t = typeof(a)
+        local v
+        if t == "Vector3" then
+            v = string.format("%.1f, %.1f, %.1f", a.X, a.Y, a.Z)
+        elseif t == "number" then
+            v = string.format("%.2f", a)
+        elseif t == "string" then
+            v = a
+        elseif t == "boolean" then
+            v = tostring(a)
+        elseif t == "Instance" then
+            v = a.ClassName .. " " .. a.Name
+        elseif t == "Player" then
+            v = "Player " .. a.Name
+        end
+        list[i] = i .. ":" .. t .. (v and (" (" .. v .. ")") or "")
+    end
+    print("[BS REMOTE] " .. name .. ":" .. tostring(method)
+        .. "  n=" .. n .. "  " .. table.concat(list, " | "))
+end
+
 -- Сам хук. Хот-путь максимально дешёвый: без ":"-вызовов и без pcall.
 local function ncWrapper(self, ...)
     local method = getnamecallmethod()
+    -- ЛОГ РЕМОУТОВ: только когда включён (проверка — одно обращение).
+    if G.BS.RemoteLog and type(method) == "string"
+       and (method == "FireServer" or method == "InvokeServer") then
+        pcall(logRemoteCall, self, method, ...)
+    end
     if type(method) == "string" then
         -- СТАМИНА: не даём игре списывать энергию
         if method == "FireServer" and self == NC.ue then
@@ -1321,6 +1406,14 @@ local function ncWrapper(self, ...)
                 if out then
                     return NC.orig(self, table.unpack(out, 1, n))
                 end
+            end
+        -- ТИХИЙ ВЫСТРЕЛ: вспышку выстрела на сервер не отправляем.
+        -- Если игра вообще не шлёт этот ремоут от клиента — ветка
+        -- просто никогда не сработает, вреда нет.
+        elseif method == "FireServer" and self == NC.burst then
+            if G.BS.SilentShot then
+                NC.burstBlocked = (NC.burstBlocked or 0) + 1
+                return
             end
         -- ЗАЩИТА ОТ УРОНА
         elseif method == "TakeDamage" and self == NC.myHum then
@@ -1427,6 +1520,48 @@ end
 local installBulletHook = installNamecall
 
 -- ============================================================
+--  ТИХИЙ ВЫСТРЕЛ (гасим вспышку / трассер / звук оружия)
+-- ============================================================
+-- ПОЧЕМУ ТОЛЬКО ТАК. Игра создаёт вспышку и играет звук в момент
+-- нажатия — РАНЬШЕ, чем уходит ремоут FireWeapon. Хук стоит уже на
+-- ремоуте, то есть к этому моменту визуал создан: «отменить» его
+-- подменой аргументов нельзя. Зато все эти объекты лежат ВНУТРИ
+-- оружия (Tool) и их можно погасить:
+--   ParticleEmitter / Fire / Smoke / Sparkles -> Enabled = false
+--   Beam / Trail                              -> Enabled = false
+--   PointLight / SpotLight                    -> Enabled = false
+--   Sound                                     -> Volume = 0
+-- Проверяем каждые 0.4 с: если игра снова включит эффект — погасим.
+--
+-- ЧТО ЭТО НЕ ДЕЛАЕТ. Спрятать выстрел от ДРУГИХ игроков отсюда
+-- невозможно: их клиент рисует эффект сам по команде сервера
+-- (Remotes.BurstFX). «Выстрел без выстрела» (как в EliteHub, где
+-- урон уходит отдельным HitRemote) требует отдельного ремоута
+-- урона — его ищем «Логом ремоутов».
+local mutedTool, mutedAt = nil, 0
+
+local function muteShotFX()
+    if not G.BS.SilentShot then return end
+    local ch = LP and LP.Character
+    local tool = ch and ch:FindFirstChildOfClass("Tool")
+    if not tool then return end
+    if tool == mutedTool and (os.clock() - mutedAt) < 0.4 then return end
+    mutedTool, mutedAt = tool, os.clock()
+    local list = tool:GetDescendants()
+    for i = 1, #list do
+        local d = list[i]
+        pcall(function()
+            if d:IsA("ParticleEmitter") then d.Enabled = false
+            elseif d:IsA("Fire") or d:IsA("Smoke") or d:IsA("Sparkles") then d.Enabled = false
+            elseif d:IsA("Beam") or d:IsA("Trail") then d.Enabled = false
+            elseif d:IsA("PointLight") or d:IsA("SpotLight") then d.Enabled = false
+            elseif d:IsA("Sound") then d.Volume = 0
+            end
+        end)
+    end
+end
+
+-- ============================================================
 --  СКАН ИГРОКОВ
 -- ============================================================
 local function scan()
@@ -1504,6 +1639,9 @@ local conn = RunService.RenderStepped:Connect(function()
     elseif bulletPreShot then
         bulletPreShot = nil
     end
+
+    -- тихий выстрел: гасим вспышку/трассер/звук оружия
+    if G.BS.SilentShot then pcall(muteShotFX) end
 
     local cam = workspace.CurrentCamera
     if not cam then
@@ -1609,7 +1747,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v9.3",
+    LoadingSubtitle = "ESP + Client Aim v9.4",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1727,6 +1865,21 @@ AI.CreateToggle({
     end,
 })
 
+AI.CreateToggle({
+    Name = "Тихий выстрел (гасим вспышку/звук)", Flag = "BS_SilentShot",
+    CurrentValue = G.BS.SilentShot,
+    Callback = function(v)
+        G.BS.SilentShot = v
+        mutedTool = nil
+        if v then
+            pcall(muteShotFX)
+            notify("Тихий выстрел: гасим вспышку/звук + блок BurstFX. Если урон пропадёт - выключи", 7)
+        else
+            notify("Тихий выстрел выключен", 2)
+        end
+    end,
+})
+
 -- Секция «Цель» («Кого целить», «Приоритет», «Радиус захвата») и
 -- пикеры «Цвет: захват цели» / «Цвет метки» удалены по просьбе.
 -- Логика выбора цели осталась и работает на дефолтах:
@@ -1740,6 +1893,18 @@ AI.CreateToggle({
     Callback = function(v)
         G.BS.BulletDebug = v
         if v then pcall(installBulletHook) end
+    end,
+})
+AI.CreateToggle({
+    Name = "Лог ремоутов (что уходит на сервер)", Flag = "BS_RemoteLog",
+    CurrentValue = G.BS.RemoteLog,
+    Callback = function(v)
+        G.BS.RemoteLog = v
+        logSeen = {}
+        if v then
+            pcall(installBulletHook)
+            notify("Лог ремоутов включён: постреляй, смотри [BS REMOTE]", 5)
+        end
     end,
 })
 
@@ -1793,7 +1958,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v9.3 остановлен")
+    print("[BS HUB] v9.4 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1816,7 +1981,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v9.3 запущен | хуков=" .. #netConns
+print("[BS HUB] v9.4 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
