@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.4
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.5
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -170,6 +170,10 @@ local hookedHumans = setmetatable({}, { __mode = "k" })
 local energyHooked  = setmetatable({}, { __mode = "k" })
 local fwHooked      = setmetatable({}, { __mode = "k" })
 local hookErr       = setmetatable({}, { __mode = "k" })
+-- Исходный game.__namecall до установки нашего хука. Нужен, чтобы
+-- G.BS_Stop() вернул всё как было: глобальный хук иначе остался бы
+-- висеть и при повторном запуске скрипта хуки стыковались бы.
+local namecallOld   = nil
 
 -- СОСТОЯНИЕ
 local by           = {}   -- [Player] = {char, role, conf, votes, lastStable, hl, gui, lbl, box}
@@ -1025,24 +1029,29 @@ local function installBulletHook()
     if fwHooked[fw] then return end
 
     local ok, err = pcall(function()
-        -- ХУК НА САМОМ РЕМОУТЕ, а НЕ глобальный __namecall.
+        local lastNamecallOld = nil
+        -- ХУК ЧЕРЕЗ ГЛОБАЛЬНЫЙ __namecall.
         --
-        -- Раньше стоял hookmetamethod(game, "__namecall", ...) — так делают
-        -- в EliteHub, но в Roblox это ЛОМАЕТ САМИ ИГРОВЫЕ СКРИПТЫ:
-        -- перехватывается ВСЯ namecall-диспетчеризация, и падают
-        -- PlayerModule (ControlModule/CameraModule), InputLock,
-        -- HotbarController, GarlicController, SoundPingController.
-        -- В логе это видно: сыпались ошибки из чужих PlayerScripts,
-        -- а не только из нашего кода.
+        -- Почему не hookmetamethod(fw, "FireServer", ...):
+        -- в этом исполнителе hookmetamethod принимает ТОЛЬКО имена
+        -- метаметодов (__namecall, __index, ...), а обычные методы
+        -- вроде FireServer — нет. Проверено, в консоль приходит:
+        --   "invalid argument #2 to 'hookmetamethod'
+        --    (Metamethod doesn't exist)"
         --
-        -- Хукаем ТОЛЬКО FireWeapon.FireServer — это не трогает ничего
-        -- остального в игре.
-        -- ВАЖНО: `old` — ссылка на ИСХОДНЫЙ FireServer. Без `local old =`
-        -- переменная old = nil, и все `return old(self, ...)` падали с
-        -- "attempt to call a nil value". Раньше из-за глобального
-        -- __namecall это ломало ещё и PlayerScripts Roblox.
-        local old = hookmetamethod(fw, "FireServer", bsClosure(function(self, ...)
-            if not G.BS.BulletSwap then
+        -- Раньше глобальный __namecall ЛОМАЛ игру (падали
+        -- GarlicController, ControlModule, CameraModule, InputLock,
+        -- HotbarController) — но причина была не в самом __namecall,
+        -- а в том, что `old` НИКОГДА не присваивался:
+        --   hookmetamethod(game, "__namecall", function(self, ...)
+        --       return old(self, ...)   -- old == nil
+        -- Любой вызов через ":" в игре уходил в этот хук и падал.
+        -- С `local old =` в restored-виде всё работает штатно.
+        local old = hookmetamethod(game, "__namecall", bsClosure(function(self, ...)
+            local okM, method = pcall(getnamecallmethod)
+            -- всё, кроме нашего FireWeapon, идёт в оригинал без изменений
+            if not (okM and method == "FireServer" and self == fw
+                    and G.BS.BulletSwap) then
                 return old(self, ...)
             end
             local pre = bulletPreShot
@@ -1108,11 +1117,15 @@ local function installBulletHook()
         if not old then
             error("hookmetamethod вернул nil (нет исходной функции)")
         end
+        lastNamecallOld = old
+        -- Метод не хукается, а __namecall хукается — это ожидаемо,
+        -- поэтому fwHooked ставим только если реально есть old.
     end)
 
     if ok then
         fwHooked[fw] = true
         hookErr[fw] = nil
+        namecallOld = lastNamecallOld
         if G.BS.BulletDebug then
             print("[BS BULLET] хук FireWeapon.FireServer установлен")
         end
@@ -1298,7 +1311,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v8.4",
+    LoadingSubtitle = "ESP + Client Aim v8.5",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1416,27 +1429,11 @@ AI.CreateToggle({
     end,
 })
 
-AI.CreateSection("Цель")
-AI.CreateDropdown({
-    Name = "Кого целить", Flag = "BS_AimTargets",
-    Options = AIM_TARGETS, CurrentOption = G.BS.AimTargets,
-    Callback = function(v)
-        G.BS.AimTargets = v
-        locked = nil
-        notify("Цели: " .. v, 2)
-    end,
-})
-AI.CreateDropdown({
-    Name = "Приоритет", Flag = "BS_AimPriority",
-    Options = AIM_PRIORITY, CurrentOption = G.BS.AimPriority,
-    Callback = function(v) G.BS.AimPriority = v; locked = nil end,
-})
-AI.CreateSlider({
-    Name = "Радиус захвата", Flag = "BS_AimFOV",
-    Range = {10, 600}, Increment = 5, CurrentValue = G.BS.AimFOV,
-    Suffix = " px (600 = без ограничения)",
-    Callback = function(v) G.BS.AimFOV = v end,
-})
+-- Секция «Цель» («Кого целить», «Приоритет», «Радиус захвата») и
+-- пикеры «Цвет: захват цели» / «Цвет метки» удалены по просьбе.
+-- Логика выбора цели осталась и работает на дефолтах:
+--   AIM_TARGETS  = противники по роли, AIM_PRIORITY = ближе,
+--   радиус 160 px, прострел включён.
 
 AI.CreateSection("Диагностика")
 AI.CreateToggle({
@@ -1447,12 +1444,6 @@ AI.CreateToggle({
         if v then pcall(installBulletHook) end
     end,
 })
-AI.CreateColorPicker({ Name = "Цвет: захват цели", Flag = "BS_AimLockColor",
-    Color = G.BS.AimLockColor,
-    Callback = function(c) G.BS.AimLockColor = c end })
-AI.CreateColorPicker({ Name = "Цвет метки", Flag = "BS_AimMarkColor",
-    Color = G.BS.AimMarkColor,
-    Callback = function(c) G.BS.AimMarkColor = c end })
 
 -- ============================================================
 --  СТОП
@@ -1473,8 +1464,16 @@ G.BS_Stop = function()
     Overlay = nil
     G.BS.MyRole = "?"
     G.BS.BulletSwap = false
+    -- Снимаем глобальный __namecall, иначе он останется висеть
+    -- и при повторном запуске скрипта хуки стыкуются.
+    if namecallOld then
+        pcall(function()
+            hookmetamethod(game, "__namecall", namecallOld)
+        end)
+        namecallOld = nil
+    end
     G.BS_Stop = nil
-    print("[BS HUB] v8.4 остановлен")
+    print("[BS HUB] v8.5 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1495,7 +1494,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v8.4 запущен | хуков=" .. #netConns
+print("[BS HUB] v8.5 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
