@@ -1,35 +1,35 @@
 -- ============================================================
---  BLOODY STREET - ESP + CLIENT AIM  v8.0
---  GUI na Rayfield. Vkladki: ESP / AIM.
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.0
+--  GUI на Rayfield. Вкладки: ESP / AIM.
 --
---  ESP (vkladka ESP): 3D-korobki, niki, distanciya, HP, cvet po
---  rolyam (vampir / hunter / neizvestnyy), glavnyy RGB-palet,
---  skaner igry, vyzhivanie (stamina + zashchita ot urona NPC).
+--  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
+--  ролям (вампир / хантер / неизвестный), главный RGB-палитра,
+--  сканер игры, выживание (стамина + защита от урона NPC).
 --
---  KLIENT AYM (vkladka AIM): PODMENA PATRONA. Remotes.FireWeapon
---  perехvatyvaetsya cherez globalnyy __namecall, i argumenty
---  vystrela podmenyayutsya na vektor k celi. Kamera NE krutitsya —
---  ty strelayeшь sam, patron uhodit v tsel.
---  PROSTREL: po umolchaniyu VKL — steny ne meshayut.
---  Aimbota s dovodkoy kamery NET (udalen po prosbe).
+--  КЛИЕНТ АИМ (вкладка AIM): ПОДМЕНА ПАТРОНА. Remotes.FireWeapon
+--  перехватывается через глобальный __namecall, и аргументы
+--  выстрела подменяются на вектор к цели. Камера НЕ крутится —
+--  стреляешь ты сам, патрон уходит в цель.
+--  ПРОСТРЕЛ: по умолчанию ВКЛ — стены не мешают.
+--  Аимбота с доводкой камеры НЕТ (удалён по просьбе).
 --
---  KAK CHITAETSYA ROL (server atribut -> 100% s pervogo kadra):
---  U KAZHDOGO igroka est atribut player.Role (None / Vampire /
---  Hunter). Server stavit ego KAZHDOMU, atributy repliciruyutsya
---  VSEM klientam — v nachale raunda tam srazu tochnaya rol.
+--  КАК ЧИТАЕТСЯ РОЛЬ (сервер атрибут -> 100% с первого кадра):
+--  У КАЖДОГО игрока есть атрибут player.Role (None / Vampire /
+--  Hunter). Сервер ставит его КАЖДОМУ, атрибуты реплицируются
+--  ВСЕМ клиентам — в начале раунда там сразу точная роль.
 --
---  Rezervnye istochniki (esli atribut nedostupen):
---    BurstFX #4 = Model(strelka) ......... hunter      (uverennost 5)
---    Announce + DetectionFeed redoutline . raskrytie   (uverennost 5)
---    ForensicsFeed testresult ........... raskrytie   (uverennost 5)
---    RoundState schetchiki + "ya odin" ... vyvod       (uverennost 4)
---    SoundPing "gun" ryadom ............. hunter      (uverennost 3)
+--  Резервные источники (если атрибут недоступен):
+--    BurstFX #4 = Model(стрелка) ......... хантер       (уверенность 5)
+--    Announce + DetectionFeed redoutline . раскрытие   (уверенность 5)
+--    ForensicsFeed testresult ........... раскрытие   (уверенность 5)
+--    RoundState счётчики + "я один" ..... вывод        (уверенность 4)
+--    SoundPing "gun" рядом .............. хантер       (уверенность 3)
 --
---  STAMINA: igra trati energiyu CHEREZ REМОUT Remotes.UseEnergy,
---  a ne cherez NumberValue — poetomu hoakim perеhvat FireServer.
+--  СТАМИНА: игра тратит энергию ЧЕРЕЗ РЕМОУТ Remotes.UseEnergy,
+--  а не через NumberValue — поэтому хукаем FireServer.
 --
---  ZAPUSK: vstav skript celikom v Jy (ili v RunBox).
---  Tolko alt. Vsyo klientskoe, server ob etom ne znaet.
+--  ЗАПУСК: вставь скрипт целиком в Jy (или в RunBox).
+--  Только аккаунт-альт. Всё клиентское, сервер об этом не знает.
 -- ============================================================
 
 local G = getgenv()
@@ -51,13 +51,13 @@ if not Rayfield then
         ))()
     end)
     if not okR or not Rayfield then
-        error("[BS ESP] ne udalos zagruzit Rayfield: " .. tostring(errR))
+        error("[BS ESP] не удалось загрузить Rayfield: " .. tostring(errR))
     end
 end
 
--- STARYY KONFIG mozhet soderzhat znacheniya, kotoryh bolshe net v
--- spiskah. Rayfield padaet na CreateDropdown s nesushchestvuyushchim
--- CurrentOption — vsyo chego net v spiske tiho zamenyaem.
+-- СТАРЫЙ КОНФИГ может содержать значения, которых больше нет в
+-- списках. Rayfield падает на CreateDropdown с несуществующим
+-- CurrentOption — всё, чего нет в списке, тихо заменяем.
 local function pickOpt(value, opts, fallback)
     if type(value) ~= "string" then return fallback end
     for _, o in ipairs(opts) do
@@ -66,32 +66,32 @@ local function pickOpt(value, opts, fallback)
     return fallback
 end
 
--- TYP-BEZOPASNYY TSVET. Iz starogo konfiga mozhet priyti stroka
--- (naprimer posle pravki ruki), a FillColor = "stroka" padaet KAZHDIY
--- KADR. Zdesh prinimaem tolko Color3.
+-- ТИП-БЕЗОПАСНЫЙ ЦВЕТ. Из старого конфига может прийти строка
+-- (например после правки руками), а FillColor = "строка" падает
+-- КАЖДЫЙ КАДР. Здесь принимаем только Color3.
 local function safeColor(v, d)
     if typeof(v) == "Color3" then return v end
     return d
 end
 
 -- ============================================================
---  SPISKI ZNACHENIY (vse v odnom meste, chtoby sanitize shol ran'she,
---  chem Rayfield uvidit mutor iz konfiga)
+--  СПИСКИ ЗНАЧЕНИЙ (все в одном месте, чтобы sanitize прошёл раньше,
+--  чем Rayfield увидит мусор из конфига)
 -- ============================================================
-local AIM_TARGETS  = { "Protivniki po roli", "Tolko vampirov", "Tolko lyudey", "Vse" }
-local AIM_PRIORITY = { "Blizhe k pritselu", "Blizhe po rasstoyaniyu", "Bolshe HP" }
+local AIM_TARGETS  = { "Противники по роли", "Только вампиров", "Только людей", "Все" }
+local AIM_PRIORITY = { "Ближе к прицелу", "Ближе по расстоянию", "Больше HP" }
 local AIM_PART     = { "Head", "UpperTorso", "HumanoidRootPart", "Torso" }
 local RGB_TARGETS  = {
-    "Pritsel: svobodnyy",
-    "Pritsel: zahvat tseli",
-    "ESP vampirov",
-    "ESP hanterov",
-    "ESP igrokov",
-    "Metka tseli",
+    "Прицел: свободный",
+    "Прицел: захват цели",
+    "ESP вампиров",
+    "ESP хантеров",
+    "ESP игроков",
+    "Метка цели",
 }
 
 -- ============================================================
---  NASTROYKI
+--  НАСТРОЙКИ
 -- ============================================================
 G.BS.Run = (G.BS.Run or 0) + 1
 local RUN_ID = G.BS.Run
@@ -112,7 +112,7 @@ G.BS.Boxes       = G.BS.Boxes       ~= false
 G.BS.BoxThick    = G.BS.BoxThick    or 2
 G.BS.MaxDist     = G.BS.MaxDist     or 0
 
--- ---------- ROLI ----------
+-- ---------- РОЛИ ----------
 G.BS.RoleSticks  = G.BS.RoleSticks  or 1
 G.BS.RoleFreeze  = G.BS.RoleFreeze  or false
 G.BS.EventRole   = G.BS.EventRole   ~= false
@@ -124,15 +124,15 @@ G.BS.RoundHunters = G.BS.RoundHunters or 0
 G.BS.LastPhase   = G.BS.LastPhase   or "?"
 G.BS.MyRole      = G.BS.MyRole      or "?"
 
--- ---------- KLIENT AYM ----------
+-- ---------- КЛИЕНТ АИМ ----------
 G.BS.BulletSwap      = G.BS.BulletSwap      or false
 G.BS.BulletDebug     = G.BS.BulletDebug     or false
 G.BS.SilentShots     = G.BS.SilentShots     or 0
--- PROSTREL STEN po umolchaniyu VKL. Inache cel za stenoy otbrasyvalas
--- i podmena ne srabatyvala tam, gde ona nuzhnee vsego.
+-- ПРОСТРЕЛ СТЕН по умолчанию ВКЛ. Иначе цель за стеной отбрасывалась,
+-- и подмена не срабатывала там, где она нужнее всего.
 G.BS.Penetrate       = G.BS.Penetrate ~= false
--- SHIROKIY POISK: berem blizhaishogo protivnika v radiuse, dazhe esli on
--- vne ekrana. Inache cel za spinoi ne nahoditsya.
+-- ШИРОКИЙ ПОИСК: берём ближайшего противника в радиусе, даже если он
+-- вне экрана. Иначе цель за спиной не находится.
 G.BS.BulletWideAim   = G.BS.BulletWideAim ~= false
 G.BS.AimTargets      = pickOpt(G.BS.AimTargets, AIM_TARGETS, AIM_TARGETS[1])
 G.BS.AimPriority     = pickOpt(G.BS.AimPriority, AIM_PRIORITY, AIM_PRIORITY[1])
@@ -145,7 +145,7 @@ G.BS.R = math.clamp(math.floor(tonumber(G.BS.R) or 255), 0, 255)
 G.BS.G = math.clamp(math.floor(tonumber(G.BS.G) or 55), 0, 255)
 G.BS.B = math.clamp(math.floor(tonumber(G.BS.B) or 55), 0, 255)
 
--- ---------- VYZHIVANIE ----------
+-- ---------- ВЫЖИВАНИЕ ----------
 G.BS.InfStamina  = G.BS.InfStamina  or false
 G.BS.StaminaDebug = G.BS.StaminaDebug or false
 G.BS.HealthLock  = G.BS.HealthLock  or false
@@ -161,27 +161,27 @@ G.BS.AimShowFOV    = G.BS.AimShowFOV ~= false
 
 if G.BS_Stop then pcall(function() G.BS_Stop() end) end
 
--- FLAGI HUKOV v LUA-TABLICHAH, a NE na Instance.
--- Roblox ZAPRESHCHAET pisat novye polya na Instance:
+-- ФЛАГИ ХУКОВ в LUA-ТАБЛИЦАХ, а НЕ на Instance.
+-- Roblox ЗАПРЕЩАЕТ писать новые поля на Instance:
 --   hum.__BS = true -> "__BS is not a valid member of Humanoid".
--- Chtenie otsutstvuyushchego polya daet nil (bez oshibki), no ZAPIS
--- padaet VSEGDA -> flag navsegda ostavalsya nil i huk stanovilsya
--- zanovo kazhdyy kadr (tysyachi vlozhenyh oborok nad TakeDamage).
+-- Чтение отсутствующего поля даёт nil (без ошибки), но ЗАПИСЬ
+-- падает ВСЕГДА -> флаг навсегда оставался nil и хук ставился
+-- заново каждый кадр (тысячи вложенных обёрток над TakeDamage).
 local hookedHumans = setmetatable({}, { __mode = "k" })
 local energyHooked  = setmetatable({}, { __mode = "k" })
 local fwHooked      = setmetatable({}, { __mode = "k" })
 
--- SOSTOYANIE
+-- СОСТОЯНИЕ
 local by           = {}   -- [Player] = {char, role, conf, votes, lastStable, hl, gui, lbl, box}
 local netRoles     = {}
 local burstShooters = {}
 local soundMarks   = {}
 local revealMap    = {}
 local pendingReveal
-local locked       = nil  -- zapertaia cel (Player)
-local bulletPreShot = nil -- {part, dir} — vyschisliaetsia kazhdyy kadr
+local locked       = nil  -- запертая цель (Player)
+local bulletPreShot = nil -- {part, dir} — вычисляется каждый кадр
 
--- Uverennost istochnikov roli
+-- Уверенность источников роли
 local CONF = { attr = 6, event = 5, deduce = 4, sound = 3, gear = 2 }
 
 local function aliasOf(v)
@@ -195,7 +195,7 @@ local function aliasOf(v)
 end
 
 -- ============================================================
---  REМОUTY
+--  РЕМОУТЫ
 -- ============================================================
 local function findRemotes()
     local b = TRS:FindFirstChild("BloodyStreet")
@@ -212,7 +212,7 @@ end
 local Remotes = findRemotes()
 local netConns = {}
 
--- ROL IZ ATRIBUTA — edinstvennyy istochnik s pervogo kadra
+-- РОЛЬ ИЗ АТРИБУТА — единственный источник с первого кадра
 local ROLE_ATTRS = {
     "Role", "TicketArmedRole", "RealRole", "HiddenRole",
     "AssignedRole", "GameRole", "Team", "TeamName",
@@ -226,7 +226,7 @@ local function roleFromAttr(plr)
     return nil
 end
 
--- VYVOD PO SCHETCHIKAM RAUNDA
+-- ВЫВОД ПО СЧЁТЧИКАМ РАУНДА
 local function deduceOthers()
     local ph = string.lower(tostring(G.BS.RoundPhase or ""))
     if ph == "lobby" or ph == "countdown" or ph == "?" or ph == "" then return nil end
@@ -246,7 +246,7 @@ local function resetRound()
 end
 
 -- ============================================================
---  GUI-ELEMENTY NA IGROKOV
+--  GUI-ЭЛЕМЕНТЫ НА ИГРОКОВ
 -- ============================================================
 local Screen = nil
 
@@ -259,8 +259,8 @@ local function screen()
     sg.Name           = "BS_ESP"
     sg.ResetOnSpawn   = false
     sg.IgnoreGuiInset = true
-    -- DisplayOrder = 1, a ne 500: inache ESP lOzHilsya POVERKH okna
-    -- Rayfield i menu bylo ne vidno.
+    -- DisplayOrder = 1, а не 500: иначе ESP ложился ПОВЕРХ окна
+    -- Rayfield и меню было не видно.
     sg.DisplayOrder   = 1
     sg.Parent         = game:GetService("CoreGui")
     Screen = sg
@@ -298,8 +298,8 @@ local function makeBillboard()
     return gui, gui:FindFirstChild("Lbl") or Instance.new("TextLabel", gui)
 end
 
--- 3D-KOROBKI. Drawing ne vo vsekh isполнителяx — pri otkaze
--- prosto otklyuchaem korobki, skript ne padaet.
+-- 3D-КОРОБКИ. Drawing есть не во всех исполнителях — при отказе
+-- просто отключаем коробки, скрипт не падает.
 local DRAW_OK = false
 do
     local ok, l = pcall(function() return Drawing.new("Line") end)
@@ -379,7 +379,7 @@ local function hideBox(b)
 end
 
 -- ============================================================
---  DOBАVLENIE / UДАЛЕНИЕ IGROKOV
+--  ДОБАВЛЕНИЕ / УДАЛЕНИЕ ИГРОКОВАVLENIE / UДАЛЕНИЕ IGROKOV
 -- ============================================================
 local applyRole
 
@@ -423,9 +423,9 @@ end
 applyRole = function(e, role, conf)
     if not e then return end
     if conf > e.conf then
-        -- WAZHNO: pishem lastStable zdes. Ranee etot put ne pisal
-        -- ego, i pri RoleSticks > 1 pervaya zafiksirovannaya rol
-        -- otkatalas' cherez nil -> rol ne pokazyvalas' ~5 sekund.
+        -- ВАЖНО: пишем lastStable здесь. Ранее этот путь не писал
+        -- его, и при RoleSticks > 1 первая зафиксированная роль
+        -- откатывалась через nil -> роль не показывалась ~5 секунд.
         e.role, e.conf, e.votes, e.lastStable = role, conf, 1, role
         return
     end
@@ -453,7 +453,7 @@ local function detectRole(plr)
         applyRole(e, r, CONF.attr)
         return
     end
-    -- 2) seti iz remoowt
+    -- 2) сети из ремоутов
     local nr = netRoles[plr]
     if nr then
         applyRole(e, nr, CONF.event)
@@ -464,7 +464,7 @@ local function detectRole(plr)
 end
 
 -- ============================================================
---  OVERLEY (Frame vmesto Drawing: rabotaet vezde)
+--  ОВЕРЛЕЙ (Frame вместо Drawing: работает везде)
 -- ============================================================
 local Overlay = nil
 local FOVSegs  = {}
@@ -602,7 +602,7 @@ local function drawTarget(plr)
 end
 
 -- ============================================================
---  REKAST VIDIMOSTI + VYBOR CHASTI TELA
+--  РЕЙКАСТ ВИДИМОСТИ + ВЫБОР ЧАСТИ ТЕЛА
 -- ============================================================
 local RAY = RaycastParams.new()
 RAY.FilterType = Enum.RaycastFilterType.Exclude
@@ -610,8 +610,8 @@ RAY.IgnoreWater = true
 
 local function visible(from, part, ch)
     if G.BS.Penetrate then return true end
-    -- Ranee zdes' bylo `{ LP.Character }`: v Lua tablica s nil VNUTRI
-    -- PUSTAYA, i luč šel skvoz' sebya. Isklyuchaem oba.
+    -- Ранее здесь было `{ LP.Character }`: в Lua таблица с nil ВНУТРИ
+    -- ПУСТАЯ, и луч шёл сквозь себя. Исключаем оба.
     local me = LP and LP.Character
     RAY.FilterDescendantsInstances = me and { me, ch } or { ch }
     local dir = part.Position - from
@@ -702,7 +702,7 @@ local function pickTarget(cam)
 end
 
 -- ============================================================
---  SLOUSHANIE REMOOUTOV: ROLI + STAMINA
+--  СЛУШАНИЕ РЕМОУТОВ: РОЛИ + СТАМИНА
 -- ============================================================
 local function rolesFromEvents()
     if not G.BS.EventRole then return end
@@ -741,7 +741,7 @@ local function rolesFromSounds()
     end
 end
 
--- ТИХИЙ PERЕKHVAT ROLEY. Konsol ne zasoryaetsya.
+-- ТИХИЙ ПЕРЕХВАТ РОЛЕЙ. Консоль не засоряется.
 if Remotes then
     for _, r in ipairs(Remotes:GetChildren()) do
         if r:IsA("RemoteEvent") then
@@ -813,7 +813,7 @@ if Remotes then
 end
 
 -- ============================================================
---  STAMINA: igra trati energiyu CHEREZ Remotes.UseEnergy
+--  СТАМИНА: игра тратит энергию ЧЕРЕЗ Remotes.UseEnergy
 -- ============================================================
 local energyPatched = false
 
@@ -821,8 +821,8 @@ local function patchEnergy()
     if energyPatched or not Remotes then return end
     local ue = Remotes:FindFirstChild("UseEnergy")
     if not ue or not ue:IsA("RemoteEvent") or energyHooked[ue] then return end
-    -- pcall ОБЯЗАТЕЛЕН: bez nego lyubaya oshibka zdes' umerla by ves'
-    -- potok, a vmeste s nim pereskanivanie staminy pri respave.
+    -- pcall ОБЯЗАТЕЛЕН: без него любая ошибка здесь убила бы весь
+    -- поток, а вместе с ним пересканирование стамины при респавне.
     local ok = pcall(function()
         hookmetamethod(ue, "FireServer", function(self, ...)
             if G.BS.InfStamina then return end
@@ -833,13 +833,13 @@ local function patchEnergy()
         energyHooked[ue] = true
         energyPatched = true
         if G.BS.StaminaDebug then
-            print("[BS STAM] Remotes.UseEnergy perehvat (trata energii blokiruetsya)")
+            print("[BS STAM] Remotes.UseEnergy перехват (трата энергии блокируется)")
         end
     end
 end
 
 -- ============================================================
---  ZASHCHITA OT URONA NPC
+--  ЗАЩИТА ОТ УРОНА NPC
 -- ============================================================
 local damageBlocked = 0
 
@@ -881,21 +881,21 @@ local function hr(t)
 end
 
 local function scanAll()
-    if not Remotes then print("[BS SCAN] papka Remotes NE NAYDENA") return end
+    if not Remotes then print("[BS SCAN] папка Remotes НЕ НАЙДЕНА") return end
 
-    hr("REMОUTY (" .. #Remotes:GetChildren() .. " sht)")
+    hr("РЕМОУТЫ (" .. #Remotes:GetChildren() .. " шт)")
     local names = {}
     for _, r in ipairs(Remotes:GetChildren()) do names[#names + 1] = r.Name end
     table.sort(names)
     for i = 1, #names do print(string.format("  %2d. %s", i, names[i])) end
 
-    hr("VYRAN ZAKLJUCHENY HUKI")
+    hr("ВЫРАН ЗАКЛЮЧЕНЫ ХУКИ")
     print("  FireWeapon     : " .. tostring(fwHooked[Remotes:FindFirstChild("FireWeapon") or false] ~= nil))
     print("  UseEnergy      : " .. tostring(energyPatched))
 
     local ch = LP and LP.Character
     if ch then
-        hr("ZACHENIYA V PERSONAZHE (NumberValue / IntValue)")
+        hr("ЗНАЧЕНИЯ В ПЕРСОНАЖЕ (NumberValue / IntValue)")
         local cnt = 0
         for _, d in ipairs(ch:GetDescendants()) do
             if d:IsA("NumberValue") or d:IsA("IntValue") then
@@ -903,41 +903,41 @@ local function scanAll()
                 print(string.format("  %s = %s", d.Name, tostring(d.Value)))
             end
         end
-        if cnt == 0 then print("  (net ni odnogo)") end
+        if cnt == 0 then print("  (нет ни одного)") end
 
-        hr("ATRIBUTY PERSONAZHA")
+        hr("АТРИБУТЫ ПЕРСОНАЖА")
         local a = 0
         for k, v in pairs(ch:GetAttributes()) do
             a = a + 1
             print(string.format("  %s = %s (%s)", tostring(k), tostring(v), typeof(v)))
         end
-        if a == 0 then print("  (net atributov)") end
+        if a == 0 then print("  (нет атрибутов)") end
 
         local hum = ch:FindFirstChildOfClass("Humanoid")
         if hum then
-            hr("GUMANOID")
+            hr("ГУМАНОИД")
             print("  Health = " .. tostring(hum.Health)
                 .. "  MaxHealth = " .. tostring(hum.MaxHealth)
                 .. "  WalkSpeed = " .. tostring(hum.WalkSpeed))
         end
     end
 
-    hr("MOYA ROL")
+    hr("МОЯ РОЛЬ")
     print("  G.BS.MyRole    = " .. tostring(G.BS.MyRole))
     print("  RoundPhase     = " .. tostring(G.BS.RoundPhase))
-    print("  vampir/hunter  = " .. tostring(G.BS.RoundVamps) .. "/" .. tostring(G.BS.RoundHunters))
-    hr("TEPER VYSTRELI S DIAGNOSTIKOY PATRONA")
+    print("  вампир/хантер  = " .. tostring(G.BS.RoundVamps) .. "/" .. tostring(G.BS.RoundHunters))
+    hr("ТЕПЕРЬ ВЫСТРЕЛИ С ДИАГНОСТИКОЙ ПАТРОНА")
 end
 
 -- ============================================================
---  KLIENT AYM: PODMENA PATRONA (Remotes.FireWeapon)
+--  КЛИЕНТ АИМ: ПОДМЕНА ПАТРОНА (Remotes.FireWeapon)
 -- ============================================================
--- SIgnaturu FireWeapon my ne znaem, poetomu xuk ne ugadyvaet odin
--- variant, a smotrit na FAKTICHESKIE argumenty pri vystrele:
---   - est Vector3  -> schitaem napravleniem/p poziciy, podmenyaem na
---     vektor k celi (edinichnyy, esli ishodnyy edinichnyy);
---   - net Vector3, no est Instance -> schitaem eto tsel'yu;
---   - nichego ne uznalI -> strelyaem KAK EST (bezopasnyy otkat).
+-- Сигнатуру FireWeapon мы не знаем, поэтому хук не угадывает один
+-- вариант, а смотрит на ФАКТИЧЕСКИЕ аргументы при выстреле:
+--   - есть Vector3  -> считаем направлением/позицией, подменяем на
+--     вектор к цели (единичный, если исходный единичный);
+--   - нет Vector3, но есть Instance -> считаем это целью;
+--   - ничего не узнали -> стреляем КАК ЕСТЬ (безопасный откат).
 local sigLogged = false
 
 local function pickPartOf(ch)
@@ -950,7 +950,7 @@ local function pickPartOf(ch)
     return nil
 end
 
--- VYCHISLYAETSYA KAZHDYY KADR, chtoby v xuke nichego ne iskat'.
+-- ВЫЧИСЛЯЕТСЯ КАЖДЫЙ КАДР, чтобы в хуке ничего не искать.
 local function computeBulletPreShot()
     if not G.BS.BulletSwap then bulletPreShot = nil return end
     local cam = workspace.CurrentCamera
@@ -996,15 +996,15 @@ local function installBulletHook()
     local fw = Remotes:FindFirstChild("FireWeapon")
     if not fw or not fw:IsA("RemoteEvent") then
         if G.BS.BulletDebug then
-            print("[BS BULLET] Remotes.FireWeapon NE NAYDEN")
+            print("[BS BULLET] Remotes.FireWeapon НЕ НАЙДЕН")
         end
         return
     end
     if fwHooked[fw] then return end
 
     local ok = pcall(function()
-        -- GLOBALNYY __namecall (kak v EliteHub): lovit vyzov nezavisimo
-        -- ot togo, kak igra ego delayet.
+        -- ГЛОБАЛЬНЫЙ __namecall (как в EliteHub): ловит вызов независимо
+        -- от того, как игра его делает.
         hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local okM, method = pcall(getnamecallmethod)
             if not (okM and method == "FireServer" and self == fw and G.BS.BulletSwap) then
@@ -1021,7 +1021,7 @@ local function installBulletHook()
             local nargs = {}
             for i = 1, n do nargs[i] = args[i] end
 
-            -- ищем posledniy Vector3: obychno eto napravleniye vystrela
+            -- ищем последний Vector3: обычно это направление выстрела
             local replaced = false
             for i = n, 1, -1 do
                 if typeof(nargs[i]) == "Vector3" then
@@ -1036,7 +1036,7 @@ local function installBulletHook()
                 end
             end
 
-            -- net Vector3 -> vozmozhno peredaetsya tsel' ob'ektom
+            -- нет Vector3 -> возможно передаётся цель объектом
             if not replaced then
                 for i = n, 1, -1 do
                     local t = typeof(nargs[i])
@@ -1053,19 +1053,19 @@ local function installBulletHook()
                     sigLogged = true
                     local kinds = {}
                     for i = 1, n do kinds[i] = typeof(args[i]) end
-                    print("[BS BULLET] podmena rabotayet (" .. n
+                    print("[BS BULLET] подмена работает (" .. n
                         .. " arg): " .. table.concat(kinds, ", "))
                 end
                 G.BS.SilentShots = G.BS.SilentShots + 1
                 return old(self, table.unpack(nargs, 1, n))
             end
 
-            -- ne uznalI signaturu -> pishem raz za session
+            -- не узнали сигнатуру -> пишем раз за сессию
             if G.BS.BulletDebug and not sigLogged then
                 sigLogged = true
                 local kinds = {}
                 for i = 1, n do kinds[i] = typeof(args[i]) end
-                print("[BS BULLET] signatura ne raspozzana (" .. n
+                print("[BS BULLET] сигнатура не распознана (" .. n
                     .. " arg): " .. table.concat(kinds, ", "))
             end
             return old(self, ...)
@@ -1075,15 +1075,15 @@ local function installBulletHook()
     if ok then
         fwHooked[fw] = true
         if G.BS.BulletDebug then
-            print("[BS BULLET] globalnyy __namecall ustanovlen na FireWeapon")
+            print("[BS BULLET] глобальный __namecall установлен на FireWeapon")
         end
     elseif G.BS.BulletDebug then
-        print("[BS BULLET] xuk ne vstal — ispolnitel zablokiroval")
+        print("[BS BULLET] хук не встал — исполнитель заблокировал")
     end
 end
 
 -- ============================================================
---  SKAN IGROKOV
+--  СКАН ИГРОКОВ
 -- ============================================================
 local function scan()
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -1104,7 +1104,7 @@ local function scan()
             end
         end
     end
-    -- chistim teh, kto ushol ili umer
+    -- чистим тех, кто ушёл или умер
     for plr, e in pairs(by) do
         if not plr.Parent or not plr.Character or not plr.Character.Parent
            or (e and e.hl and not e.hl.Parent) then
@@ -1127,7 +1127,7 @@ Players.PlayerAdded:Connect(function() task.delay(0.5, scan) end)
 Players.PlayerRemoving:Connect(function(p) remove(p) end)
 
 -- ============================================================
---  KADR
+--  КАДР
 -- ============================================================
 local lastT = os.clock()
 local conn = RunService.RenderStepped:Connect(function()
@@ -1142,7 +1142,7 @@ local conn = RunService.RenderStepped:Connect(function()
         pcall(pumpHealth)
     end
 
-    -- cel dlya podmeny patrona
+    -- цель для подмены патрона
     if G.BS.BulletSwap then
         pcall(computeBulletPreShot)
     elseif bulletPreShot then
@@ -1160,8 +1160,8 @@ local conn = RunService.RenderStepped:Connect(function()
     -- ---------- ESP ----------
     for plr, e in pairs(by) do
         local ch = e.char
-        -- VAZHNO: obrashcheniye k unichtozhdennomu Instance v Luau
-        -- brosaet oshibku i ronyaet VES' kadr. Proveryaem Parent.
+        -- ВАЖНО: обращение к уничтоженному Instance в Luau
+        -- бросает ошибку и роняет ВЕСЬ кадр. Проверяем Parent.
         if ch and ch.Parent and e.hl and e.hl.Parent and e.gui and e.gui.Parent then
             local role = e.role
             local vis, color
@@ -1221,7 +1221,7 @@ local conn = RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- ---------- KLIENT AYM: METKA TselI ----------
+    -- ---------- KLIENT AYM: METKA ЦельI ----------
     if G.BS.BulletSwap then
         if locked then
             if not pickTarget(cam) then locked = nil end
@@ -1258,8 +1258,8 @@ local Window = Rayfield:CreateWindow({
 local TAB  = Window:CreateTab("ESP", 4483362458)
 local AIMT = Window:CreateTab("AIM", 1101060692)
 
--- ZASHCHITA SOZDANIYA ELEMENTOV: odin upavshiy Create* ne dolzhen
--- ronit' vsyu vkladku.
+-- ЗАЩИТА СОЗДАНИЯ ЭЛЕМЕНТОВ: один упавший Create* не должен
+-- ронять всю вкладку.
 local UI_ERR = {}
 local ELEM_NAMES = {
     "CreateSection", "CreateToggle", "CreateColorPicker", "CreateSlider",
@@ -1271,9 +1271,9 @@ local function mkTab(tab, tag)
     local api = {}
     for _, n in ipairs(ELEM_NAMES) do
         api[n] = function(settings)
-            -- VAZHNO: vozvrashchaem SAM element Rayfield, a NE flag
+            -- ВАЖНО: возвращаем САМ элемент Rayfield, а НЕ флаг
             -- uspekha. Ran'she bylo `return ok` -> elementy poluchali
-            -- boolean i :Set na nih padał.
+            -- boolean и :Set на них падал.
             local obj
             local ok, err = pcall(function()
                 obj = tab[n](tab, settings)
@@ -1328,9 +1328,9 @@ local function applyMainColor()
 end
 
 -- ======================= ESP =======================
-TB.CreateSection("GLAVNYY TSVET (RGB)")
+TB.CreateSection("ГЛАВНЫЙ ЦВЕТ (RGB)")
 TB.CreateDropdown({
-    Name = "Chto krasit' etim tsvetom", Flag = "BS_RGBTarget",
+    Name = "Что красить этим цветом", Flag = "BS_RGBTarget",
     Options = RGB_TARGETS, CurrentOption = G.BS.RGBTarget,
     Callback = function(v)
         G.BS.RGBTarget = v
@@ -1347,103 +1347,103 @@ local function rgbSlider(name, key, flag)
         end,
     })
 end
-rgbSlider("Krasnyy (R)", "R", "BS_RGB_R")
-rgbSlider("Zelyonyy (G)", "G", "BS_RGB_G")
-rgbSlider("Siniy (B)", "B", "BS_RGB_B")
+rgbSlider("Красный (R)", "R", "BS_RGB_R")
+rgbSlider("Зелёный (G)", "G", "BS_RGB_G")
+rgbSlider("Синий (B)", "B", "BS_RGB_B")
 TB.CreateInput({
-    Name = "HEX (naprimer FF3755)", Flag = "BS_RGBHex",
+    Name = "HEX (например FF3755)", Flag = "BS_RGBHex",
     PlaceholderText = "FF3755", CurrentValue = hexStr(),
     Callback = function(t)
         local r, g, b = hexToRGB(t)
         if not r then
-            notify("HEX ne raspoznan, zhdu 6 simvolov", 3)
+            notify("HEX не распознан, жду 6 символов", 3)
             return
         end
         G.BS.R, G.BS.G, G.BS.B = r, g, b
         applyMainColor()
-        notify("Tsvet primenen: #" .. hexStr(), 3)
+        notify("Цвет применён: #" .. hexStr(), 3)
     end,
 })
 
-TB.CreateSection("Igrоki")
-TB.CreateToggle({ Name = "ESP igrokov", Flag = "BS_PlayerESP",
+TB.CreateSection("Игроки")
+TB.CreateToggle({ Name = "ESP игроков", Flag = "BS_PlayerESP",
     CurrentValue = G.BS.PlayerESP, Callback = function(v) G.BS.PlayerESP = v end })
-TB.CreateColorPicker({ Name = "Tsvet igrokov", Flag = "BS_PlayerColor",
+TB.CreateColorPicker({ Name = "Цвет игроков", Flag = "BS_PlayerColor",
     Color = G.BS.PlayerColor, Callback = function(c) G.BS.PlayerColor = c end })
 
-TB.CreateSection("Roli")
-TB.CreateToggle({ Name = "ESP VAMPirov", Flag = "BS_VampESP",
+TB.CreateSection("Роли")
+TB.CreateToggle({ Name = "ESP ВАМПИРОВ", Flag = "BS_VampESP",
     CurrentValue = G.BS.VampESP, Callback = function(v) G.BS.VampESP = v end })
-TB.CreateColorPicker({ Name = "Tsvet vampirov", Flag = "BS_VampColor",
+TB.CreateColorPicker({ Name = "Цвет вампиров", Flag = "BS_VampColor",
     Color = G.BS.VampColor, Callback = function(c) G.BS.VampColor = c end })
-TB.CreateToggle({ Name = "ESP HANTЕROV / LYUDEY", Flag = "BS_HunterESP",
+TB.CreateToggle({ Name = "ESP ХАНТЕРОВ / ЛЮДЕЙ", Flag = "BS_HunterESP",
     CurrentValue = G.BS.HunterESP, Callback = function(v) G.BS.HunterESP = v end })
-TB.CreateColorPicker({ Name = "Tsvet hanterov", Flag = "BS_HunterColor",
+TB.CreateColorPicker({ Name = "Цвет хантеров", Flag = "BS_HunterColor",
     Color = G.BS.HunterColor, Callback = function(c) G.BS.HunterColor = c end })
-TB.CreateToggle({ Name = "Tolko vampiry (ostalnykh skryt)", Flag = "BS_OnlyVamps",
+TB.CreateToggle({ Name = "Только вампиры (остальных скрыть)", Flag = "BS_OnlyVamps",
     CurrentValue = G.BS.OnlyVamps, Callback = function(v) G.BS.OnlyVamps = v end })
-TB.CreateToggle({ Name = "Pomechat' neizvestnykh [?]", Flag = "BS_ShowUnknown",
+TB.CreateToggle({ Name = "Помечать неизвестных [?]", Flag = "BS_ShowUnknown",
     CurrentValue = G.BS.ShowUnknown, Callback = function(v) G.BS.ShowUnknown = v end })
 
-TB.CreateSection("Vid")
-TB.CreateToggle({ Name = "Niki", Flag = "BS_Names",
+TB.CreateSection("Вид")
+TB.CreateToggle({ Name = "Ники", Flag = "BS_Names",
     CurrentValue = G.BS.Names, Callback = function(v) G.BS.Names = v end })
-TB.CreateToggle({ Name = "Distantsiya", Flag = "BS_ShowDist",
+TB.CreateToggle({ Name = "Дистанция", Flag = "BS_ShowDist",
     CurrentValue = G.BS.ShowDist, Callback = function(v) G.BS.ShowDist = v end })
 TB.CreateToggle({ Name = "HP", Flag = "BS_ShowHP",
     CurrentValue = G.BS.ShowHP, Callback = function(v) G.BS.ShowHP = v end })
-TB.CreateToggle({ Name = "3D korobki", Flag = "BS_Boxes",
+TB.CreateToggle({ Name = "3D коробки", Flag = "BS_Boxes",
     CurrentValue = G.BS.Boxes,
     Callback = function(v)
         G.BS.Boxes = v
         if v and not DRAW_OK then
             G.BS.Boxes = false
-            notify("v etom ispolnitele net Drawing — korobki vyklyucheny", 4)
+            notify("в этом исполнителе нет Drawing — коробки выключены", 4)
         end
     end })
-TB.CreateSlider({ Name = "Tolshchina korobki", Flag = "BS_BoxThick",
+TB.CreateSlider({ Name = "Толщина коробки", Flag = "BS_BoxThick",
     Range = {1, 6}, Increment = 1, CurrentValue = G.BS.BoxThick,
     Callback = function(v) G.BS.BoxThick = v end })
-TB.CreateSlider({ Name = "Maks. distantsiya ESP (0 = vsya)", Flag = "BS_MaxDist",
+TB.CreateSlider({ Name = "Макс. дистанция ESP (0 = вся)", Flag = "BS_MaxDist",
     Range = {0, 2000}, Increment = 25, CurrentValue = G.BS.MaxDist,
     Suffix = " studs", Callback = function(v) G.BS.MaxDist = v end })
 
-TB.CreateSection("Tochnost roley")
+TB.CreateSection("Точность ролей")
 TB.CreateSlider({
-    Name = "Podtverzhdeniy dlya smeny roli", Flag = "BS_RoleSticks",
+    Name = "Подтверждений для смены роли", Flag = "BS_RoleSticks",
     Range = {1, 6}, Increment = 1, CurrentValue = G.BS.RoleSticks,
     Callback = function(v) G.BS.RoleSticks = v end,
 })
-TB.CreateToggle({ Name = "Zamorozka roley", Flag = "BS_RoleFreeze",
+TB.CreateToggle({ Name = "Заморозка ролей", Flag = "BS_RoleFreeze",
     CurrentValue = G.BS.RoleFreeze, Callback = function(v) G.BS.RoleFreeze = v end })
 
-TB.CreateSection("Vyzhivanie")
-TB.CreateToggle({ Name = "Beskonechnaya stamina", Flag = "BS_InfStamina",
+TB.CreateSection("Выживание")
+TB.CreateToggle({ Name = "Бесконечная стамина", Flag = "BS_InfStamina",
     CurrentValue = G.BS.InfStamina,
     Callback = function(v)
         G.BS.InfStamina = v
         if v then pcall(patchEnergy) end
     end })
-TB.CreateToggle({ Name = "Diagnostika staminy (v konsol)", Flag = "BS_StaminaDebug",
+TB.CreateToggle({ Name = "Диагностика стамины (в консоль)", Flag = "BS_StaminaDebug",
     CurrentValue = G.BS.StaminaDebug,
     Callback = function(v) G.BS.StaminaDebug = v end })
-TB.CreateToggle({ Name = "Zashchita ot urona NPC", Flag = "BS_HealthLock",
+TB.CreateToggle({ Name = "Защита от урона NPC", Flag = "BS_HealthLock",
     CurrentValue = G.BS.HealthLock,
     Callback = function(v)
         G.BS.HealthLock = v
         if v then pcall(installDamageHooks) end
     end })
-TB.CreateSlider({ Name = "Zdorovye (zashchita)", Flag = "BS_HealthMax",
+TB.CreateSlider({ Name = "Здоровье (защита)", Flag = "BS_HealthMax",
     Range = {1, 5000}, Increment = 50, Suffix = " HP",
     CurrentValue = G.BS.HealthMax,
     Callback = function(v) G.BS.HealthMax = math.floor(v) end })
 
-TB.CreateSection("Skaner")
-TB.CreateButton({ Name = "SKANIROVAT' IGRU (v konsol)", Callback = function()
+TB.CreateSection("Сканер")
+TB.CreateButton({ Name = "СКАНИРОВАТЬ ИГРУ (в консоль)", Callback = function()
     pcall(scanAll)
-    notify("Skan otrabotal, smotri konsol", 4)
+    notify("Скан отработал, смотри консоль", 4)
 end })
-TB.CreateToggle({ Name = "Skanirovat' pri zapuske", Flag = "BS_ScanOnStart",
+TB.CreateToggle({ Name = "Сканировать при запуске", Flag = "BS_ScanOnStart",
     CurrentValue = G.BS.ScanOnStart,
     Callback = function(v)
         G.BS.ScanOnStart = v
@@ -1451,9 +1451,9 @@ TB.CreateToggle({ Name = "Skanirovat' pri zapuske", Flag = "BS_ScanOnStart",
     end })
 
 -- ======================= AIM =======================
-AI.CreateSection("Klient aym")
+AI.CreateSection("Клиент айм")
 AI.CreateToggle({
-    Name = "Klient aym (patron v tsel)", Flag = "BS_BulletSwap",
+    Name = "Клиент айм (patron v tsel)", Flag = "BS_BulletSwap",
     CurrentValue = G.BS.BulletSwap,
     Callback = function(v)
         G.BS.BulletSwap = v
@@ -1462,76 +1462,76 @@ AI.CreateToggle({
         if v then
             pcall(installBulletHook)
             pcall(computeBulletPreShot)
-            notify("Patrony idut v tsel", 3)
+            notify("Патроны идут в цель", 3)
         else
-            notify("Klient aym vyklyuchen", 2)
+            notify("Клиент айм выключен", 2)
         end
     end,
 })
 
-AI.CreateSection("Prostrel")
+AI.CreateSection("Прострел")
 AI.CreateToggle({
-    Name = "Prostrel sten (tsel za stenoy)", Flag = "BS_Penetrate",
+    Name = "Прострел стен (цель за стеной)", Flag = "BS_Penetrate",
     CurrentValue = G.BS.Penetrate,
     Callback = function(v)
         G.BS.Penetrate = v
         bulletPreShot = nil
-        notify(v and "Prostrel VKL — steny ne meshayut"
-               or "Prostrel VYKL — tolko vidimye", 3)
+        notify(v and "Прострел ВКЛ — стены не мешают"
+               or "Прострел ВЫКЛ — только видимые", 3)
     end,
 })
 AI.CreateSlider({
-    Name = "Maks. distantsiya podmeny", Flag = "BS_AimMaxDist",
+    Name = "Макс. дистанция подмены", Flag = "BS_AimMaxDist",
     Range = {0, 1500}, Increment = 25,
     CurrentValue = G.BS.AimMaxDist, Suffix = " studs",
     Callback = function(v) G.BS.AimMaxDist = v end,
 })
 
-AI.CreateSection("Tsel")
+AI.CreateSection("Цель")
 AI.CreateDropdown({
-    Name = "Kogo celit'", Flag = "BS_AimTargets",
+    Name = "Кого целить", Flag = "BS_AimTargets",
     Options = AIM_TARGETS, CurrentOption = G.BS.AimTargets,
     Callback = function(v)
         G.BS.AimTargets = v
         locked = nil
-        notify("Tseli: " .. v, 2)
+        notify("Цели: " .. v, 2)
     end,
 })
 AI.CreateDropdown({
-    Name = "Prioritet", Flag = "BS_AimPriority",
+    Name = "Приоритет", Flag = "BS_AimPriority",
     Options = AIM_PRIORITY, CurrentOption = G.BS.AimPriority,
     Callback = function(v) G.BS.AimPriority = v; locked = nil end,
 })
 AI.CreateSlider({
-    Name = "Radius khvata (FOV)", Flag = "BS_AimFOV",
+    Name = "Радиус захвата (FOV)", Flag = "BS_AimFOV",
     Range = {10, 600}, Increment = 5, CurrentValue = G.BS.AimFOV,
     Suffix = " px", Callback = function(v) G.BS.AimFOV = v end,
 })
 
-AI.CreateSection("Diagnostika")
+AI.CreateSection("Диагностика")
 AI.CreateToggle({
-    Name = "Diagnostika patrona (v konsol)", Flag = "BS_BulletDebug",
+    Name = "Диагностика патрона (в консоль)", Flag = "BS_BulletDebug",
     CurrentValue = G.BS.BulletDebug,
     Callback = function(v)
         G.BS.BulletDebug = v
         if v then pcall(installBulletHook) end
     end,
 })
-AI.CreateSlider({ Name = "Tolshchina kruzhka", Flag = "BS_AimFovThick",
+AI.CreateSlider({ Name = "Толщина кружка", Flag = "BS_AimFovThick",
     Range = {1, 6}, Increment = 1, CurrentValue = G.BS.AimFovThick,
     Suffix = " px", Callback = function(v) G.BS.AimFovThick = v end })
-AI.CreateColorPicker({ Name = "Tsvet: svobodnyy", Flag = "BS_AimFovColor",
+AI.CreateColorPicker({ Name = "Цвет: свободный", Flag = "BS_AimFovColor",
     Color = G.BS.AimFovColor,
     Callback = function(c) G.BS.AimFovColor = c end })
-AI.CreateColorPicker({ Name = "Tsvet: zahvat tseli", Flag = "BS_AimLockColor",
+AI.CreateColorPicker({ Name = "Цвет: захват цели", Flag = "BS_AimLockColor",
     Color = G.BS.AimLockColor,
     Callback = function(c) G.BS.AimLockColor = c end })
-AI.CreateColorPicker({ Name = "Tsvet metki", Flag = "BS_AimMarkColor",
+AI.CreateColorPicker({ Name = "Цвет метки", Flag = "BS_AimMarkColor",
     Color = G.BS.AimMarkColor,
     Callback = function(c) G.BS.AimMarkColor = c end })
 
 -- ============================================================
---  STOP
+--  СТОП
 -- ============================================================
 G.BS_Stop = function()
     pcall(function() conn:Disconnect() end)
@@ -1550,10 +1550,10 @@ G.BS_Stop = function()
     G.BS.MyRole = "?"
     G.BS.BulletSwap = false
     G.BS_Stop = nil
-    print("[BS HUB] v8.0 ostoplen")
+    print("[BS HUB] v8.0 остановлен")
 end
 
--- Pereskanivanie pri startu: ustanavlivuem xuki i stalkin.
+-- Пересканирование при старте: устанавливаем хуки и сталкин.
 task.spawn(function()
     pcall(patchEnergy)
     pcall(installDamageHooks)
@@ -1571,7 +1571,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v8.0 zapushchen | hukov=" .. #netConns
-    .. " | klient aym: " .. tostring(G.BS.BulletSwap)
-    .. " | prostrel: " .. tostring(G.BS.Penetrate)
-    .. " | oshibok GUI=" .. #UI_ERR)
+print("[BS HUB] v8.0 запущен | хуков=" .. #netConns
+    .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
+    .. " | прострел: " .. tostring(G.BS.Penetrate)
+    .. " | ошибок GUI=" .. #UI_ERR)
