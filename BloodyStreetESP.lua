@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.5
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.6
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -205,23 +205,39 @@ G.BS.RemoteLog  = G.BS.RemoteLog or false
 G.BS.RapidFire  = G.BS.RapidFire or false
 -- Пауза между нашими выстрелами (сек). 0.1 = 10 выстрелов в секунду.
 G.BS.FireRate   = tonumber(G.BS.FireRate) or 0.1
--- РАСШИРИТЕЛЬ ХИТБОКСА: увеличиваем части тела игроков, чтобы попадать
--- легче. Работает на нашей стороне; если игру считает сервер — он
--- видит обычные хитбоксы, и толк будет только если попадание считает
--- клиент.
+-- РАСШИРИТЕЛЬ ХИТБОКСА: НЕВИДИМАЯ часть на ГОЛОВЕ каждого игрока
+-- (тело не трогаем — игроки выглядят как обычно). Работает на нашей
+-- стороне; если игру считает сервер — он видит обычные хитбоксы, и
+-- толк будет только если попадание считает клиент.
 G.BS.Hitbox      = G.BS.Hitbox or false
 G.BS.HitboxScale = tonumber(G.BS.HitboxScale) or 2
+-- СПУФИНГ ТОЧКИ ВЫЛЕТА (прострел стен).
+-- По логу ремоутов видно подпись FireWeapon:
+--   1: Vector3 — точка вылета (рядом с нами)
+--   2: Vector3 — направление (единичный вектор с разбросом)
+--   3: number  — seed разброса
+--   4: table   — данные
+--   5: number  — время выстрела
+-- Сервер пускает луч ОТ аргумента №1. Если подменить его на точку
+-- рядом с целью, стена между нами и целью перестаёт мешать: луч
+-- стартует уже за стеной. Если сервер проверяет, что точка вылета
+-- рядом с игроком, выстрел просто не засчитается — тогда выключи.
+G.BS.OriginSpoof = G.BS.OriginSpoof or false
+-- Насколько «за» целью ставить точку вылета (в студax).
+G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 6
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения (AimLead=0 и т.п.) перебивали новые дефолты.
-if G.BS.CfgV ~= 5 then
-    G.BS.CfgV      = 5
-    G.BS.AimLead   = 0.1
+if G.BS.CfgV ~= 6 then
+    G.BS.CfgV      = 6
+    G.BS.AimLead   = 0.15
     G.BS.AimSpeed  = 2000
     G.BS.RapidFire = true
     G.BS.FireRate  = 0.1
     G.BS.Hitbox    = true
     G.BS.HitboxScale = 2
+    G.BS.OriginSpoof = true
+    G.BS.SpoofBack = 6
 end
 
 if G.BS_Stop then pcall(function() G.BS_Stop() end) end
@@ -233,8 +249,14 @@ if G.BS_Stop then pcall(function() G.BS_Stop() end) end
 --               ВСЕХ вызовов, и для корректного снятия хука).
 --   installed — хук реально стоит.
 --   fw/ue/myHum — кэш целей (внутри хука нельзя звать методы через ":").
+--   ОСТАТОЧНЫЕ ПОЛЯ ОБЪЯВЛЕНЫ ЯВНО (sending, lastSend, tpl, burst):
+--   часть исполнителей ругается «Key 'sending' not found in table 'NC'»
+--   на первое присваивание нового ключа.
 local NC = { orig = nil, installed = false, wrapper = nil,
-             fw = nil, ue = nil, myHum = nil }
+             fw = nil, ue = nil, myHum = nil,
+             burst = nil, burstBlocked = 0,
+             sending = false, lastSend = 0,
+             tpl = nil, tplN = nil, tplSrc = nil }
 -- forward-декларация: реализация ниже (после всех зависимостей).
 -- Именно forward-декларация, а не `local installNamecall = function`,
 -- потому что так безопаснее: сначала имя в области видимости, потом
@@ -1324,54 +1346,74 @@ local function ncFireWeapon(...)
         NC.tplSrc = pre and pre.src or nil
     end
 
-    -- ИЩЕМ VECTOR3-АРГУМЕНТ, который является направлением выстрела.
-    --  * позицию ствола/игрока не трогаем: она рядом с нами;
-    --  * из оставшихся берём САМЫЙ ДЛИННЫЙ — это направление выстрела.
+    -- ПОДМЕНА ПО ФАКТИЧЕСКОЙ СИГНАТУРЕ FireWeapon. По логу ремоутов:
+    --   1: Vector3 — точка вылета (рядом с нами: ствол/камера)
+    --   2: Vector3 — направление выстрела (единичный вектор с разбросом)
+    --   3: number  — seed разброса
+    --   4: table   — данные выстрела
+    --   5: number  — время выстрела
+    -- Раньше подменялся «самый длинный НЕ похожий на позицию» вектор —
+    -- это оказался аргумент №2, а точку вылета (№1) мы не трогали,
+    -- поэтому сервер пускал луч от НАС и стена его гасила.
     local myPos = pre.src
-    local pickIdx, pickLen = nil, nil
+    local posIdx, posFar = nil, nil     -- «мировая точка» рядом с нами
+    local dirIdx, dirLen = nil, nil     -- короткий вектор = направление
     for i = 1, n do
         if typeof(out[i]) == "Vector3" then
             local v = out[i]
             local len = v.Magnitude
-            local looksLikePos = myPos and len > 8 and (v - myPos).Magnitude < 8
-            if not looksLikePos then
-                if not pickLen or len > pickLen then
-                    pickIdx, pickLen = i, len
+            local near = myPos and (v - myPos).Magnitude or nil
+            if near and len > 8 and near < 30 then
+                -- из нескольких точек берём самую далёкую от камеры:
+                -- это конец луча, а не сам ствол
+                if not posFar or near > posFar then
+                    posIdx, posFar = i, near
                 end
+            elseif not dirLen or len > dirLen then
+                dirIdx, dirLen = i, len
             end
         end
     end
 
-    local replaced, how = false, nil
-    if pickIdx then
-        -- ГЛАВНОЕ: ДЛИНУ НЕ УМЕНЬШАЕМ.
-        -- Раньше в этот вектор клался либо единичный вектор, либо
-        -- АБСОЛЮТНАЯ позиция цели. Пуля летела в нужную сторону, но
-        -- не попадала: если игра берёт дальность полёта из ДЛИНЫ
-        -- этого вектора, то длина 1 = 1 студ, и сервер не видит
-        -- попадания (трассер рисуется, урона нет).
-        -- Теперь длина = расстояние до цели (и не меньше исходной).
-        -- Для выстрела через всю карту длина как раз и должна быть
-        -- равна дистанции — тогда пуля долетает до цели.
-        local base = pickLen or 1
+    local replaced = false
+    local bits = {}
+
+    -- 1) НАПРАВЛЕНИЕ. Длину НЕ уменьшаем: если игра берёт из неё
+    --    дальность полёта, короткий вектор = короткий выстрел.
+    if dirIdx then
+        local base = dirLen or 1
         if base < pre.dist then base = pre.dist end
         if base < 1 then base = 1 end
         if base > 20000 then base = 20000 end
-        out[pickIdx] = pre.dir * base
-        replaced, how = true, "вектор #" .. tostring(pickIdx)
+        out[dirIdx] = pre.dir * base
+        replaced = true
+        bits[#bits + 1] = "направление #" .. tostring(dirIdx)
     end
 
-    -- нет Vector3 -> возможно цель передаётся объектом
+    -- 2) ТОЧКА ВЫЛЕТА (прострел). Ставим её чуть ПОЗАДИ цели: луч
+    --    стартует уже за стеной и идёт сквозь цель.
+    if posIdx and G.BS.OriginSpoof then
+        local back = tonumber(G.BS.SpoofBack) or 6
+        if back < 1 then back = 1 end
+        if back > 100 then back = 100 end
+        out[posIdx] = pre.pos - pre.dir * back
+        replaced = true
+        bits[#bits + 1] = "точка вылета #" .. tostring(posIdx)
+    end
+
+    -- 3) нет распознанных векторов -> возможно цель передаётся объектом
     if not replaced then
         for i = n, 1, -1 do
             local t = typeof(out[i])
             if t == "Instance" or t == "Player" then
                 out[i] = pre.part
-                replaced, how = true, "объект-цель #" .. tostring(i)
+                replaced = true
+                bits[#bits + 1] = "объект-цель #" .. tostring(i)
                 break
             end
         end
     end
+    local how = (#bits > 0) and table.concat(bits, " + ") or nil
 
     -- ДИАГНОСТИКА: печатаем не только типы, но и ЗНАЧЕНИЯ — по ним
     -- видно, какой аргумент за что отвечает.
@@ -1710,53 +1752,74 @@ task.spawn(function()
 end)
 
 -- ============================================================
---  РАСШИРИТЕЛЬ ХИТБОКСА
+--  НЕВИДИМЫЙ ХИТБОКС (только голова)
 -- ============================================================
--- Раздуваем части тела всех, кроме себя, — попасть становится легче.
--- HumanoidRootPart НЕ трогаем: если его увеличить, персонаж начнёт
--- висеть над землёй / проваливаться.
--- ВАЖНО: это видит только наш клиент. Если попадание считает СЕРВЕР
--- (своим рейкастом по своим хитбоксам) — толку не будет; помогает,
--- когда попадание считает клиент.
-local hitOrig = setmetatable({}, { __mode = "k" })
-local hitRestored = true
+-- Тело игроков НЕ трогаем — они выглядят как обычно. Вместо этого
+-- каждому вешаем НЕВИДИМУЮ часть на ГОЛОВУ (приварена к Head и
+-- следует за ней сама) и раздуваем до нужного размера.
+-- Часть создана на НАШЕМ клиенте, сервер её не видит: помогает
+-- только если попадание считает клиент.
+local hitboxBy = {}
 
-local function restoreHitbox()
-    for p, sz in pairs(hitOrig) do
-        pcall(function()
-            if p and p.Parent then p.Size = sz end
-        end)
+local function clearHitbox(plr)
+    local p = hitboxBy[plr]
+    if p then pcall(function() p:Destroy() end) end
+    hitboxBy[plr] = nil
+end
+
+local function clearAllHitboxes()
+    for _, p in pairs(hitboxBy) do
+        if p then pcall(function() p:Destroy() end) end
     end
-    hitOrig = setmetatable({}, { __mode = "k" })
-    hitRestored = true
+    hitboxBy = {}
 end
 
 local function applyHitbox()
-    if not G.BS.Hitbox then
-        if not hitRestored then restoreHitbox() end
-        return
-    end
-    hitRestored = false
     local s = tonumber(G.BS.HitboxScale) or 2
-    if s <= 1.001 then return end
+    if s <= 1.001 then s = 1.001 end
     local ok, list = pcall(function() return Players:GetPlayers() end)
     if not ok or type(list) ~= "table" then return end
     for _, plr in ipairs(list) do
         if plr ~= LP then
             local ch = plr.Character
-            if ch and ch.Parent then
-                for _, p in ipairs(ch:GetChildren()) do
-                    if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
-                        local sz = hitOrig[p]
-                        if not sz then
-                            sz = p.Size
-                            hitOrig[p] = sz
-                        end
-                        local want = sz * s
-                        if p.Size ~= want then
-                            pcall(function() p.Size = want end)
-                        end
+            local head = ch and ch:FindFirstChild("Head")
+            if not (ch and head and head.Parent) then
+                if hitboxBy[plr] then clearHitbox(plr) end
+            else
+                local box = hitboxBy[plr]
+                if not G.BS.Hitbox then
+                    if box then clearHitbox(plr) end
+                elseif not box or not box.Parent then
+                    local okI, np = pcall(function() return Instance.new("Part") end)
+                    if not okI or not np then return end
+                    np.Name         = "BS_Hitbox"
+                    np.Transparency  = 1
+                    np.CanCollide    = false
+                    np.CanTouch      = false
+                    np.CanQuery      = true
+                    np.Massless      = true
+                    np.CastShadow    = false
+                    np.Size          = head.Size * s
+                    np.CFrame        = head.CFrame
+                    local okP = pcall(function()
+                        np.Parent = ch
+                        local wc = Instance.new("WeldConstraint")
+                        wc.Part0 = head
+                        wc.Part1 = np
+                        wc.Parent = np
+                    end)
+                    if not okP then
+                        pcall(function() np:Destroy() end)
+                    else
+                        hitboxBy[plr] = np
+                        box = np
                     end
+                end
+                if box then
+                    pcall(function()
+                        box.Size = head.Size * s
+                        box.Transparency = 1
+                    end)
                 end
             end
         end
@@ -1956,7 +2019,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v9.5",
+    LoadingSubtitle = "ESP + Client Aim v9.6",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2098,12 +2161,12 @@ AI.CreateSlider({ Name = "Опережение цели", Flag = "BS_AimLead",
     Suffix = " x0.01 сек",
     Callback = function(v) G.BS.AimLead = v / 100 end })
 AI.CreateToggle({
-    Name = "Расширитель хитбокса", Flag = "BS_Hitbox",
+    Name = "Расширитель хитбокса (только голова)", Flag = "BS_Hitbox",
     CurrentValue = G.BS.Hitbox,
     Callback = function(v)
         G.BS.Hitbox = v
         pcall(applyHitbox)
-        notify(v and "Хитбоксы увеличены" or "Хитбоксы обычные", 3)
+        notify(v and "Невидимый хитбокс на голове" or "Хитбокс выключен", 3)
     end,
 })
 AI.CreateSlider({ Name = "Масштаб хитбокса", Flag = "BS_HitboxScale",
@@ -2113,6 +2176,18 @@ AI.CreateSlider({ Name = "Масштаб хитбокса", Flag = "BS_HitboxSca
         G.BS.HitboxScale = v
         pcall(applyHitbox)
     end })
+AI.CreateToggle({
+    Name = "Спуфинг точки вылета (через стены)", Flag = "BS_OriginSpoof",
+    CurrentValue = G.BS.OriginSpoof,
+    Callback = function(v)
+        G.BS.OriginSpoof = v
+        notify(v and "Точка вылета ставится у цели (если урон пропал - выключи)" or "Точка вылета как обычно", 5)
+    end,
+})
+AI.CreateSlider({ Name = "Отступ точки вылета", Flag = "BS_SpoofBack",
+    Range = {1, 30}, Increment = 1, CurrentValue = G.BS.SpoofBack,
+    Suffix = " studs",
+    Callback = function(v) G.BS.SpoofBack = v end })
 
 AI.CreateToggle({
     Name = "Тихий выстрел (гасим вспышку/звук)", Flag = "BS_SilentShot",
@@ -2172,7 +2247,7 @@ G.BS_Stop = function()
     connRapidBegan, connRapidEnded = nil, nil
     rapidHeld = false
     G.BS.Hitbox = false
-    pcall(restoreHitbox)
+    pcall(clearAllHitboxes)
     for i = #netConns, 1, -1 do
         pcall(function() netConns[i]:Disconnect() end)
         netConns[i] = nil
@@ -2213,7 +2288,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v9.5 остановлен")
+    print("[BS HUB] v9.6 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2236,7 +2311,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v9.5 запущен | хуков=" .. #netConns
+print("[BS HUB] v9.6 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
