@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.0
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.1
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -824,7 +824,7 @@ local function patchEnergy()
     -- pcall ОБЯЗАТЕЛЕН: без него любая ошибка здесь убила бы весь
     -- поток, а вместе с ним пересканирование стамины при респавне.
     local ok = pcall(function()
-        hookmetamethod(ue, "FireServer", function(self, ...)
+        local old = hookmetamethod(ue, "FireServer", function(self, ...)
             if G.BS.InfStamina then return end
             return old(self, ...)
         end)
@@ -850,7 +850,7 @@ local function installDamageHooks()
     if not hum or not hum.Parent then return end
     if hookedHumans[hum] then return end
     local ok = pcall(function()
-        hookmetamethod(hum, "TakeDamage", function(self, amount)
+        local old = hookmetamethod(hum, "TakeDamage", function(self, amount)
             if G.BS.HealthLock then
                 damageBlocked = damageBlocked + (tonumber(amount) or 0)
                 return 0
@@ -1003,11 +1003,24 @@ local function installBulletHook()
     if fwHooked[fw] then return end
 
     local ok = pcall(function()
-        -- ГЛОБАЛЬНЫЙ __namecall (как в EliteHub): ловит вызов независимо
-        -- от того, как игра его делает.
-        hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            local okM, method = pcall(getnamecallmethod)
-            if not (okM and method == "FireServer" and self == fw and G.BS.BulletSwap) then
+        -- ХУК НА САМОМ РЕМОУТЕ, а НЕ глобальный __namecall.
+        --
+        -- Раньше стоял hookmetamethod(game, "__namecall", ...) — так делают
+        -- в EliteHub, но в Roblox это ЛОМАЕТ САМИ ИГРОВЫЕ СКРИПТЫ:
+        -- перехватывается ВСЯ namecall-диспетчеризация, и падают
+        -- PlayerModule (ControlModule/CameraModule), InputLock,
+        -- HotbarController, GarlicController, SoundPingController.
+        -- В логе это видно: сыпались ошибки из чужих PlayerScripts,
+        -- а не только из нашего кода.
+        --
+        -- Хукаем ТОЛЬКО FireWeapon.FireServer — это не трогает ничего
+        -- остального в игре.
+        -- ВАЖНО: `old` — ссылка на ИСХОДНЫЙ FireServer. Без `local old =`
+        -- переменная old = nil, и все `return old(self, ...)` падали с
+        -- "attempt to call a nil value". Раньше из-за глобального
+        -- __namecall это ломало ещё и PlayerScripts Roblox.
+        local old = hookmetamethod(fw, "FireServer", newcclosure(function(self, ...)
+            if not G.BS.BulletSwap then
                 return old(self, ...)
             end
             local pre = bulletPreShot
@@ -1075,7 +1088,7 @@ local function installBulletHook()
     if ok then
         fwHooked[fw] = true
         if G.BS.BulletDebug then
-            print("[BS BULLET] глобальный __namecall установлен на FireWeapon")
+            print("[BS BULLET] хук FireWeapon.FireServer установлен")
         end
     elseif G.BS.BulletDebug then
         print("[BS BULLET] хук не встал — исполнитель заблокировал")
@@ -1086,7 +1099,12 @@ end
 --  СКАН ИГРОКОВ
 -- ============================================================
 local function scan()
-    for _, plr in ipairs(Players:GetPlayers()) do
+    -- pcall вокруг GetPlayers: если движок Roblox временно отдаёт
+    -- не-таблицу, scan() падал и ронял весь цикл (было в логе:
+    -- "line 1089 - function scan").
+    local ok, list = pcall(function() return Players:GetPlayers() end)
+    if not ok or type(list) ~= "table" then return end
+    for _, plr in ipairs(list) do
         if plr ~= LP then
             local ch = plr.Character
             if ch and ch.Parent then
@@ -1154,8 +1172,14 @@ local conn = RunService.RenderStepped:Connect(function()
         hideOverlay()
         return
     end
-    local me = LP and LP.Character
-    local myRoot = me and me:FindFirstChild("HumanoidRootPart")
+    -- pcall: при отсутствии персонажа FindFirstChild на уничтоженном
+    -- объекте бросает ошибку и роняет весь кадр (было в логе:
+    -- "line 1158").
+    local me, myRoot
+    pcall(function()
+        me = LP and LP.Character
+        myRoot = me and me:FindFirstChild("HumanoidRootPart")
+    end)
 
     -- ---------- ESP ----------
     for plr, e in pairs(by) do
@@ -1251,7 +1275,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v8.0",
+    LoadingSubtitle = "ESP + Client Aim v8.1",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1550,7 +1574,7 @@ G.BS_Stop = function()
     G.BS.MyRole = "?"
     G.BS.BulletSwap = false
     G.BS_Stop = nil
-    print("[BS HUB] v8.0 остановлен")
+    print("[BS HUB] v8.1 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1571,7 +1595,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v8.0 запущен | хуков=" .. #netConns
+print("[BS HUB] v8.1 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
