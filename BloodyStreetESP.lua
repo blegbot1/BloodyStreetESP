@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.8
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.9
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -170,45 +170,28 @@ G.BS.AimLockColor  = safeColor(G.BS.AimLockColor,  Color3.fromRGB(255, 50, 50))
 G.BS.AimMarkColor  = safeColor(G.BS.AimMarkColor,  Color3.fromRGB(255, 200, 0))
 -- Радиус захвата в пикселях. 600 = без ограничения.
 G.BS.AimFOV        = G.BS.AimFOV or 160
--- ОПЕРЕЖЕНИЕ (в секундах). 0 = целиться в текущую позицию цели.
--- Цель бежит ~16-20 студов/с, а выстрел доходит до сервера и
--- просчитывается там не мгновенно: без опережения пуля приходит
--- туда, где враг БЫЛ. Поэтому по умолчанию 0.1 с.
-G.BS.AimLead       = tonumber(G.BS.AimLead) or 0.1
--- ДОБАВКА К ОПЕРЕЖЕНИЮ ОТ ДИСТАНЦИИ: lead = AimLead + dist/AimSpeed.
--- AimSpeed — примерная скорость пули в студах/с. Если у оружия
--- хитскан (мгновенное попадание) — поставь побольше, например
---   getgenv().BS.AimSpeed = 100000
-G.BS.AimSpeed      = tonumber(G.BS.AimSpeed) or 2000
 -- ОТКУДА СЧИТЫВАЕТСЯ НАПРАВЛЕНИЕ ВЫСТРЕЛА:
 --   "camera" (по умолчанию) — от камеры, как стреляет сама игра;
 --   "head"   — от головы персонажа;
 --   "root"   — от HumanoidRootPart (пояс).
--- Если пуля всё ещё уходит выше/ниже цели — переключи на ходу:
+-- Если пуля уходит выше/ниже цели — переключи на ходу:
 --   getgenv().BS.AimOrigin = "head"
 G.BS.AimOrigin     = G.BS.AimOrigin or "camera"
--- ТИХИЙ ВЫСТРЕЛ: гасим вспышку, трассер и звук оружия — выстрел
--- перестаёт «светиться» у тебя. Вкладка AIM.
--- ВАЖНО: скрыть выстрел от ДРУГИХ игроков так нельзя — их клиент
--- рисует эффект сам, по команде сервера (Remotes.BurstFX). Для
--- «выстрела без выстрела» нужен ОТДЕЛЬНЫЙ ремоут урона — ищем его
--- через «Лог ремоутов».
-G.BS.SilentShot = G.BS.SilentShot or false
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
 
--- РАСШИРИТЕЛЬ ХИТБОКСА: НЕВИДИМАЯ часть на ГОЛОВЕ каждого врага
--- (тело не трогаем — игроки выглядят как обычно). Работает на нашей
--- стороне; если игру считает сервер — он видит обычные хитбоксы, и
--- толк будет только если попадание считает клиент.
-G.BS.Hitbox      = G.BS.Hitbox or false
-G.BS.HitboxScale = tonumber(G.BS.HitboxScale) or 2
--- СПУФИНГ ТОЧКИ ВЫЛЕТА (прострел стен) — теперь ЧАСТЬ КЛИЕНТ АЙМА,
--- отдельной галочки нет. Подпись FireWeapon:
+-- РАСШИРИТЕЛЬ ХИТБОКСА удалён: невидимая часть на голове не помогала
+-- (попадание считает сервер, наш клиент его не видит).
+-- «ТИХИЙ ВЫСТРЕЛ» удалён: гасил вспышку/звук, но выстрел всё равно
+-- было видно, пользы не было.
+-- «ОПЕРЕЖЕНИЕ ЦЕЛИ» удалено по просьбе (слайдера больше нет).
+
+-- СПУФИНГ ТОЧКИ ВЫЛЕТА (прострел стен) — часть клиент айма.
+-- Подпись FireWeapon:
 --   1: Vector3 — точка вылета (рядом с нами)
 --   2: Vector3 — направление (единичный вектор с разбросом)
 --   3: number  — seed разброса
---   4: table   — данные
+--   4: table   — пустая (проверено: сервер цели там не передаёт)
 --   5: number  — время выстрела
 -- Точку вылета ставим чуть ПОЗАДИ цели: луч стартует уже за стеной.
 -- Отключить спуфинг можно из консоли:
@@ -217,14 +200,12 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 6
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 7 then
-    G.BS.CfgV      = 7
-    G.BS.AimLead   = 0.15
-    G.BS.AimSpeed  = 2000
-    G.BS.Hitbox    = true
-    G.BS.HitboxScale = 2
-    G.BS.RapidFire = false   -- «без кулдауна» удалено из GUI
+if G.BS.CfgV ~= 8 then
+    G.BS.CfgV      = 8
     G.BS.SpoofBack = 6
+    G.BS.SilentShot = false
+    G.BS.Hitbox    = false
+    G.BS.RapidFire = false
 end
 
 if G.BS_Stop then pcall(function() G.BS_Stop() end) end
@@ -1384,27 +1365,9 @@ local function computeBulletPreShot()
         srcPos = cam.CFrame.Position
     end
 
-    -- ОПЕРЕЖЕНИЕ ЦЕЛИ. Враг бежит ~16-20 студов/с, а пуля/пакет до
-    -- сервера идёт не мгновенно: без опережения выстрел приходит туда,
-    -- где враг БЫЛ («выстрел сделался, а враг уже ушёл»).
-    --   lead = AimLead + дистанция / AimSpeed
-    -- AimLead — постоянная добавка (лаг сети), AimSpeed — скорость
-    -- пули. Хитскан? Поставь AimSpeed побольше:
-    --   getgenv().BS.AimSpeed = 100000
-    local aimPos = best.Position
-    do
-        local lead = tonumber(G.BS.AimLead) or 0
-        local spd  = tonumber(G.BS.AimSpeed) or 700
-        if spd > 0 then lead = lead + (aimPos - srcPos).Magnitude / spd end
-        if lead > 0.6 then lead = 0.6 end
-        if lead > 0 then
-            local vel = best.AssemblyLinearVelocity
-            if vel and vel.Magnitude > 1 then
-                aimPos = aimPos + vel * lead
-            end
-        end
-    end
+    -- ОПЕРЕЖЕНИЕ ЦЕЛИ удалено по просьбе: aimPos = позиция цели как есть.
 
+    local aimPos = best.Position
     local dir = aimPos - srcPos
     local dist = dir.Magnitude
     if dist < 0.001 then
@@ -1449,10 +1412,6 @@ local function refreshHookTargets()
     if Remotes then
         NC.fw = Remotes:FindFirstChild("FireWeapon")
         NC.ue = Remotes:FindFirstChild("UseEnergy")
-        -- BurstFX — ремоут вспышки выстрела. Клиент его только слушает
-        -- (OnClientEvent), но если игра шлёт его ещё и ОТ нас, блок
-        -- спрячет вспышку от других игроков.
-        NC.burst = Remotes:FindFirstChild("BurstFX")
     end
     local ch = LP and LP.Character
     NC.myHum = (ch and ch:FindFirstChildOfClass("Humanoid")) or nil
@@ -1676,14 +1635,6 @@ local function ncWrapper(self, ...)
                     return NC.orig(self, table.unpack(out, 1, n))
                 end
             end
-        -- ТИХИЙ ВЫСТРЕЛ: вспышку выстрела на сервер не отправляем.
-        -- Если игра вообще не шлёт этот ремоут от клиента — ветка
-        -- просто никогда не сработает, вреда нет.
-        elseif method == "FireServer" and self == NC.burst then
-            if G.BS.SilentShot then
-                NC.burstBlocked = (NC.burstBlocked or 0) + 1
-                return
-            end
         -- ЗАЩИТА ОТ УРОНА
         elseif method == "TakeDamage" and self == NC.myHum then
             if G.BS.HealthLock then
@@ -1788,135 +1739,9 @@ end
 -- Совместимость: раньше установщик звался installBulletHook.
 local installBulletHook = installNamecall
 
--- ============================================================
---  ТИХИЙ ВЫСТРЕЛ (гасим вспышку / трассер / звук оружия)
--- ============================================================
--- ПОЧЕМУ ТОЛЬКО ТАК. Игра создаёт вспышку и играет звук в момент
--- нажатия — РАНЬШЕ, чем уходит ремоут FireWeapon. Хук стоит уже на
--- ремоуте, то есть к этому моменту визуал создан: «отменить» его
--- подменой аргументов нельзя. Зато все эти объекты лежат ВНУТРИ
--- оружия (Tool) и их можно погасить:
---   ParticleEmitter / Fire / Smoke / Sparkles -> Enabled = false
---   Beam / Trail                              -> Enabled = false
---   PointLight / SpotLight                    -> Enabled = false
---   Sound                                     -> Volume = 0
--- Проверяем каждые 0.4 с: если игра снова включит эффект — погасим.
---
--- ЧТО ЭТО НЕ ДЕЛАЕТ. Спрятать выстрел от ДРУГИХ игроков отсюда
--- невозможно: их клиент рисует эффект сам по команде сервера
--- (Remotes.BurstFX). «Выстрел без выстрела» (как в EliteHub, где
--- урон уходит отдельным HitRemote) требует отдельного ремоута
--- урона — его ищем «Логом ремоутов».
-local mutedTool, mutedAt = nil, 0
-
-local function muteShotFX()
-    if not G.BS.SilentShot then return end
-    local ch = LP and LP.Character
-    local tool = ch and ch:FindFirstChildOfClass("Tool")
-    if not tool then return end
-    if tool == mutedTool and (os.clock() - mutedAt) < 0.4 then return end
-    mutedTool, mutedAt = tool, os.clock()
-    local list = tool:GetDescendants()
-    for i = 1, #list do
-        local d = list[i]
-        pcall(function()
-            if d:IsA("ParticleEmitter") then d.Enabled = false
-            elseif d:IsA("Fire") or d:IsA("Smoke") or d:IsA("Sparkles") then d.Enabled = false
-            elseif d:IsA("Beam") or d:IsA("Trail") then d.Enabled = false
-            elseif d:IsA("PointLight") or d:IsA("SpotLight") then d.Enabled = false
-            elseif d:IsA("Sound") then d.Volume = 0
-            end
-        end)
-    end
-end
-
--- ============================================================
---  НЕВИДИМЫЙ ХИТБОКС (только голова, только враги)
--- ============================================================
--- Тело игроков НЕ трогаем — они выглядят как обычно. Вместо этого
--- каждому вешаем НЕВИДИМУЮ часть на ГОЛОВУ (приварена к Head и
--- следует за ней сама) и раздуваем до нужного размера.
--- Часть создана на НАШЕМ клиенте, сервер её не видит: помогает
--- только если попадание считает клиент.
-local hitboxBy = {}
-
-local function clearHitbox(plr)
-    local p = hitboxBy[plr]
-    if p then pcall(function() p:Destroy() end) end
-    hitboxBy[plr] = nil
-end
-
-local function clearAllHitboxes()
-    for _, p in pairs(hitboxBy) do
-        if p then pcall(function() p:Destroy() end) end
-    end
-    hitboxBy = {}
-end
-
--- УМНЫЙ ХИТБОКС: ставим его ТОЛЬКО ВРАГАМ. Ты вампир — хитбокс
--- появляется только на людях, ты хантер — только на вампирах, своим
--- и союзникам хитбокса нет. Пока твоя роль неизвестна (лобби), ставим
--- всем остальным.
-local function hitboxIsEnemy(plr)
-    local me = string.lower(tostring(G.BS.MyRole or "?"))
-    if me == "?" or me == "none" or me == "" then return true end
-    local e = by[plr]
-    local r = (e and e.role) or roleFromAttr(plr)
-    if not r then return true end
-    return r ~= me
-end
-
-local function applyHitbox()
-    local s = tonumber(G.BS.HitboxScale) or 2
-    if s <= 1.001 then s = 1.001 end
-    local ok, list = pcall(function() return Players:GetPlayers() end)
-    if not ok or type(list) ~= "table" then return end
-    for _, plr in ipairs(list) do
-        if plr ~= LP then
-            local ch = plr.Character
-            local head = ch and ch:FindFirstChild("Head")
-            if not (ch and head and head.Parent) then
-                if hitboxBy[plr] then clearHitbox(plr) end
-            else
-                local box = hitboxBy[plr]
-                if not G.BS.Hitbox or not hitboxIsEnemy(plr) then
-                    if box then clearHitbox(plr) end
-                elseif not box or not box.Parent then
-                    local okI, np = pcall(function() return Instance.new("Part") end)
-                    if not okI or not np then return end
-                    np.Name         = "BS_Hitbox"
-                    np.Transparency  = 1
-                    np.CanCollide    = false
-                    np.CanTouch      = false
-                    np.CanQuery      = true
-                    np.Massless      = true
-                    np.CastShadow    = false
-                    np.Size          = head.Size * s
-                    np.CFrame        = head.CFrame
-                    local okP = pcall(function()
-                        np.Parent = ch
-                        local wc = Instance.new("WeldConstraint")
-                        wc.Part0 = head
-                        wc.Part1 = np
-                        wc.Parent = np
-                    end)
-                    if not okP then
-                        pcall(function() np:Destroy() end)
-                    else
-                        hitboxBy[plr] = np
-                        box = np
-                    end
-                end
-                if box then
-                    pcall(function()
-                        box.Size = head.Size * s
-                        box.Transparency = 1
-                    end)
-                end
-            end
-        end
-    end
-end
+-- «ТИХИЙ ВЫСТРЕЛ» и «РАСШИРИТЕЛЬ ХИТБОКСА» удалены (не работали:
+-- выстрел всё равно рисуют другие клиенты по команде сервера, а
+-- хитбокс сервер всё равно считает по своим частям).
 
 -- ============================================================
 --  СКАН ИГРОКОВ
@@ -1975,7 +1800,6 @@ connRemoving = Players.PlayerRemoving:Connect(function(p) remove(p) end)
 --  КАДР
 -- ============================================================
 local lastT = os.clock()
-local lastHitbox = 0
 local conn = RunService.RenderStepped:Connect(function()
     local now = os.clock()
     local dt = math.min(0.1, math.max(0.001, now - lastT))
@@ -1996,15 +1820,6 @@ local conn = RunService.RenderStepped:Connect(function()
         pcall(computeBulletPreShot)
     elseif bulletPreShot then
         bulletPreShot = nil
-    end
-
-    -- тихий выстрел: гасим вспышку/трассер/звук оружия
-    if G.BS.SilentShot then pcall(muteShotFX) end
-
-    -- расширитель хитбокса (не каждый кадр — раз в 0.2 с)
-    if now - lastHitbox >= 0.2 then
-        lastHitbox = now
-        pcall(applyHitbox)
     end
 
     local cam = workspace.CurrentCamera
@@ -2111,7 +1926,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v9.8",
+    LoadingSubtitle = "ESP + Client Aim v9.9",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2233,43 +2048,6 @@ AI.CreateToggle({
     end,
 })
 
-AI.CreateSlider({ Name = "Опережение цели", Flag = "BS_AimLead",
-    Range = {0, 50}, Increment = 1,
-    CurrentValue = math.floor((G.BS.AimLead or 0.1) * 100),
-    Suffix = " x0.01 сек",
-    Callback = function(v) G.BS.AimLead = v / 100 end })
-AI.CreateToggle({
-    Name = "Умный хитбокс (только враги, голова)", Flag = "BS_Hitbox",
-    CurrentValue = G.BS.Hitbox,
-    Callback = function(v)
-        G.BS.Hitbox = v
-        pcall(applyHitbox)
-        notify(v and "Невидимый хитбокс на голове только у врагов" or "Хитбокс выключен", 3)
-    end,
-})
-AI.CreateSlider({ Name = "Масштаб хитбокса", Flag = "BS_HitboxScale",
-    Range = {1, 5}, Increment = 1, CurrentValue = G.BS.HitboxScale,
-    Suffix = " x",
-    Callback = function(v)
-        G.BS.HitboxScale = v
-        pcall(applyHitbox)
-    end })
-
-AI.CreateToggle({
-    Name = "Тихий выстрел (гасим вспышку/звук)", Flag = "BS_SilentShot",
-    CurrentValue = G.BS.SilentShot,
-    Callback = function(v)
-        G.BS.SilentShot = v
-        mutedTool = nil
-        if v then
-            pcall(muteShotFX)
-            notify("Тихий выстрел: гасим вспышку/звук + блок BurstFX. Если урон пропадёт - выключи", 7)
-        else
-            notify("Тихий выстрел выключен", 2)
-        end
-    end,
-})
-
 -- Секция «Цель» («Кого целить», «Приоритет», «Радиус захвата») и
 -- пикеры «Цвет: захват цели» / «Цвет метки» удалены по просьбе.
 -- Логика выбора цели осталась и работает на дефолтах:
@@ -2308,8 +2086,6 @@ G.BS_Stop = function()
     if connRemoving then pcall(function() connRemoving:Disconnect() end) end
     if connChar     then pcall(function() connChar:Disconnect() end) end
     connAdded, connRemoving, connChar = nil, nil, nil
-    G.BS.Hitbox = false
-    pcall(clearAllHitboxes)
     for i = #netConns, 1, -1 do
         pcall(function() netConns[i]:Disconnect() end)
         netConns[i] = nil
@@ -2350,7 +2126,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v9.8 остановлен")
+    print("[BS HUB] v9.9 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2373,7 +2149,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v9.8 запущен | хуков=" .. #netConns
+print("[BS HUB] v9.9 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
