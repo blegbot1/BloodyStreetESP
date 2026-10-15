@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.2
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.3
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -169,6 +169,7 @@ if G.BS_Stop then pcall(function() G.BS_Stop() end) end
 local hookedHumans = setmetatable({}, { __mode = "k" })
 local energyHooked  = setmetatable({}, { __mode = "k" })
 local fwHooked      = setmetatable({}, { __mode = "k" })
+local hookErr       = setmetatable({}, { __mode = "k" })
 
 -- СОСТОЯНИЕ
 local by           = {}   -- [Player] = {char, role, conf, votes, lastStable, hl, gui, lbl, box}
@@ -824,11 +825,11 @@ local function patchEnergy()
     if not ue or not ue:IsA("RemoteEvent") or energyHooked[ue] then return end
     -- pcall ОБЯЗАТЕЛЕН: без него любая ошибка здесь убила бы весь
     -- поток, а вместе с ним пересканирование стамины при респавне.
-    local ok = pcall(function()
-        local old = hookmetamethod(ue, "FireServer", function(self, ...)
+    local ok, errS = pcall(function()
+        local old = hookmetamethod(ue, "FireServer", bsClosure(function(self, ...)
             if G.BS.InfStamina then return end
             return old(self, ...)
-        end)
+        end))
     end)
     if ok then
         energyHooked[ue] = true
@@ -836,6 +837,8 @@ local function patchEnergy()
         if G.BS.StaminaDebug then
             print("[BS STAM] Remotes.UseEnergy перехват (трата энергии блокируется)")
         end
+    elseif G.BS.StaminaDebug then
+        print("[BS STAM] перехват НЕ встал. Причина: " .. tostring(errS))
     end
 end
 
@@ -891,8 +894,15 @@ local function scanAll()
     for i = 1, #names do print(string.format("  %2d. %s", i, names[i])) end
 
     hr("ВЫРАН ЗАКЛЮЧЕНЫ ХУКИ")
-    print("  FireWeapon     : " .. tostring(fwHooked[Remotes:FindFirstChild("FireWeapon") or false] ~= nil))
+    local fwNow = Remotes and Remotes:FindFirstChild("FireWeapon")
+    print("  FireWeapon     : " .. tostring(fwHooked[fwNow or false] ~= nil))
     print("  UseEnergy      : " .. tostring(energyPatched))
+    -- Причина сразу, иначе "false" ни о чём не говорит
+    if fwNow and hookErr[fwNow] then
+        print("  ПРИЧИНА        : " .. tostring(hookErr[fwNow]))
+    end
+    print("  newcclosure    : " .. tostring(type(newcclosure)))
+    print("  getnamecallmethod: " .. tostring(type(getnamecallmethod)))
 
     local ch = LP and LP.Character
     if ch then
@@ -992,6 +1002,17 @@ local function computeBulletPreShot()
     bulletPreShot = { part = best, dir = dir.Unit }
 end
 
+-- Обёртка для хуков. `newcclosure` есть НЕ во всех исполнителях:
+-- если его нет, прямой вызов падал с "attempt to call a nil value",
+-- и pcall это молча проглатывал (в логе было "хук не встал").
+local function bsClosure(fn)
+    if type(newcclosure) == "function" then
+        local okC, res = pcall(newcclosure, fn)
+        if okC and type(res) == "function" then return res end
+    end
+    return fn
+end
+
 local function installBulletHook()
     if not Remotes then return end
     local fw = Remotes:FindFirstChild("FireWeapon")
@@ -1003,7 +1024,7 @@ local function installBulletHook()
     end
     if fwHooked[fw] then return end
 
-    local ok = pcall(function()
+    local ok, err = pcall(function()
         -- ХУК НА САМОМ РЕМОУТЕ, а НЕ глобальный __namecall.
         --
         -- Раньше стоял hookmetamethod(game, "__namecall", ...) — так делают
@@ -1020,7 +1041,7 @@ local function installBulletHook()
         -- переменная old = nil, и все `return old(self, ...)` падали с
         -- "attempt to call a nil value". Раньше из-за глобального
         -- __namecall это ломало ещё и PlayerScripts Roblox.
-        local old = hookmetamethod(fw, "FireServer", newcclosure(function(self, ...)
+        local old = hookmetamethod(fw, "FireServer", bsClosure(function(self, ...)
             if not G.BS.BulletSwap then
                 return old(self, ...)
             end
@@ -1084,15 +1105,23 @@ local function installBulletHook()
             end
             return old(self, ...)
         end))
+        if not old then
+            error("hookmetamethod вернул nil (нет исходной функции)")
+        end
     end)
 
     if ok then
         fwHooked[fw] = true
+        hookErr[fw] = nil
         if G.BS.BulletDebug then
             print("[BS BULLET] хук FireWeapon.FireServer установлен")
         end
-    elseif G.BS.BulletDebug then
-        print("[BS BULLET] хук не встал — исполнитель заблокировал")
+    else
+        hookErr[fw] = tostring(err)
+        -- ПРИЧИНА ОБЯЗАТЕЛЬНО печатается: раньше pcall глотал ошибку
+        -- и в консоль уходило бесполезное "исполнитель заблокировал",
+        -- из-за чего невозможно было понять, что именно не так.
+        print("[BS BULLET] ХУК НЕ ВСТАЛ. Причина: " .. tostring(err))
     end
 end
 
@@ -1269,7 +1298,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v8.2",
+    LoadingSubtitle = "ESP + Client Aim v8.3",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1562,7 +1591,7 @@ G.BS_Stop = function()
     G.BS.MyRole = "?"
     G.BS.BulletSwap = false
     G.BS_Stop = nil
-    print("[BS HUB] v8.2 остановлен")
+    print("[BS HUB] v8.3 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1583,7 +1612,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v8.2 запущен | хуков=" .. #netConns
+print("[BS HUB] v8.3 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
