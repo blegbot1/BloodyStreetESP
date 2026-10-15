@@ -1,10 +1,11 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.7
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.8
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
---  ролям (вампир / хантер / неизвестный), главный RGB-палитра,
---  сканер игры, выживание (стамина + защита от урона NPC).
+--  ролям (вампир / хантер / неизвестный), сканер игры.
+--  (Блоки «главный RGB», «Точность ролей», «Выживание» и «Прострел»
+--   удалены по просьбе — GUI их больше не показывает.)
 --
 --  КЛИЕНТ АИМ (вкладка AIM): ПОДМЕНА ПАТРОНА. Remotes.FireWeapon
 --  перехватывается через глобальный __namecall, и аргументы
@@ -176,6 +177,11 @@ local NC = { orig = nil, installed = false, wrapper = nil,
 local installNamecall
 
 -- СОСТОЯНИЕ
+-- STOPPED: после G.BS_Stop() фоновые циклы и коннекты обязаны
+-- замолчать, иначе ESP пересоздаётся через секунду и хук ставится
+-- заново при респавне.
+local STOPPED = false
+local connAdded, connRemoving, connChar
 local by           = {}   -- [Player] = {char, role, conf, votes, lastStable, hl, gui, lbl, box}
 local netRoles     = {}
 local burstShooters = {}
@@ -382,6 +388,17 @@ local function hideBox(b)
     end
 end
 
+-- Полное уничтожение коробки. hideBox только прячет, а объекты Drawing
+-- остаются жить -> при каждом респавне утекали 4 линии. Remove() их
+-- освобождает.
+local function destroyBox(b)
+    if not b or not b.lines then return end
+    for i = 1, 4 do
+        if b.lines[i] then pcall(function() b.lines[i]:Remove() end) end
+        b.lines[i] = nil
+    end
+end
+
 -- ============================================================
 --  ДОБАВЛЕНИЕ / УДАЛЕНИЕ ИГРОКОВАVLENIE / UДАЛЕНИЕ IGROKOV
 -- ============================================================
@@ -392,7 +409,7 @@ local function remove(plr)
     if not e then return end
     if e.hl then pcall(function() e.hl:Destroy() end) end
     if e.gui then pcall(function() e.gui:Destroy() end) end
-    hideBox(e.box)
+    destroyBox(e.box)
     by[plr] = nil
     if locked == plr then locked = nil end
 end
@@ -624,7 +641,11 @@ local function isEnemy(plr)
     local e = by[plr]
     if not e then return true end
     local me = string.lower(tostring(G.BS.MyRole or "?"))
-    local t  = AIM_TARGETS[G.BS.AimTargets]
+    -- ВАЖНО: G.BS.AimTargets — это СТРОКА из AIM_TARGETS, а не индекс.
+    -- Раньше тут было AIM_TARGETS[G.BS.AimTargets], то есть поиск по
+    -- строке в массиве -> всегда nil -> фильтр не работал и аим бил
+    -- по всем подряд (включая своих).
+    local t  = G.BS.AimTargets
     if t == "Только вампиров" then
         if e.role and e.role ~= "vampire" then return false end
         return true
@@ -1114,7 +1135,7 @@ function installNamecall()
             local okI, w = pcall(function() return mt.__namecall end)
             if okI then v = w end
         end
-        if type(v) == "function" then origRaw = v end
+        if type(v) == "function" and v ~= NC.wrapper then origRaw = v end
     end)
 
     -- ПУТЬ 1: сырая метатаблица (надёжнее всего, не зависит от
@@ -1146,6 +1167,18 @@ function installNamecall()
             old = hookmetamethod(game, "__namecall", NC.wrapper)
         end)
         if okB then
+            if old == NC.wrapper then
+                -- Хук УЖЕ стоит нашим же wrapper'ом. Ещё раз звать
+                -- hookmetamethod нельзя: он вернёт сам wrapper, и
+                -- NC.orig стал бы равен себе -> бесконечная рекурсия.
+                NC.orig = origRaw or NC.orig
+                if NC.orig then
+                    NC.installed = true
+                    print("[BS HOOK] __namecall уже перехвачен")
+                    return true
+                end
+                return false
+            end
             -- страховка origRaw: даже если hookmetamethod вернул nil,
             -- хук можно безопасно форвардить имеющимся оригиналом.
             NC.orig = (type(old) == "function") and old or origRaw
@@ -1212,9 +1245,9 @@ local function scan()
 end
 
 scan()
-task.spawn(function() while task.wait(1) do pcall(scan) end end)
-Players.PlayerAdded:Connect(function() task.delay(0.5, scan) end)
-Players.PlayerRemoving:Connect(function(p) remove(p) end)
+task.spawn(function() while not STOPPED and task.wait(1) do pcall(scan) end end)
+connAdded    = Players.PlayerAdded:Connect(function() task.delay(0.5, scan) end)
+connRemoving = Players.PlayerRemoving:Connect(function(p) remove(p) end)
 
 -- ============================================================
 --  КАДР
@@ -1343,7 +1376,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v8.7",
+    LoadingSubtitle = "ESP + Client Aim v8.8",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1481,7 +1514,12 @@ AI.CreateToggle({
 --  СТОП
 -- ============================================================
 G.BS_Stop = function()
+    STOPPED = true
     pcall(function() conn:Disconnect() end)
+    if connAdded    then pcall(function() connAdded:Disconnect() end) end
+    if connRemoving then pcall(function() connRemoving:Disconnect() end) end
+    if connChar     then pcall(function() connChar:Disconnect() end) end
+    connAdded, connRemoving, connChar = nil, nil, nil
     for i = #netConns, 1, -1 do
         pcall(function() netConns[i]:Disconnect() end)
         netConns[i] = nil
@@ -1522,7 +1560,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v8.7 остановлен")
+    print("[BS HUB] v8.8 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1532,8 +1570,9 @@ task.spawn(function()
     pcall(installBulletHook)
     pcall(refreshHookTargets)
     if LP then
-        LP.CharacterAdded:Connect(function()
+        connChar = LP.CharacterAdded:Connect(function()
             task.wait(0.5)
+            if STOPPED then return end
             pcall(installDamageHooks)
             pcall(scan)
         end)
@@ -1544,7 +1583,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v8.7 запущен | хуков=" .. #netConns
+print("[BS HUB] v8.8 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
