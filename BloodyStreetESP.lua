@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.4
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.5
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -171,9 +171,15 @@ G.BS.AimMarkColor  = safeColor(G.BS.AimMarkColor,  Color3.fromRGB(255, 200, 0))
 -- Радиус захвата в пикселях. 600 = без ограничения.
 G.BS.AimFOV        = G.BS.AimFOV or 160
 -- ОПЕРЕЖЕНИЕ (в секундах). 0 = целиться в текущую позицию цели.
--- Если пуля летит заметное время и цель успевает убежать — можно
--- поставить в консоли: getgenv().BS.AimLead = 0.15
-G.BS.AimLead       = tonumber(G.BS.AimLead) or 0
+-- Цель бежит ~16-20 студов/с, а выстрел доходит до сервера и
+-- просчитывается там не мгновенно: без опережения пуля приходит
+-- туда, где враг БЫЛ. Поэтому по умолчанию 0.1 с.
+G.BS.AimLead       = tonumber(G.BS.AimLead) or 0.1
+-- ДОБАВКА К ОПЕРЕЖЕНИЮ ОТ ДИСТАНЦИИ: lead = AimLead + dist/AimSpeed.
+-- AimSpeed — примерная скорость пули в студах/с. Если у оружия
+-- хитскан (мгновенное попадание) — поставь побольше, например
+--   getgenv().BS.AimSpeed = 100000
+G.BS.AimSpeed      = tonumber(G.BS.AimSpeed) or 2000
 -- ОТКУДА СЧИТЫВАЕТСЯ НАПРАВЛЕНИЕ ВЫСТРЕЛА:
 --   "camera" (по умолчанию) — от камеры, как стреляет сама игра;
 --   "head"   — от головы персонажа;
@@ -190,6 +196,33 @@ G.BS.AimOrigin     = G.BS.AimOrigin or "camera"
 G.BS.SilentShot = G.BS.SilentShot or false
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
+
+-- БЕЗ КУЛДАУНА (рапид-файр). Игра сама стреляет с паузой; скрипт
+-- дополнительно шлёт выстрел СВОИМ вызовом ремоута FireWeapon — тем
+-- же набором аргументов, что и игра (шаблон снимается с настоящего
+-- выстрела), с направлением в цель. Если сервер сам режет темп —
+-- лишние выстрелы просто не засчитаются.
+G.BS.RapidFire  = G.BS.RapidFire or false
+-- Пауза между нашими выстрелами (сек). 0.1 = 10 выстрелов в секунду.
+G.BS.FireRate   = tonumber(G.BS.FireRate) or 0.1
+-- РАСШИРИТЕЛЬ ХИТБОКСА: увеличиваем части тела игроков, чтобы попадать
+-- легче. Работает на нашей стороне; если игру считает сервер — он
+-- видит обычные хитбоксы, и толк будет только если попадание считает
+-- клиент.
+G.BS.Hitbox      = G.BS.Hitbox or false
+G.BS.HitboxScale = tonumber(G.BS.HitboxScale) or 2
+
+-- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
+-- значения (AimLead=0 и т.п.) перебивали новые дефолты.
+if G.BS.CfgV ~= 5 then
+    G.BS.CfgV      = 5
+    G.BS.AimLead   = 0.1
+    G.BS.AimSpeed  = 2000
+    G.BS.RapidFire = true
+    G.BS.FireRate  = 0.1
+    G.BS.Hitbox    = true
+    G.BS.HitboxScale = 2
+end
 
 if G.BS_Stop then pcall(function() G.BS_Stop() end) end
 
@@ -236,6 +269,22 @@ local function aliasOf(v)
     return nil
 end
 
+-- ИМЯ АТРИБУТА — ПРО КОСМЕТИКУ? Значение "claw_vamp_2" (скин когтей
+-- вампира из лобби) содержит "vamp" и раньше попадало в роль: игрока
+-- с Role=None красило как вампира. Такие поля отбрасываем.
+local COSMETIC_MARK = {
+    "cos_", "cosmetic", "skin", "claw", "wing", "aura", "emote",
+    "pose", "trail", "hair", "owned", "unlocked", "bundle",
+    "nametag", "loadout", "gun", "pass_", "season",
+}
+local function cosmeticName(name)
+    local n = string.lower(tostring(name or ""))
+    for i = 1, #COSMETIC_MARK do
+        if string.find(n, COSMETIC_MARK[i], 1, true) then return true end
+    end
+    return false
+end
+
 -- ============================================================
 --  РЕМОУТЫ
 -- ============================================================
@@ -267,10 +316,25 @@ local function roleFromInstance(inst)
 
     local ok, attrs = pcall(function() return inst:GetAttributes() end)
     if ok and type(attrs) == "table" then
+        -- 1) СНАЧАЛА точное имя "Role" — в этой игре роль лежит именно
+        -- там: player.Role = Hunter / Vampire / None. Раньше перебор
+        -- шёл в случайном порядке (pairs), и первым попадался мусор
+        -- вроде Cos_Claws.
         for name, v in pairs(attrs) do
-            local k = aliasOf(v)
-            if k and k ~= "none" then
-                return k, "атрибут " .. tostring(name) .. "=" .. tostring(v)
+            if string.lower(name) == "role" then
+                local k = aliasOf(v)
+                if k then
+                    return k, "атрибут " .. tostring(name) .. "=" .. tostring(v)
+                end
+            end
+        end
+        -- 2) потом любые другие атрибуты, кроме косметики
+        for name, v in pairs(attrs) do
+            if not cosmeticName(name) then
+                local k = aliasOf(v)
+                if k and k ~= "none" then
+                    return k, "атрибут " .. tostring(name) .. "=" .. tostring(v)
+                end
             end
         end
     end
@@ -279,7 +343,7 @@ local function roleFromInstance(inst)
     if ok2 and type(kids) == "table" then
         for _, c in ipairs(kids) do
             local cls = c.ClassName
-            if cls == "StringValue" then
+            if cls == "StringValue" and not cosmeticName(c.Name) then
                 local k = aliasOf(c.Value)
                 if k and k ~= "none" then
                     return k, "StringValue " .. c.Name .. "=" .. tostring(c.Value)
@@ -311,12 +375,8 @@ local function roleFromAttr(plr)
         k = roleFromInstance(ch)
         if k then return k end
     end
-    -- 3) команда
-    local okT, tm = pcall(function() return plr.Team end)
-    if okT and tm then
-        local kk = aliasOf(tm.Name)
-        if kk and kk ~= "none" then return kk end
-    end
+    -- 3) Team НЕ используем: в этой игре Team у всех = Citizens (роль
+    -- там не лежит), раньше это могло красить всех одинаково.
     return nil
 end
 
@@ -1033,8 +1093,8 @@ local function scanAll()
     print("  RoundPhase     = " .. tostring(G.BS.RoundPhase))
     print("  вампир/хантер  = " .. tostring(G.BS.RoundVamps) .. "/" .. tostring(G.BS.RoundHunters))
 
-    -- РОЛИ ИГРОКОВ: откуда игра их берёт. Если ESP не красит —
-    -- запусти сканер В РАУНДЕ и пришли эти строки.
+    -- РОЛИ ИГРОКОВ. Печатаем только то, что похоже на роль (иначе
+    -- консоль забивалась сотнями строк косметики и было нечитаемо).
     hr("РОЛИ ИГРОКОВ (откуда берём)")
     for _, plr in ipairs(Players:GetPlayers()) do
         local found, src = roleFromInstance(plr)
@@ -1043,31 +1103,20 @@ local function scanAll()
         local okA, attrs = pcall(function() return plr:GetAttributes() end)
         if okA and type(attrs) == "table" then
             for k, v in pairs(attrs) do
-                print(string.format("      player.%s = %s (%s)",
-                    tostring(k), tostring(v), typeof(v)))
+                if string.lower(tostring(k)) == "role" or aliasOf(v) then
+                    print(string.format("      player.%s = %s",
+                        tostring(k), tostring(v)))
+                end
             end
         end
-        local okT, team = pcall(function() return plr.Team end)
-        if okT and team then print("      Team = " .. team.Name) end
         local pch = plr.Character
         if pch then
-            local cf, cs = roleFromInstance(pch)
-            if cf then
-                print("      персонаж -> " .. tostring(cf) .. " (" .. tostring(cs) .. ")")
-            end
             local okC, cattrs = pcall(function() return pch:GetAttributes() end)
             if okC and type(cattrs) == "table" then
                 for k, v in pairs(cattrs) do
-                    print(string.format("      char.%s = %s (%s)",
-                        tostring(k), tostring(v), typeof(v)))
-                end
-            end
-            local okK, kids = pcall(function() return pch:GetChildren() end)
-            if okK and type(kids) == "table" then
-                for _, d in ipairs(kids) do
-                    if d.ClassName == "StringValue" or d.ClassName == "BoolValue" then
-                        print(string.format("      char child %s (%s) = %s",
-                            d.Name, d.ClassName, tostring(d.Value)))
+                    if string.lower(tostring(k)) == "role" or aliasOf(v) then
+                        print(string.format("      char.%s = %s",
+                            tostring(k), tostring(v)))
                     end
                 end
             end
@@ -1161,18 +1210,6 @@ local function computeBulletPreShot()
         return
     end
 
-    -- ОПЕРЕЖЕНИЕ. Если пуля летит заметное время, цель успевает уйти
-    -- с линии огня. G.BS.AimLead = сколько секунд вперёд целиться
-    -- (по умолчанию 0 — без опережения).
-    local aimPos = best.Position
-    local lead = tonumber(G.BS.AimLead) or 0
-    if lead > 0 then
-        local vel = best.AssemblyLinearVelocity
-        if vel and vel.Magnitude > 1 then
-            aimPos = aimPos + vel * lead
-        end
-    end
-
     -- ТОЧКА ВЫЛЕТА — КАМЕРА, а не HumanoidRootPart.
     -- Раньше направление считалось от корня (пояс, ~3.5 студа), а игра
     -- пускает пулю от камеры/головы (~5 студов). Разница по высоте
@@ -1190,6 +1227,28 @@ local function computeBulletPreShot()
     else
         srcPos = cam.CFrame.Position
     end
+
+    -- ОПЕРЕЖЕНИЕ ЦЕЛИ. Враг бежит ~16-20 студов/с, а пуля/пакет до
+    -- сервера идёт не мгновенно: без опережения выстрел приходит туда,
+    -- где враг БЫЛ («выстрел сделался, а враг уже ушёл»).
+    --   lead = AimLead + дистанция / AimSpeed
+    -- AimLead — постоянная добавка (лаг сети), AimSpeed — скорость
+    -- пули. Хитскан? Поставь AimSpeed побольше:
+    --   getgenv().BS.AimSpeed = 100000
+    local aimPos = best.Position
+    do
+        local lead = tonumber(G.BS.AimLead) or 0
+        local spd  = tonumber(G.BS.AimSpeed) or 700
+        if spd > 0 then lead = lead + (aimPos - srcPos).Magnitude / spd end
+        if lead > 0.6 then lead = 0.6 end
+        if lead > 0 then
+            local vel = best.AssemblyLinearVelocity
+            if vel and vel.Magnitude > 1 then
+                aimPos = aimPos + vel * lead
+            end
+        end
+    end
+
     local dir = aimPos - srcPos
     local dist = dir.Magnitude
     if dist < 0.001 then
@@ -1253,6 +1312,17 @@ local function ncFireWeapon(...)
     local args = table.pack(...)
     local out = {}
     for i = 1, n do out[i] = args[i] end
+
+    -- ШАБЛОН ВЫСТРЕЛА. Аргументов 28 и сигнатуру мы не знаем, поэтому
+    -- «без кулдауна» шлёт выстрел ТЕМ ЖЕ набором, что и игра, —
+    -- копией настоящих аргументов. Меняем в нём только направление
+    -- (это делает подмена ниже) и протухшую позицию ствола.
+    if not NC.sending then
+        local t = table.create(n)
+        for i = 1, n do t[i] = args[i] end
+        NC.tpl, NC.tplN = t, n
+        NC.tplSrc = pre and pre.src or nil
+    end
 
     -- ИЩЕМ VECTOR3-АРГУМЕНТ, который является направлением выстрела.
     --  * позицию ствола/игрока не трогаем: она рядом с нами;
@@ -1562,6 +1632,138 @@ local function muteShotFX()
 end
 
 -- ============================================================
+--  БЕЗ КУЛДАУНА (рапид-файр)
+-- ============================================================
+-- Игра сама стреляет с паузой (кулдаун оружия). Пока пауза идёт —
+-- враг уходит. Поэтому, пока держишь ЛКМ, мы ДОПОЛНИТЕЛЬНО шлём
+-- выстрел тем же ремоутом и тем же набором аргументов, что и игра
+-- (шаблон снимается с настоящего выстрела), а направление подставляет
+-- __namecall-хук — в цель и с опережением.
+-- Если сервер сам режет темп, лишние выстрелы просто не засчитаются.
+local UIS = game:GetService("UserInputService")
+local rapidHeld = false
+
+local function sendTemplateShot()
+    local tpl, tn = NC.tpl, NC.tplN
+    if not (tpl and tn and NC.fw and NC.orig) then return false end
+    local pre = bulletPreShot
+    if not (pre and pre.part and pre.part.Parent and pre.dir) then return false end
+
+    local out = table.create(tn)
+    for i = 1, tn do out[i] = tpl[i] end
+
+    -- Позиция ствола в шаблоне протухла — она снята там, где мы стояли
+    -- в момент захвата. Всё, что рядом с той точкой, — это позиции,
+    -- заменяем на текущую точку вылета. Направление подменит хук.
+    local tsrc = NC.tplSrc
+    if tsrc then
+        for i = 1, tn do
+            local v = out[i]
+            if typeof(v) == "Vector3" and (v - tsrc).Magnitude < 25 then
+                out[i] = pre.src
+            end
+        end
+    end
+
+    NC.sending = true
+    local ok = pcall(function()
+        NC.fw:FireServer(table.unpack(out, 1, tn))
+    end)
+    NC.sending = false
+    if ok then G.BS.RapidShots = (G.BS.RapidShots or 0) + 1 end
+    return ok
+end
+
+local connRapidBegan, connRapidEnded
+local function installRapidInput()
+    if connRapidBegan then return end
+    connRapidBegan = UIS.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            rapidHeld = true
+        end
+    end)
+    connRapidEnded = UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            rapidHeld = false
+        end
+    end)
+end
+installRapidInput()
+
+task.spawn(function()
+    while not STOPPED do
+        task.wait(0.02)
+        if rapidHeld and G.BS.RapidFire and G.BS.BulletSwap and NC.tpl then
+            local rate = tonumber(G.BS.FireRate) or 0.1
+            if rate < 0.03 then rate = 0.03 end
+            local now = os.clock()
+            if now - (NC.lastSend or 0) >= rate then
+                NC.lastSend = now
+                local ch = LP and LP.Character
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    pcall(sendTemplateShot)
+                end
+            end
+        end
+    end
+end)
+
+-- ============================================================
+--  РАСШИРИТЕЛЬ ХИТБОКСА
+-- ============================================================
+-- Раздуваем части тела всех, кроме себя, — попасть становится легче.
+-- HumanoidRootPart НЕ трогаем: если его увеличить, персонаж начнёт
+-- висеть над землёй / проваливаться.
+-- ВАЖНО: это видит только наш клиент. Если попадание считает СЕРВЕР
+-- (своим рейкастом по своим хитбоксам) — толку не будет; помогает,
+-- когда попадание считает клиент.
+local hitOrig = setmetatable({}, { __mode = "k" })
+local hitRestored = true
+
+local function restoreHitbox()
+    for p, sz in pairs(hitOrig) do
+        pcall(function()
+            if p and p.Parent then p.Size = sz end
+        end)
+    end
+    hitOrig = setmetatable({}, { __mode = "k" })
+    hitRestored = true
+end
+
+local function applyHitbox()
+    if not G.BS.Hitbox then
+        if not hitRestored then restoreHitbox() end
+        return
+    end
+    hitRestored = false
+    local s = tonumber(G.BS.HitboxScale) or 2
+    if s <= 1.001 then return end
+    local ok, list = pcall(function() return Players:GetPlayers() end)
+    if not ok or type(list) ~= "table" then return end
+    for _, plr in ipairs(list) do
+        if plr ~= LP then
+            local ch = plr.Character
+            if ch and ch.Parent then
+                for _, p in ipairs(ch:GetChildren()) do
+                    if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+                        local sz = hitOrig[p]
+                        if not sz then
+                            sz = p.Size
+                            hitOrig[p] = sz
+                        end
+                        local want = sz * s
+                        if p.Size ~= want then
+                            pcall(function() p.Size = want end)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- ============================================================
 --  СКАН ИГРОКОВ
 -- ============================================================
 local function scan()
@@ -1618,6 +1820,7 @@ connRemoving = Players.PlayerRemoving:Connect(function(p) remove(p) end)
 --  КАДР
 -- ============================================================
 local lastT = os.clock()
+local lastHitbox = 0
 local conn = RunService.RenderStepped:Connect(function()
     local now = os.clock()
     local dt = math.min(0.1, math.max(0.001, now - lastT))
@@ -1642,6 +1845,12 @@ local conn = RunService.RenderStepped:Connect(function()
 
     -- тихий выстрел: гасим вспышку/трассер/звук оружия
     if G.BS.SilentShot then pcall(muteShotFX) end
+
+    -- расширитель хитбокса (не каждый кадр — раз в 0.2 с)
+    if now - lastHitbox >= 0.2 then
+        lastHitbox = now
+        pcall(applyHitbox)
+    end
 
     local cam = workspace.CurrentCamera
     if not cam then
@@ -1747,7 +1956,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v9.4",
+    LoadingSubtitle = "ESP + Client Aim v9.5",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1866,6 +2075,46 @@ AI.CreateToggle({
 })
 
 AI.CreateToggle({
+    Name = "Без кулдауна (рапид-файр)", Flag = "BS_RapidFire",
+    CurrentValue = G.BS.RapidFire,
+    Callback = function(v)
+        G.BS.RapidFire = v
+        if v then
+            pcall(installBulletHook)
+            notify("Рапид-файр: жми и держи ЛКМ", 4)
+        else
+            notify("Рапид-файр выключен", 2)
+        end
+    end,
+})
+AI.CreateSlider({ Name = "Пауза между выстрелами", Flag = "BS_FireRate",
+    Range = {3, 50}, Increment = 1,
+    CurrentValue = math.floor((G.BS.FireRate or 0.1) * 100),
+    Suffix = " x0.01 сек",
+    Callback = function(v) G.BS.FireRate = v / 100 end })
+AI.CreateSlider({ Name = "Опережение цели", Flag = "BS_AimLead",
+    Range = {0, 50}, Increment = 1,
+    CurrentValue = math.floor((G.BS.AimLead or 0.1) * 100),
+    Suffix = " x0.01 сек",
+    Callback = function(v) G.BS.AimLead = v / 100 end })
+AI.CreateToggle({
+    Name = "Расширитель хитбокса", Flag = "BS_Hitbox",
+    CurrentValue = G.BS.Hitbox,
+    Callback = function(v)
+        G.BS.Hitbox = v
+        pcall(applyHitbox)
+        notify(v and "Хитбоксы увеличены" or "Хитбоксы обычные", 3)
+    end,
+})
+AI.CreateSlider({ Name = "Масштаб хитбокса", Flag = "BS_HitboxScale",
+    Range = {1, 5}, Increment = 1, CurrentValue = G.BS.HitboxScale,
+    Suffix = " x",
+    Callback = function(v)
+        G.BS.HitboxScale = v
+        pcall(applyHitbox)
+    end })
+
+AI.CreateToggle({
     Name = "Тихий выстрел (гасим вспышку/звук)", Flag = "BS_SilentShot",
     CurrentValue = G.BS.SilentShot,
     Callback = function(v)
@@ -1918,6 +2167,12 @@ G.BS_Stop = function()
     if connRemoving then pcall(function() connRemoving:Disconnect() end) end
     if connChar     then pcall(function() connChar:Disconnect() end) end
     connAdded, connRemoving, connChar = nil, nil, nil
+    if connRapidBegan then pcall(function() connRapidBegan:Disconnect() end) end
+    if connRapidEnded then pcall(function() connRapidEnded:Disconnect() end) end
+    connRapidBegan, connRapidEnded = nil, nil
+    rapidHeld = false
+    G.BS.Hitbox = false
+    pcall(restoreHitbox)
     for i = #netConns, 1, -1 do
         pcall(function() netConns[i]:Disconnect() end)
         netConns[i] = nil
@@ -1958,7 +2213,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v9.4 остановлен")
+    print("[BS HUB] v9.5 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1981,7 +2236,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v9.4 запущен | хуков=" .. #netConns
+print("[BS HUB] v9.5 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
