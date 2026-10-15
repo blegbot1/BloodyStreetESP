@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.9
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.0
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -158,6 +158,10 @@ G.BS.AimLockColor  = safeColor(G.BS.AimLockColor,  Color3.fromRGB(255, 50, 50))
 G.BS.AimMarkColor  = safeColor(G.BS.AimMarkColor,  Color3.fromRGB(255, 200, 0))
 -- Радиус захвата в пикселях. 600 = без ограничения.
 G.BS.AimFOV        = G.BS.AimFOV or 160
+-- ОПЕРЕЖЕНИЕ (в секундах). 0 = целиться в текущую позицию цели.
+-- Если пуля летит заметное время и цель успевает убежать — можно
+-- поставить в консоли: getgenv().BS.AimLead = 0.15
+G.BS.AimLead       = tonumber(G.BS.AimLead) or 0
 
 if G.BS_Stop then pcall(function() G.BS_Stop() end) end
 
@@ -222,16 +226,68 @@ end
 local Remotes = findRemotes()
 local netConns = {}
 
--- РОЛЬ ИЗ АТРИБУТА — единственный источник с первого кадра
-local ROLE_ATTRS = {
-    "Role", "TicketArmedRole", "RealRole", "HiddenRole",
-    "AssignedRole", "GameRole", "Team", "TeamName",
-}
+-- ПОИСК РОЛИ.
+-- Раньше проверялся только фиксированный список ИМЁН атрибутов
+-- ("Role", "Team", ...). Если игра называла атрибут иначе — роль не
+-- находилась НИ У КОГО, и ESP не красил ни вампиров, ни хантеров.
+-- Теперь смотрим на ЗНАЧЕНИЕ, а не на имя: любой атрибут игрока или
+-- персонажа (а также StringValue / BoolValue в персонаже), значение
+-- которого похоже на роль, считается ролью. Какое именно поле
+-- сработало — видно в консоли через «Сканер игры».
+local function roleFromInstance(inst)
+    if not inst then return nil end
+
+    local ok, attrs = pcall(function() return inst:GetAttributes() end)
+    if ok and type(attrs) == "table" then
+        for name, v in pairs(attrs) do
+            local k = aliasOf(v)
+            if k and k ~= "none" then
+                return k, "атрибут " .. tostring(name) .. "=" .. tostring(v)
+            end
+        end
+    end
+
+    local ok2, kids = pcall(function() return inst:GetChildren() end)
+    if ok2 and type(kids) == "table" then
+        for _, c in ipairs(kids) do
+            local cls = c.ClassName
+            if cls == "StringValue" then
+                local k = aliasOf(c.Value)
+                if k and k ~= "none" then
+                    return k, "StringValue " .. c.Name .. "=" .. tostring(c.Value)
+                end
+            elseif cls == "BoolValue" then
+                -- например IsVampire = true
+                if c.Value == true then
+                    local nm = string.lower(c.Name)
+                    if string.find(nm, "vamp", 1, true) then
+                        return "vampire", "BoolValue " .. c.Name
+                    end
+                    if string.find(nm, "hunt", 1, true) then
+                        return "hunter", "BoolValue " .. c.Name
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
 
 local function roleFromAttr(plr)
-    for _, key in ipairs(ROLE_ATTRS) do
-        local k = aliasOf(plr:GetAttribute(key))
-        if k and k ~= "none" then return k end
+    -- 1) атрибуты/значения самого игрока
+    local k = roleFromInstance(plr)
+    if k then return k end
+    -- 2) атрибуты/значения персонажа
+    local ch = plr.Character
+    if ch then
+        k = roleFromInstance(ch)
+        if k then return k end
+    end
+    -- 3) команда
+    local okT, tm = pcall(function() return plr.Team end)
+    if okT and tm then
+        local kk = aliasOf(tm.Name)
+        if kk and kk ~= "none" then return kk end
     end
     return nil
 end
@@ -924,6 +980,48 @@ local function scanAll()
     print("  G.BS.MyRole    = " .. tostring(G.BS.MyRole))
     print("  RoundPhase     = " .. tostring(G.BS.RoundPhase))
     print("  вампир/хантер  = " .. tostring(G.BS.RoundVamps) .. "/" .. tostring(G.BS.RoundHunters))
+
+    -- РОЛИ ИГРОКОВ: откуда игра их берёт. Если ESP не красит —
+    -- запусти сканер В РАУНДЕ и пришли эти строки.
+    hr("РОЛИ ИГРОКОВ (откуда берём)")
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local found, src = roleFromInstance(plr)
+        print(string.format("  %s -> %s (%s)", plr.Name,
+            tostring(found), tostring(src or "-")))
+        local okA, attrs = pcall(function() return plr:GetAttributes() end)
+        if okA and type(attrs) == "table" then
+            for k, v in pairs(attrs) do
+                print(string.format("      player.%s = %s (%s)",
+                    tostring(k), tostring(v), typeof(v)))
+            end
+        end
+        local okT, team = pcall(function() return plr.Team end)
+        if okT and team then print("      Team = " .. team.Name) end
+        local pch = plr.Character
+        if pch then
+            local cf, cs = roleFromInstance(pch)
+            if cf then
+                print("      персонаж -> " .. tostring(cf) .. " (" .. tostring(cs) .. ")")
+            end
+            local okC, cattrs = pcall(function() return pch:GetAttributes() end)
+            if okC and type(cattrs) == "table" then
+                for k, v in pairs(cattrs) do
+                    print(string.format("      char.%s = %s (%s)",
+                        tostring(k), tostring(v), typeof(v)))
+                end
+            end
+            local okK, kids = pcall(function() return pch:GetChildren() end)
+            if okK and type(kids) == "table" then
+                for _, d in ipairs(kids) do
+                    if d.ClassName == "StringValue" or d.ClassName == "BoolValue" then
+                        print(string.format("      char child %s (%s) = %s",
+                            d.Name, d.ClassName, tostring(d.Value)))
+                    end
+                end
+            end
+        end
+    end
+
     hr("ТЕПЕРЬ ВЫСТРЕЛИ С ДИАГНОСТИКОЙ ПАТРОНА")
 end
 
@@ -932,10 +1030,12 @@ end
 -- ============================================================
 -- Сигнатуру FireWeapon мы не знаем, поэтому хук не угадывает один
 -- вариант, а смотрит на ФАКТИЧЕСКИЕ аргументы при выстреле:
---   - есть Vector3  -> считаем направлением/позицией, подменяем на
---     вектор к цели (единичный, если исходный единичный);
---   - нет Vector3, но есть Instance -> считаем это целью;
---   - ничего не узнали -> стреляем КАК ЕСТЬ (безопасный откат).
+--   - ищем Vector3, который не похож на позицию ствола (то есть не
+--     рядом с нами), и берём самый длинный — это направление выстрела;
+--   - подменяем его на вектор к цели, СОХРАНЯЯ длину (не меньше
+--     расстояния до цели) — иначе пуля летит верно, но не достаёт;
+--   - если Vector3 нет, но есть Instance/Player — считаем это целью;
+--   - если ничего не распознали — стреляем КАК ЕСТЬ, без подмены.
 local sigLogged = false
 
 local function pickPartOf(ch)
@@ -958,7 +1058,19 @@ local function computeBulletPreShot()
         return
     end
 
-    local best, bestD
+    -- ПРИОРИТЕТ ЦЕЛИ:
+    --   1) тот, кто ПОД ПРИЦЕЛОМ (близко к центру экрана) — тогда пуля
+    --      идёт именно в того, в кого ты стреляешь;
+    --   2) если под прицелом никого — ближайший по расстоянию.
+    -- Раньше брался только ближайший по расстоянию, поэтому выстрел
+    -- в дальнего врага уходил в ближнего, который стоял сбоку.
+    local vp  = cam.ViewportSize
+    local ccx, ccy = vp.X * 0.5, vp.Y * 0.5
+    local CONE = 220 -- пикселей: считаем, что цель «под прицелом»
+    local CONE2 = CONE * CONE
+
+    local bestAim,  bestAimD    -- ближайший под прицелом
+    local bestNear, bestNearD   -- ближайший вообще
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP and by[plr] and isEnemy(plr) then
             local ch = plr.Character
@@ -968,25 +1080,56 @@ local function computeBulletPreShot()
                 if q then
                     local d = (q.Position - myRoot.Position).Magnitude
                     if G.BS.AimMaxDist <= 0 or d <= G.BS.AimMaxDist then
-                        if not bestD or d < bestD then
-                            best, bestD = q, d
+                        if not bestNearD or d < bestNearD then
+                            bestNear, bestNearD = q, d
+                        end
+                        local sp = cam:WorldToViewportPoint(q.Position)
+                        if sp.Z > 0 then
+                            local dx, dy = sp.X - ccx, sp.Y - ccy
+                            if (dx * dx + dy * dy) <= CONE2 then
+                                if not bestAimD or d < bestAimD then
+                                    bestAim, bestAimD = q, d
+                                end
+                            end
                         end
                     end
                 end
             end
         end
     end
+    local best = bestAim or bestNear
 
     if not best then
         bulletPreShot = nil
         return
     end
-    local dir = best.Position - myRoot.Position
-    if dir.Magnitude < 0.001 then
+
+    -- ОПЕРЕЖЕНИЕ. Если пуля летит заметное время, цель успевает уйти
+    -- с линии огня. G.BS.AimLead = сколько секунд вперёд целиться
+    -- (по умолчанию 0 — без опережения).
+    local aimPos = best.Position
+    local lead = tonumber(G.BS.AimLead) or 0
+    if lead > 0 then
+        local vel = best.AssemblyLinearVelocity
+        if vel and vel.Magnitude > 1 then
+            aimPos = aimPos + vel * lead
+        end
+    end
+
+    local srcPos = myRoot.Position
+    local dir = aimPos - srcPos
+    local dist = dir.Magnitude
+    if dist < 0.001 then
         bulletPreShot = nil
         return
     end
-    bulletPreShot = { part = best, dir = dir.Unit }
+    bulletPreShot = {
+        part = best,     -- цель (Instance)
+        pos  = aimPos,   -- куда целимся
+        src  = srcPos,   -- откуда стреляем
+        dist = dist,     -- расстояние до цели
+        dir  = dir.Unit, -- направление
+    }
 end
 
 -- ============================================================
@@ -1034,19 +1177,39 @@ local function ncFireWeapon(...)
     local out = {}
     for i = 1, n do out[i] = args[i] end
 
-    -- последний Vector3 — обычно это направление выстрела
-    local replaced = false
-    for i = n, 1, -1 do
+    -- ИЩЕМ VECTOR3-АРГУМЕНТ, который является направлением выстрела.
+    --  * позицию ствола/игрока не трогаем: она рядом с нами;
+    --  * из оставшихся берём САМЫЙ ДЛИННЫЙ — это направление выстрела.
+    local myPos = pre.src
+    local pickIdx, pickLen = nil, nil
+    for i = 1, n do
         if typeof(out[i]) == "Vector3" then
-            local len = out[i].Magnitude
-            if len > 0.01 and len < 1.5 then
-                out[i] = pre.dir
-            else
-                out[i] = pre.part.Position
+            local v = out[i]
+            local len = v.Magnitude
+            local looksLikePos = myPos and len > 8 and (v - myPos).Magnitude < 8
+            if not looksLikePos then
+                if not pickLen or len > pickLen then
+                    pickIdx, pickLen = i, len
+                end
             end
-            replaced = true
-            break
         end
+    end
+
+    local replaced, how = false, nil
+    if pickIdx then
+        -- ГЛАВНОЕ: ДЛИНУ НЕ УМЕНЬШАЕМ.
+        -- Раньше в этот вектор клался либо единичный вектор, либо
+        -- АБСОЛЮТНАЯ позиция цели. Пуля летела в нужную сторону, но
+        -- не попадала: если игра берёт дальность полёта из ДЛИНЫ
+        -- этого вектора, то длина 1 = 1 студ, и сервер не видит
+        -- попадания (трассер рисуется, урона нет).
+        -- Теперь длина = расстояние до цели (и не меньше исходной).
+        local base = pickLen or 1
+        if base < pre.dist then base = pre.dist end
+        if base < 1 then base = 1 end
+        if base > 5000 then base = 5000 end
+        out[pickIdx] = pre.dir * base
+        replaced, how = true, "вектор #" .. tostring(pickIdx)
     end
 
     -- нет Vector3 -> возможно цель передаётся объектом
@@ -1055,23 +1218,41 @@ local function ncFireWeapon(...)
             local t = typeof(out[i])
             if t == "Instance" or t == "Player" then
                 out[i] = pre.part
-                replaced = true
+                replaced, how = true, "объект-цель #" .. tostring(i)
                 break
             end
         end
     end
 
+    -- ДИАГНОСТИКА: печатаем не только типы, но и ЗНАЧЕНИЯ — по ним
+    -- видно, какой аргумент за что отвечает.
     if G.BS.BulletDebug and not sigLogged then
         sigLogged = true
-        local kinds = {}
-        for i = 1, n do kinds[i] = typeof(args[i]) end
-        if replaced then
-            print("[BS BULLET] подмена работает (" .. n
-                .. " arg): " .. table.concat(kinds, ", "))
-        else
-            print("[BS BULLET] сигнатура не распознана (" .. n
-                .. " arg): " .. table.concat(kinds, ", "))
+        local list = {}
+        local show = n
+        if show > 14 then show = 14 end
+        for i = 1, show do
+            local t = typeof(args[i])
+            local val = nil
+            if t == "Vector3" then
+                val = string.format("%.1f, %.1f, %.1f",
+                    args[i].X, args[i].Y, args[i].Z)
+            elseif t == "number" then
+                val = string.format("%.2f", args[i])
+            elseif t == "string" then
+                val = args[i]
+            elseif t == "boolean" then
+                val = tostring(args[i])
+            elseif t == "Instance" then
+                val = args[i].ClassName .. " " .. args[i].Name
+            elseif t == "Player" then
+                val = "Player " .. args[i].Name
+            end
+            list[i] = i .. ":" .. t .. (val and (" (" .. val .. ")") or "")
         end
+        print("[BS BULLET] аргументов " .. n .. ": " .. table.concat(list, " | "))
+        print(string.format("[BS BULLET] цель=%s дистанция=%.1f -> %s",
+            pre.part.Name, pre.dist, how or "СИГНАТУРА НЕ РАСПОЗНАНА"))
     end
     if not replaced then return nil end
 
@@ -1220,7 +1401,11 @@ local function scan()
                     add(plr)
                 end
                 if not G.BS.RoleFreeze then
-                    applyRole(by[plr], roleFromAttr(plr) or netRoles[plr], CONF.attr)
+                    -- applyRole зовём ТОЛЬКО когда роль реально найдена:
+                    -- иначе nil получал уверенность 6 и мешал настоящим
+                    -- источникам роли перебить его.
+                    local rr = roleFromAttr(plr) or netRoles[plr]
+                    if rr then applyRole(by[plr], rr, CONF.attr) end
                 end
             end
         end
@@ -1374,7 +1559,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v8.9",
+    LoadingSubtitle = "ESP + Client Aim v9.0",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1558,7 +1743,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v8.9 остановлен")
+    print("[BS HUB] v9.0 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1581,7 +1766,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v8.9 запущен | хуков=" .. #netConns
+print("[BS HUB] v9.0 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
