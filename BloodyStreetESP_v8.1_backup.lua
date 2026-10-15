@@ -125,7 +125,9 @@ G.BS.LastPhase   = G.BS.LastPhase   or "?"
 G.BS.MyRole      = G.BS.MyRole      or "?"
 
 -- ---------- КЛИЕНТ АИМ ----------
-G.BS.BulletSwap      = G.BS.BulletSwap      or false
+-- КЛИЕНТ АЙМ по умолчанию ВКЛ (иначе подмена патрона молча
+-- не работала: в стартовой строке статуса было "klient aym: false").
+G.BS.BulletSwap      = G.BS.BulletSwap      ~= false
 G.BS.BulletDebug     = G.BS.BulletDebug     or false
 G.BS.SilentShots     = G.BS.SilentShots     or 0
 -- ПРОСТРЕЛ СТЕН по умолчанию ВКЛ. Иначе цель за стеной отбрасывалась,
