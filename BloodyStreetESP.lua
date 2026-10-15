@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.2
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.3
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -174,6 +174,13 @@ G.BS.AimFOV        = G.BS.AimFOV or 160
 -- Если пуля летит заметное время и цель успевает убежать — можно
 -- поставить в консоли: getgenv().BS.AimLead = 0.15
 G.BS.AimLead       = tonumber(G.BS.AimLead) or 0
+-- ОТКУДА СЧИТЫВАЕТСЯ НАПРАВЛЕНИЕ ВЫСТРЕЛА:
+--   "camera" (по умолчанию) — от камеры, как стреляет сама игра;
+--   "head"   — от головы персонажа;
+--   "root"   — от HumanoidRootPart (пояс).
+-- Если пуля всё ещё уходит выше/ниже цели — переключи на ходу:
+--   getgenv().BS.AimOrigin = "head"
+G.BS.AimOrigin     = G.BS.AimOrigin or "camera"
 
 if G.BS_Stop then pcall(function() G.BS_Stop() end) end
 
@@ -1138,7 +1145,23 @@ local function computeBulletPreShot()
         end
     end
 
-    local srcPos = myRoot.Position
+    -- ТОЧКА ВЫЛЕТА — КАМЕРА, а не HumanoidRootPart.
+    -- Раньше направление считалось от корня (пояс, ~3.5 студа), а игра
+    -- пускает пулю от камеры/головы (~5 студов). Разница по высоте
+    -- (~1.5 студа) уходила прямо в прицел: пуля летела ВЫШЕ головы
+    -- ровно на эту разницу — и на близкой, и на дальней дистанции.
+    -- Считаем от камеры: именно оттуда игра и стреляет.
+    -- Можно поменять на ходу: getgenv().BS.AimOrigin = "head" / "root".
+    local srcPos
+    local originMode = G.BS.AimOrigin
+    if originMode == "root" then
+        srcPos = myRoot.Position
+    elseif originMode == "head" then
+        local myHead = LP.Character and LP.Character:FindFirstChild("Head")
+        srcPos = (myHead and myHead.Position) or cam.CFrame.Position
+    else
+        srcPos = cam.CFrame.Position
+    end
     local dir = aimPos - srcPos
     local dist = dir.Magnitude
     if dist < 0.001 then
@@ -1586,7 +1609,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v9.2",
+    LoadingSubtitle = "ESP + Client Aim v9.3",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1770,7 +1793,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v9.2 остановлен")
+    print("[BS HUB] v9.3 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1793,7 +1816,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v9.2 запущен | хуков=" .. #netConns
+print("[BS HUB] v9.3 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
