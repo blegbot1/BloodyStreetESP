@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.3
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.4
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -1298,7 +1298,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v8.3",
+    LoadingSubtitle = "ESP + Client Aim v8.4",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1338,79 +1338,10 @@ end
 local TB = mkTab(TAB,  "ESP")
 local AI = mkTab(AIMT, "AIM")
 
--- ---------- ЦВЕТ ----------
-local function rgbColor()
-    return Color3.fromRGB(G.BS.R, G.BS.G, G.BS.B)
-end
-
-local function hexStr()
-    return string.format("%02X%02X%02X", G.BS.R, G.BS.G, G.BS.B)
-end
-
-local function hexToRGB(h)
-    h = string.gsub(tostring(h or ""), "#", "")
-    h = string.gsub(h, "%s", "")
-    if #h == 3 then
-        h = string.rep(h:sub(1, 1), 2) .. string.rep(h:sub(2, 2), 2)
-            .. string.rep(h:sub(3, 3), 2)
-    end
-    if #h ~= 6 then return nil end
-    local r = tonumber(h:sub(1, 2), 16)
-    local g = tonumber(h:sub(3, 4), 16)
-    local b = tonumber(h:sub(5, 6), 16)
-    if not (r and g and b) then return nil end
-    return r, g, b
-end
-
-local function applyMainColor()
-    local c = rgbColor()
-    local t = G.BS.RGBTarget
-    if t == RGB_TARGETS[1] then G.BS.AimLockColor = c
-    elseif t == RGB_TARGETS[2] then G.BS.VampColor    = c
-    elseif t == RGB_TARGETS[3] then G.BS.HunterColor  = c
-    elseif t == RGB_TARGETS[4] then G.BS.PlayerColor  = c
-    elseif t == RGB_TARGETS[5] then G.BS.AimMarkColor = c
-    end
-end
+-- Блок «ГЛАВНЫЙ ЦВЕТ (RGB)» удалён по просьбе: rgbColor/hexStr/
+-- hexToRGB/applyMainColor больше не вызываются.
 
 -- ======================= ESP =======================
-TB.CreateSection("ГЛАВНЫЙ ЦВЕТ (RGB)")
-TB.CreateDropdown({
-    Name = "Что красить этим цветом", Flag = "BS_RGBTarget",
-    Options = RGB_TARGETS, CurrentOption = G.BS.RGBTarget,
-    Callback = function(v)
-        G.BS.RGBTarget = v
-        applyMainColor()
-    end,
-})
-local function rgbSlider(name, key, flag)
-    TB.CreateSlider({
-        Name = name, Flag = flag,
-        Range = {0, 255}, Increment = 1, CurrentValue = G.BS[key],
-        Callback = function(v)
-            G.BS[key] = math.clamp(math.floor(v), 0, 255)
-            applyMainColor()
-        end,
-    })
-end
-rgbSlider("Красный (R)", "R", "BS_RGB_R")
-rgbSlider("Зелёный (G)", "G", "BS_RGB_G")
-rgbSlider("Синий (B)", "B", "BS_RGB_B")
-TB.CreateInput({
-    Name = "HEX (например FF3755)", Flag = "BS_RGBHex",
-    PlaceholderText = "FF3755", CurrentValue = hexStr(),
-    Callback = function(t)
-        local r, g, b = hexToRGB(t)
-        if not r then
-            notify("HEX не распознан, жду 6 символов", 3)
-            return
-        end
-        G.BS.R, G.BS.G, G.BS.B = r, g, b
-        applyMainColor()
-        notify("Цвет применён: #" .. hexStr(), 3)
-    end,
-})
-
 TB.CreateSection("Игроки")
 TB.CreateToggle({ Name = "ESP игроков", Flag = "BS_PlayerESP",
     CurrentValue = G.BS.PlayerESP, Callback = function(v) G.BS.PlayerESP = v end })
@@ -1454,36 +1385,6 @@ TB.CreateSlider({ Name = "Макс. дистанция ESP (0 = вся)", Flag =
     Range = {0, 2000}, Increment = 25, CurrentValue = G.BS.MaxDist,
     Suffix = " studs", Callback = function(v) G.BS.MaxDist = v end })
 
-TB.CreateSection("Точность ролей")
-TB.CreateSlider({
-    Name = "Подтверждений для смены роли", Flag = "BS_RoleSticks",
-    Range = {1, 6}, Increment = 1, CurrentValue = G.BS.RoleSticks,
-    Callback = function(v) G.BS.RoleSticks = v end,
-})
-TB.CreateToggle({ Name = "Заморозка ролей", Flag = "BS_RoleFreeze",
-    CurrentValue = G.BS.RoleFreeze, Callback = function(v) G.BS.RoleFreeze = v end })
-
-TB.CreateSection("Выживание")
-TB.CreateToggle({ Name = "Бесконечная стамина", Flag = "BS_InfStamina",
-    CurrentValue = G.BS.InfStamina,
-    Callback = function(v)
-        G.BS.InfStamina = v
-        if v then pcall(patchEnergy) end
-    end })
-TB.CreateToggle({ Name = "Диагностика стамины (в консоль)", Flag = "BS_StaminaDebug",
-    CurrentValue = G.BS.StaminaDebug,
-    Callback = function(v) G.BS.StaminaDebug = v end })
-TB.CreateToggle({ Name = "Защита от урона NPC", Flag = "BS_HealthLock",
-    CurrentValue = G.BS.HealthLock,
-    Callback = function(v)
-        G.BS.HealthLock = v
-        if v then pcall(installDamageHooks) end
-    end })
-TB.CreateSlider({ Name = "Здоровье (защита)", Flag = "BS_HealthMax",
-    Range = {1, 5000}, Increment = 50, Suffix = " HP",
-    CurrentValue = G.BS.HealthMax,
-    Callback = function(v) G.BS.HealthMax = math.floor(v) end })
-
 TB.CreateSection("Сканер")
 TB.CreateButton({ Name = "СКАНИРОВАТЬ ИГРУ (в консоль)", Callback = function()
     pcall(scanAll)
@@ -1513,24 +1414,6 @@ AI.CreateToggle({
             notify("Клиент айм выключен", 2)
         end
     end,
-})
-
-AI.CreateSection("Прострел")
-AI.CreateToggle({
-    Name = "Прострел стен (цель за стеной)", Flag = "BS_Penetrate",
-    CurrentValue = G.BS.Penetrate,
-    Callback = function(v)
-        G.BS.Penetrate = v
-        bulletPreShot = nil
-        notify(v and "Прострел ВКЛ — стены не мешают"
-               or "Прострел ВЫКЛ — только видимые", 3)
-    end,
-})
-AI.CreateSlider({
-    Name = "Макс. дистанция подмены", Flag = "BS_AimMaxDist",
-    Range = {0, 1500}, Increment = 25,
-    CurrentValue = G.BS.AimMaxDist, Suffix = " studs",
-    Callback = function(v) G.BS.AimMaxDist = v end,
 })
 
 AI.CreateSection("Цель")
@@ -1591,7 +1474,7 @@ G.BS_Stop = function()
     G.BS.MyRole = "?"
     G.BS.BulletSwap = false
     G.BS_Stop = nil
-    print("[BS HUB] v8.3 остановлен")
+    print("[BS HUB] v8.4 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1612,7 +1495,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v8.3 запущен | хуков=" .. #netConns
+print("[BS HUB] v8.4 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
