@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.5
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v8.6
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -830,10 +830,10 @@ local function patchEnergy()
     -- pcall ОБЯЗАТЕЛЕН: без него любая ошибка здесь убила бы весь
     -- поток, а вместе с ним пересканирование стамины при респавне.
     local ok, errS = pcall(function()
-        local old = hookmetamethod(ue, "FireServer", bsClosure(function(self, ...)
+        local old = hookmetamethod(ue, "FireServer", function(self, ...)
             if G.BS.InfStamina then return end
             return old(self, ...)
-        end))
+        end)
     end)
     if ok then
         energyHooked[ue] = true
@@ -1006,16 +1006,14 @@ local function computeBulletPreShot()
     bulletPreShot = { part = best, dir = dir.Unit }
 end
 
--- Обёртка для хуков. `newcclosure` есть НЕ во всех исполнителях:
--- если его нет, прямой вызов падал с "attempt to call a nil value",
--- и pcall это молча проглатывал (в логе было "хук не встал").
-local function bsClosure(fn)
-    if type(newcclosure) == "function" then
-        local okC, res = pcall(newcclosure, fn)
-        if okC and type(res) == "function" then return res end
-    end
-    return fn
-end
+-- Обёртка bsClosure УДАЛЕНА намеренно.
+--
+-- newcclosure создаёт замыкание БЕЗ upvalue. Из-за этого в хуках
+-- `old` не захватывался и оставался nil:
+--   return old(self, ...)  ->  "attempt to call a nil value"
+-- Из-за этого падало ВСЁ в игре (GarlicController, ControlModule,
+-- CameraModule, InputLock, HotbarController, SoundPingController).
+-- Для хуков, которым нужен захват переменных, newcclosure нельзя.
 
 local function installBulletHook()
     if not Remotes then return end
@@ -1046,8 +1044,14 @@ local function installBulletHook()
         --   hookmetamethod(game, "__namecall", function(self, ...)
         --       return old(self, ...)   -- old == nil
         -- Любой вызов через ":" в игре уходил в этот хук и падал.
-        -- С `local old =` в restored-виде всё работает штатно.
-        local old = hookmetamethod(game, "__namecall", bsClosure(function(self, ...)
+        --
+        -- ВАЖНО: здесь ОБЫЧНАЯ функция, а НЕ newcclosure.
+        -- `newcclosure` создаёт замыкание БЕЗ upvalue, поэтому `old`
+        -- в неё не попадал и оставался nil — снова "attempt to call
+        -- a nil value" на строке 1055 и сыпь ошибок по всей игре.
+        -- Для хуков, которым нужен захват переменных, newcclosure
+        -- использовать нельзя.
+        local old = hookmetamethod(game, "__namecall", function(self, ...)
             local okM, method = pcall(getnamecallmethod)
             -- всё, кроме нашего FireWeapon, идёт в оригинал без изменений
             if not (okM and method == "FireServer" and self == fw
@@ -1113,13 +1117,13 @@ local function installBulletHook()
                     .. " arg): " .. table.concat(kinds, ", "))
             end
             return old(self, ...)
-        end))
+        end)
         if not old then
             error("hookmetamethod вернул nil (нет исходной функции)")
         end
         lastNamecallOld = old
-        -- Метод не хукается, а __namecall хукается — это ожидаемо,
-        -- поэтому fwHooked ставим только если реально есть old.
+        -- __namecall хукается глобально, fwHooked ставим только
+        -- если реально есть old.
     end)
 
     if ok then
@@ -1311,7 +1315,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v8.5",
+    LoadingSubtitle = "ESP + Client Aim v8.6",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -1473,7 +1477,7 @@ G.BS_Stop = function()
         namecallOld = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v8.5 остановлен")
+    print("[BS HUB] v8.6 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -1494,7 +1498,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v8.5 запущен | хуков=" .. #netConns
+print("[BS HUB] v8.6 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
