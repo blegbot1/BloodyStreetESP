@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v9.9
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.0
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -177,6 +177,11 @@ G.BS.AimFOV        = G.BS.AimFOV or 160
 -- Если пуля уходит выше/ниже цели — переключи на ходу:
 --   getgenv().BS.AimOrigin = "head"
 G.BS.AimOrigin     = G.BS.AimOrigin or "camera"
+-- ОПЕРЕЖЕНИЕ ЦЕЛИ (сек), фиксированное, без слайдера. Пакет идёт до
+-- сервера ~0.1 с — за это время цель убегает, и без опережения пуля
+-- приходит туда, где враг БЫЛ. Меняется на ходу:
+--   getgenv().BS.AimLead = 0.15
+G.BS.AimLead       = tonumber(G.BS.AimLead) or 0.08
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
 
@@ -184,25 +189,22 @@ G.BS.RemoteLog  = G.BS.RemoteLog or false
 -- (попадание считает сервер, наш клиент его не видит).
 -- «ТИХИЙ ВЫСТРЕЛ» удалён: гасил вспышку/звук, но выстрел всё равно
 -- было видно, пользы не было.
--- «ОПЕРЕЖЕНИЕ ЦЕЛИ» удалено по просьбе (слайдера больше нет).
+-- «ОПЕРЕЖЕНИЕ ЦЕЛИ»: слайдер удалён, но само опережение внутри аима
+-- осталось (фиксированное, меняется из консоли) — без него по бегущим
+-- не попадает вообще.
 
--- СПУФИНГ ТОЧКИ ВЫЛЕТА (прострел стен) — часть клиент айма.
--- Подпись FireWeapon:
---   1: Vector3 — точка вылета (рядом с нами)
---   2: Vector3 — направление (единичный вектор с разбросом)
---   3: number  — seed разброса
---   4: table   — пустая (проверено: сервер цели там не передаёт)
---   5: number  — время выстрела
--- Точку вылета ставим чуть ПОЗАДИ цели: луч стартует уже за стеной.
--- Отключить спуфинг можно из консоли:
---   getgenv().BS.SpoofBack = 0
-G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 6
+-- СПУФИНГ ТОЧКИ ВЫЛЕТА. По умолчанию ВЫКЛЮЧЕН (0): сервер всё равно
+-- считает луч от позиции игрока, а подмена точки вылета приводила к
+-- тому, что выстрел просто не засчитывался (выстрел есть, урона нет).
+-- Включить из консоли: getgenv().BS.SpoofBack = 6
+G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 8 then
-    G.BS.CfgV      = 8
-    G.BS.SpoofBack = 6
+if G.BS.CfgV ~= 9 then
+    G.BS.CfgV      = 9
+    G.BS.AimLead   = 0.08
+    G.BS.SpoofBack = 0
     G.BS.SilentShot = false
     G.BS.Hitbox    = false
     G.BS.RapidFire = false
@@ -1365,9 +1367,24 @@ local function computeBulletPreShot()
         srcPos = cam.CFrame.Position
     end
 
-    -- ОПЕРЕЖЕНИЕ ЦЕЛИ удалено по просьбе: aimPos = позиция цели как есть.
+    -- ОПЕРЕЖЕНИЕ ЦЕЛИ — фиксированное, без слайдера. Без него по бегущим
+-- не попадает физически: пакет идёт до сервера ~0.1 с, за это время
+-- цель убегает на 1.5-2 студа, а голова — всего 1.2.
+-- Меняется из консоли (слайдера в GUI нет):
+--   getgenv().BS.AimLead = 0     -- выключить совсем
+--   getgenv().BS.AimLead = 0.15  -- сильнее забег вперёд
 
     local aimPos = best.Position
+    do
+        local lead = tonumber(G.BS.AimLead) or 0
+        if lead > 0 then
+            local vel = best.AssemblyLinearVelocity
+            if vel and vel.Magnitude > 1 then
+                aimPos = aimPos + vel * lead
+            end
+        end
+    end
+
     local dir = aimPos - srcPos
     local dist = dir.Magnitude
     if dist < 0.001 then
@@ -1460,26 +1477,42 @@ local function ncFireWeapon(...)
     local replaced = false
     local bits = {}
 
+    -- НАПРАВЛЕНИЕ СЧИТАЕМ ОТ ТОЧКИ ВЫЛЕТА САМОЙ ИГРЫ (аргумент №1),
+    -- а НЕ от камеры. Сервер пускает луч именно от этой точки, поэтому
+    -- так попадание точное: нет ошибки из-за того, что камера смещена
+    -- назад/в сторону от ствола. Именно из-за этой разницы пуля уходила
+    -- мимо головы.
+    local aimDir, aimDist = pre.dir, pre.dist
+    if posIdx and typeof(out[posIdx]) == "Vector3" then
+        local v = pre.pos - out[posIdx]
+        if v.Magnitude > 0.001 then
+            aimDir  = v.Unit
+            aimDist = v.Magnitude
+        end
+    end
+
     -- 1) НАПРАВЛЕНИЕ. Длину НЕ уменьшаем: если игра берёт из неё
-    --    дальность полёта, короткий вектор = короткий выстрел.
+    --    дальность полёта (или вообще складывает origin + vector как
+    --    конечную точку), короткий вектор = короткий выстрел.
     if dirIdx then
         local base = dirLen or 1
-        if base < pre.dist then base = pre.dist end
+        if base < aimDist then base = aimDist end
         if base < 1 then base = 1 end
         if base > 20000 then base = 20000 end
-        out[dirIdx] = pre.dir * base
+        out[dirIdx] = aimDir * base
         replaced = true
         bits[#bits + 1] = "направление #" .. tostring(dirIdx)
     end
 
-    -- 2) ТОЧКА ВЫЛЕТА (прострел). Ставим её чуть ПОЗАДИ цели: луч
-    --    стартует уже за стеной и идёт сквозь цель. Это часть клиент
-    --    айма, отдельной галочки нет. Отключить: getgenv().BS.SpoofBack = 0
+    -- 2) ТОЧКА ВЫЛЕТА. По умолчанию НЕ трогаем (SpoofBack = 0): сервер
+    --    всё равно считает луч от игрока, а подмена точки вылета
+    --    приводила к тому, что выстрел просто не засчитывался.
+    --    Включить из консоли: getgenv().BS.SpoofBack = 6
     if posIdx then
         local back = tonumber(G.BS.SpoofBack) or 0
         if back > 0 then
             if back > 100 then back = 100 end
-            out[posIdx] = pre.pos - pre.dir * back
+            out[posIdx] = pre.pos - aimDir * back
             replaced = true
             bits[#bits + 1] = "точка вылета #" .. tostring(posIdx)
         end
@@ -1926,7 +1959,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v9.9",
+    LoadingSubtitle = "ESP + Client Aim v10.0",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2126,7 +2159,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v9.9 остановлен")
+    print("[BS HUB] v10.0 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2149,7 +2182,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v9.9 запущен | хуков=" .. #netConns
+print("[BS HUB] v10.0 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
