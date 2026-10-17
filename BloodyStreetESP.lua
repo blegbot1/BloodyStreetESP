@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.7
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.8
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -198,6 +198,14 @@ G.BS.AimLockFireOnly = G.BS.AimLockFireOnly == true
 -- ТРИГГЕР: работаем только когда враг ПРЯМО ПО КУРСУ (в конусе
 -- прицела). Нет врага впереди - не целимся и не доворачиваем камеру.
 G.BS.Trigger         = G.BS.Trigger ~= false
+-- Радиус триггера: доля высоты экрана. 0.10 = узко, реально по курсу.
+G.BS.TriggerCone     = tonumber(G.BS.TriggerCone) or 0.10
+-- АИМ ДЛЯ ЛОМЫ (MeleeSwing) / формы вампира (TrueFormMelee) /
+-- тейзера (StunFire). Удар принимает направление и проверяется так
+-- же, как выстрел, поэтому направление подменяется на цель.
+G.BS.MeleeAim        = G.BS.MeleeAim ~= false
+-- Аимлок НЕ доводит камеру сквозь стены.
+G.BS.AimLockNoWall   = G.BS.AimLockNoWall ~= false
 -- ПРОСТРЕЛ СТЕН. Сервер разрешает увести точку вылета на
 -- Config.Combat.SHOT_ORIGIN_SLACK = 14 студов. Ставим её за стеной.
 G.BS.WallPenetrate   = G.BS.WallPenetrate ~= false
@@ -225,16 +233,18 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 15 then
-    G.BS.CfgV      = 15
+if G.BS.CfgV ~= 16 then
+    G.BS.CfgV      = 16
     G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
     G.BS.AimLead   = 0.08
     G.BS.AimLock   = true
-    G.BS.AimLockSpeed = 25     -- SHOT_ANGLE_SLACK_DEG = 3: камера должна
-                              -- совпадать с патроном, доворачиваем быстро
+    G.BS.AimLockSpeed = 25     -- SHOT_ANGLE_SLACK_DEG = 3
     G.BS.AimLockNeedAim = true
     G.BS.AimLockFireOnly = false
+    G.BS.AimLockNoWall = true
     G.BS.Trigger   = true
+    G.BS.TriggerCone = 0.10
+    G.BS.MeleeAim  = true
     G.BS.WallPenetrate = true
     G.BS.OriginSlack = 13     -- SHOT_ORIGIN_SLACK = 14
     G.BS.SpoofBack = 0
@@ -257,6 +267,7 @@ if G.BS_Stop then pcall(function() G.BS_Stop() end) end
 --   на первое присваивание нового ключа.
 local NC = { orig = nil, installed = false, wrapper = nil,
              fw = nil, ue = nil, myHum = nil,
+             melee = nil, tfmelee = nil, stun = nil,
              burst = nil, burstBlocked = 0,
              sending = false, lastSend = 0,
              tpl = nil, tplN = nil, tplSrc = nil }
@@ -1387,9 +1398,14 @@ local function computeBulletPreShot()
     -- пару пикселей, и в узкий круг он не попадал.
     local CONE = math.max(220, math.floor(vp.Y * 0.35))
     local CONE2 = CONE * CONE
+    -- ТРИГГЕР — УЗКИЙ конус. Отдельный от конуса выбора цели: триггер
+    -- должен срабатывать только когда враг РЕАЛЬНО по курсу, а не где
+    -- угодно на треть экрана.
+    local TCONE = math.max(80, math.floor(vp.Y * (tonumber(G.BS.TriggerCone) or 0.10)))
+    local TCONE2 = TCONE * TCONE
 
-    local bestAim,  bestAimS    -- под прицелом: у кого МЕНЬШЕ расстояние
-                                -- до центра экрана, тот и цель
+    local bestAim,  bestAimS    -- под прицелом (широкий конус)
+    local bestTrig, bestTrigS   -- прямо по курсу (узкий конус)
     local bestNear, bestNearD   -- иначе — ближайший по расстоянию
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP and by[plr] and isEnemy(plr) then
@@ -1412,6 +1428,11 @@ local function computeBulletPreShot()
                                     bestAim, bestAimS = q, s2
                                 end
                             end
+                            if s2 <= TCONE2 then
+                                if not bestTrigS or s2 < bestTrigS then
+                                    bestTrig, bestTrigS = q, s2
+                                end
+                            end
                         end
                     end
                 end
@@ -1423,7 +1444,7 @@ local function computeBulletPreShot()
     -- ТРИГГЕР: если вампир/враг прямо по курсу (в конусе прицела) -
     -- работаем; если впереди никого нет - НЕ целимся и НЕ ведём
     -- камеру. Никто сзади/сбоку не трогаем.
-    if G.BS.Trigger and not bestAim then
+    if G.BS.Trigger and not bestTrig then
         bulletPreShot = nil
         return
     end
@@ -1470,7 +1491,15 @@ local function computeBulletPreShot()
         if lead > 0 then
             local vel = best.AssemblyLinearVelocity
             if vel and vel.Magnitude > 1 then
-                aimPos = aimPos + vel * lead
+                -- СМЕЩЕНИЕ ОГРАНИЧЕНО. Прыгающий игрок летит вверх со
+                -- скоростью ~25 студов/с, и опережение 0.08 с уводило
+                -- точку на 2 студа ВЫШЕ головы - аимлок от этого
+                -- сбрасывался, а выстрел шёл мимо.
+                local off = vel * lead
+                local m = off.Magnitude
+                local maxOff = 2.5
+                if m > maxOff then off = off * (maxOff / m) end
+                aimPos = aimPos + off
             end
         end
     end
@@ -1534,6 +1563,8 @@ end
 --   3) по желанию — только пока зажат огонь;
 --   4) персонаж жив.
 local UIS = game:GetService("UserInputService")
+local AIMLOCKRAY = RaycastParams.new()
+AIMLOCKRAY.FilterType = Enum.RaycastFilterType.Exclude
 local gunInHand, gunCheckAt = false, 0
 
 local function refreshGunFlag(now)
@@ -1572,16 +1603,98 @@ local function aimLockTick(dt, now)
     if not cam then return end
     local cf = cam.CFrame
     local pos = cf.Position
-    if (pre.part.Position - pos).Magnitude < 0.5 then return end
-    local target = CFrame.lookAt(pos, pre.part.Position, cf.UpVector)
-    local sp = tonumber(G.BS.AimLockSpeed) or 14
+
+    -- Камера смотрит в ТОЧКУ ПОПАДАНИЯ (pre.pos), а не в Head:
+    -- там уже учтено опережение. Иначе взгляд и патрон смотрят в
+    -- разные точки, а сервер режет выстрел при расхождении больше
+    -- SHOT_ANGLE_SLACK_DEG = 3 градусов.
+    local look = pre.pos
+    local toT = look - pos
+    if toT.Magnitude < 0.5 then return end
+
+    -- НЕ ДОВОДИМ КАМЕРУ СКВОЗЬ СТЕНЫ (по просьбе): если между нами и
+    -- целью стена - взгляд остаётся твоим.
+    if G.BS.AimLockNoWall then
+        local blocked = false
+        pcall(function()
+            AIMLOCKRAY.FilterDescendantsInstances = { LP.Character, pre.part.Parent }
+            local hit = workspace:Raycast(pos, toT, AIMLOCKRAY)
+            if hit and hit.Distance < toT.Magnitude - 1.2 then blocked = true end
+        end)
+        if blocked then return end
+    end
+
+    local target = CFrame.lookAt(pos, look, cf.UpVector)
+    local sp = tonumber(G.BS.AimLockSpeed) or 25
     if sp <= 0 then
         cam.CFrame = target
-    else
-        local t = sp * (dt or 0.016)
-        if t > 1 then t = 1 end
-        cam.CFrame = cf:Lerp(target, t)
+        return
     end
+
+    -- ПРЫГАЮЩАЯ ЦЕЛЬ. Плавный доворот отстаёт от быстрого движения
+    -- (особенно вверх) и угол взгляда уходит за 3 градуса. Если
+    -- расхождение большое - доворачиваем мгновенно.
+    local wantDir = toT.Unit
+    local dot = cf.LookVector:Dot(wantDir)
+    if dot < 1 then
+        if dot < -1 then dot = -1 end
+        local ang = math.acos(dot) * (180 / math.pi)
+        if ang > 12 then
+            cam.CFrame = target
+            return
+        end
+    end
+    local t = sp * (dt or 0.016)
+    if t > 1 then t = 1 end
+    cam.CFrame = cf:Lerp(target, t)
+end
+
+-- ============================================================
+--  МЕЛЬЕ: подмена направления удара
+-- ============================================================
+-- Лома (MeleeSwing), форма вампира (TrueFormMelee) и тейзер
+-- (StunFire) принимают по одному Vector3 - направление удара, по
+-- логу ремоутов:
+--   MeleeSwing@Remotes:FireServer n=1  1:Vector3 (-0.1, -0.1, -1.0)
+-- Удар проверяется так же, как выстрел (конус + дальность), поэтому
+-- направление просто заменяем на наше - в ту же цель, куда наводит
+-- аимлок. Дальность удара Config.Combat.MELEE_RANGE = 17.
+local MELEE_RANGE = 18
+
+local function ncMeleeDir(...)
+    local pre = bulletPreShot
+    if not (pre and pre.part and pre.part.Parent and pre.dir) then return nil end
+    if pre.dist > MELEE_RANGE then return nil end
+    local n = select("#", ...)
+    if n < 1 then return nil end
+
+    local args = table.pack(...)
+    local out = {}
+    for i = 1, n do out[i] = args[i] end
+
+    -- ищем Vector3-направление: длинный и НЕ рядом с нами
+    local myPos = pre.src
+    local pickIdx, pickLen = nil, nil
+    for i = 1, n do
+        if typeof(out[i]) == "Vector3" then
+            local v = out[i]
+            local len = v.Magnitude
+            local near = myPos and (v - myPos).Magnitude or 999
+            if near > 8 then
+                if not pickLen or len > pickLen then
+                    pickIdx, pickLen = i, len
+                end
+            end
+        end
+    end
+    if not pickIdx then return nil end
+
+    -- длину сохраняем: игра шлёт ЕДИНИЧНЫЙ вектор (0.9-1.0)
+    local base = pickLen or 1
+    if base < 0.001 then base = 1 end
+    out[pickIdx] = pre.dir * base
+    G.BS.SilentShots = (G.BS.SilentShots or 0) + 1
+    return out, n
 end
 
 -- ============================================================
@@ -1613,6 +1726,12 @@ local function refreshHookTargets()
     if Remotes then
         NC.fw = Remotes:FindFirstChild("FireWeapon")
         NC.ue = Remotes:FindFirstChild("UseEnergy")
+        -- МЕЛЬЕ. По логу ремоутов: MeleeSwing/TrueFormMelee/StunFire
+        -- принимают ОДИН Vector3 - направление удара. Значит удар
+        -- проверяется так же, как выстрел, и подменяется так же.
+        NC.melee  = Remotes:FindFirstChild("MeleeSwing")
+        NC.tfmelee = Remotes:FindFirstChild("TrueFormMelee")
+        NC.stun   = Remotes:FindFirstChild("StunFire")
     end
     local ch = LP and LP.Character
     NC.myHum = (ch and ch:FindFirstChildOfClass("Humanoid")) or nil
@@ -1853,6 +1972,15 @@ local function ncWrapper(self, ...)
         elseif method == "FireServer" and self == NC.fw then
             if G.BS.BulletSwap then
                 local out, n = ncFireWeapon(...)
+                if out then
+                    return NC.orig(self, table.unpack(out, 1, n))
+                end
+            end
+        -- МЕЛЬЕ: удар дубинкой / формой вампира / тейзером.
+        elseif method == "FireServer"
+            and (self == NC.melee or self == NC.tfmelee or self == NC.stun) then
+            if G.BS.MeleeAim then
+                local out, n = ncMeleeDir(...)
                 if out then
                     return NC.orig(self, table.unpack(out, 1, n))
                 end
@@ -2247,7 +2375,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v10.7",
+    LoadingSubtitle = "ESP + Client Aim v10.8",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2392,6 +2520,11 @@ AI.CreateToggle({
     CurrentValue = G.BS.AimLockFireOnly,
     Callback = function(v) G.BS.AimLockFireOnly = v end,
 })
+AI.CreateToggle({
+    Name = "Аимлок не наводится сквозь стены", Flag = "BS_AimLockNoWall",
+    CurrentValue = G.BS.AimLockNoWall,
+    Callback = function(v) G.BS.AimLockNoWall = v end,
+})
 AI.CreateSlider({ Name = "Скорость доворота камеры", Flag = "BS_AimLockSpeed",
     Range = {0, 40}, Increment = 1, CurrentValue = G.BS.AimLockSpeed,
     Suffix = " (0 = мгновенно)",
@@ -2404,6 +2537,19 @@ AI.CreateToggle({
     Callback = function(v)
         G.BS.Trigger = v
         notify(v and "Целимся только тех, кто впереди" or "Целимся и сзади", 3)
+    end,
+})
+AI.CreateSlider({ Name = "Радиус триггера (узко = 0.10)", Flag = "BS_TriggerCone",
+    Range = {3, 40}, Increment = 1,
+    CurrentValue = math.floor((G.BS.TriggerCone or 0.1) * 100),
+    Suffix = " x0.01 экрана",
+    Callback = function(v) G.BS.TriggerCone = v / 100 end })
+AI.CreateToggle({
+    Name = "Аим для ломы / формы / тейзера", Flag = "BS_MeleeAim",
+    CurrentValue = G.BS.MeleeAim,
+    Callback = function(v)
+        G.BS.MeleeAim = v
+        notify(v and "Удар ломой идёт в цель" or "Аим для ломы выключен", 3)
     end,
 })
 AI.CreateToggle({
@@ -2500,7 +2646,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v10.7 остановлен")
+    print("[BS HUB] v10.8 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2530,10 +2676,11 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v10.7 запущен | хуков=" .. #netConns
+print("[BS HUB] v10.8 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | триггер: " .. tostring(G.BS.Trigger)
     .. " | прострел: " .. tostring(G.BS.WallPenetrate)
+    .. " | лома: " .. tostring(G.BS.MeleeAim)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
