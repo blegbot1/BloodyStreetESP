@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.7
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.8
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -167,8 +167,14 @@ G.BS.B = math.clamp(math.floor(tonumber(G.BS.B) or 55), 0, 255)
 
 -- ---------- ВЫЖИВАНИЕ ----------
 G.BS.InfStamina  = G.BS.InfStamina  or false
--- БЕСКОНЕЧНЫЕ ПАТРОНЫ: держим Charges = MaxCharges.
-G.BS.InfAmmo     = G.BS.InfAmmo ~= false
+-- БЕСКОНЕЧНЫЕ ПАТРОНЫ УДАЛЕНЫ: счётчик патронов живёт на сервере,
+-- клиентом его не наполнить - сервер всё равно не засчитывает
+-- выстрел (проверено на игре). Зато есть кулдаун: он клиентский, и его
+-- можно снять. Config.Combat.WEAPON_COOLDOWN = 0.3.
+G.BS.NoCooldown   = G.BS.NoCooldown ~= false
+-- Сдвиг времени выстрела в ремоуте (аргумент №5) вперёд, чтобы
+-- сервер считал, что WEAPON_COOLDOWN уже прошёл.
+G.BS.ShotTimeHack = G.BS.ShotTimeHack == true
 -- ПОДСВЕТКА ТЕКУЩЕЙ ЦЕЛИ (кто выбран аимом).
 G.BS.TargetMark  = G.BS.TargetMark ~= false
 G.BS.TargetMarkColor = safeColor(G.BS.TargetMarkColor, Color3.new(1, 1, 1))
@@ -296,8 +302,8 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 24 then
-    G.BS.CfgV      = 24
+if G.BS.CfgV ~= 25 then
+    G.BS.CfgV      = 25
     G.BS.AimLockSpeed = 1      -- мгновенный доворот (иначе отстаёт на ходу)
     G.BS.LockHold      = 0.6
     G.BS.LockHoldOnFire = true
@@ -317,7 +323,8 @@ if G.BS.CfgV ~= 24 then
     G.BS.Hud        = true
     G.BS.AimChain  = true
     G.BS.AimFreePart = true
-    G.BS.InfAmmo   = true
+    G.BS.NoCooldown = true
+    G.BS.ShotTimeHack = false
     G.BS.TargetMark = true
     G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
     G.BS.AimLead   = 0.08
@@ -350,7 +357,7 @@ local NC = { orig = nil, installed = false, wrapper = nil,
              fw = nil, ue = nil, myHum = nil,
              melee = nil, tfmelee = nil, stun = nil,
              burst = nil, burstBlocked = 0,
-             sending = false, lastSend = 0,
+             sending = false, lastSend = 0, lastShotT = 0,
              tpl = nil, tplN = nil, tplSrc = nil }
 -- forward-декларация: реализация ниже (после всех зависимостей).
 -- Именно forward-декларация, а не `local installNamecall = function`,
@@ -1887,38 +1894,42 @@ local function roleFromTool(plr)
 end
 
 -- ============================================================
---  БЕСКОНЕЧНЫЕ ПАТРОНЫ
+--  БЕЗ КУЛДАУНА ОРУЖИЯ (вместо «бесконечных патронов»)
 -- ============================================================
--- Имя атрибута с патронами выясняется на лету: перебираем ВСЕ
--- числовые атрибуты оружия и ищем похожие на заряд/патроны
--- (charge/ammo/mag/clip/shots/bullets). Раньше жёстко стояло
--- "Charges" - если игра называла его иначе, скрипт тихо ничего не
--- делал, и «бесконечные патроны не работали».
--- Заодно обнуляем готовность (ReadyAt/CooldownUntil/Until - время в
--- будущем), чтобы оружие было готово к выстрелу всегда.
-local ammoDumpDone = false
-local function looksLikeAmmo(name)
-    local n = string.lower(tostring(name or ""))
-    return string.find(n, "charge", 1, true) ~= nil
-        or string.find(n, "ammo", 1, true) ~= nil
-        or string.find(n, "mag", 1, true) ~= nil
-        or string.find(n, "clip", 1, true) ~= nil
-        or string.find(n, "bullet", 1, true) ~= nil
-        or string.find(n, "shot", 1, true) ~= nil
-end
+-- ПРО «бесконечные патроны»: это чисто клиентский счётчик, сервер
+-- ведёт СВОЙ учёт и всё равно не засчитывает выстрел. Проверено на
+-- игре: патроны в клиенте можно держать полными сколько угодно,
+-- сервер всё равно блокирует выстрел. Поэтому эту фичу убрали.
+--
+-- ЧТО ДЕЙСТВИТЕЛЬНО БЛОКИРУЕТ СТРЕЛЬБУ - кулдаун. В конфиге игры:
+--   Config.Combat.WEAPON_COOLDOWN      = 0.30  (секунды между выстрелами)
+--   Config.Combat.GUN_DRY_FIRE_GAP     = 0.25
+--   Config.Combat.SHOT_FIRE_JITTER     = 0.10
+--   Config.Combat.GUN_RECOIL_RECOVER   = 0.25..0.5 (по оружию)
+--   Config.Combat.SHOT_MAX_REWIND      = 0.50
+--   Config.Combat.SHOT_HISTORY_SECONDS = 1.00
+-- Клиентский код смотрит на ReadyAt/Cooldown-атрибут оружия (у самой
+-- игры это ToolCooldown.ATTR: LuminolReadyAt, StunGunReadyAt, ...), и
+-- пока время в будущем - кнопка не стреляет. Поэтому держим эти
+-- метки в прошлом: оружие всегда готово, WEAPON_COOLDOWN не мешает.
+--
+-- Сам кулдаун тоже можно обойти на уровне ремоута: игра шлёт
+-- FireWeapon(origin, dir, seed, data, time). Если подменить
+-- последний аргумент (время выстрела) на ВРЕМЯ СРАЗУ ПОСЛЕ
+-- предыдущего выстрела, сервер посчитает, что прошло больше
+-- WEAPON_COOLDOWN, даже если реально стреляли чаще.
+local cdDumpDone = false
 local function looksLikeCooldown(name)
     local n = string.lower(tostring(name or ""))
     return string.find(n, "ready", 1, true) ~= nil
         or string.find(n, "cooldown", 1, true) ~= nil
         or string.find(n, "until", 1, true) ~= nil
         or string.find(n, "next", 1, true) ~= nil
-        or string.find(n, "last", 1, true) ~= nil
         or string.find(n, "reload", 1, true) ~= nil
+        or string.find(n, "fire", 1, true) ~= nil
 end
--- QUIET=true: не печатать дамп (это основной вызов из кадра).
--- При ручном нажатии кнопки передаём false - один раз печатаем, что
--- за атрибуты у оружия, чтобы по логу понять реальное имя счётчика.
-local function refillCharges(quiet)
+
+local function clearWeaponCooldown(quiet)
     local ch = LP and LP.Character
     if not ch then return end
     local tool = ch:FindFirstChildOfClass("Tool")
@@ -1929,49 +1940,21 @@ local function refillCharges(quiet)
     for k in pairs(attrs) do list[#list + 1] = k end
     table.sort(list)
 
-    -- печатаем один раз, что вообще есть у оружия
-    if not ammoDumpDone and not quiet then
-        ammoDumpDone = true
+    if not cdDumpDone and not quiet then
+        cdDumpDone = true
         local parts = {}
         for _, k in ipairs(list) do
             parts[#parts + 1] = k .. "=" .. tostring(attrs[k])
         end
-        print("[BS AMMO] атрибуты " .. tostring(tool.Name) .. ": "
-            .. (#parts > 0 and table.concat(parts, ", ") or "(пусто)"))
+        print("[BS CD] оружие " .. tostring(tool.Name) .. ": "
+            .. (#parts > 0 and table.concat(parts, ", ") or "(атрибутов нет)"))
     end
-    if not G.BS.InfAmmo then return end
-
+    if not G.BS.NoCooldown then return end
     for _, k in ipairs(list) do
         local v = attrs[k]
-        if type(v) == "number" then
-            if looksLikeAmmo(k) then
-                local mx = nil
-                local kl = string.lower(k)
-                -- ищем "Max<то же самое>" среди атрибутов
-                for k2, v2 in pairs(attrs) do
-                    if k2 ~= k and type(v2) == "number" then
-                        local k2l = string.lower(k2)
-                        if string.find(k2l, "max", 1, true)
-                           and string.find(k2l, string.sub(kl, 1, 4), 1, true) then
-                            mx = v2
-                            break
-                        end
-                    end
-                end
-                pcall(function()
-                    tool:SetAttribute(k, mx or (v + 20))
-                end)
-            elseif looksLikeCooldown(k) and v > 1000000000 then
-                -- это заведомо метка времени "будущее" -> сбрасываем
-                pcall(function() tool:SetAttribute(k, 0) end)
-            end
-        end
-    end
-    -- NumberValue/IntValue внутри оружия (иногда счётчик там)
-    for _, kid in ipairs(tool:GetChildren()) do
-        local okV, isVal = pcall(function() return kid.Value end)
-        if okV and type(isVal) == "number" and looksLikeAmmo(kid.Name) then
-            pcall(function() kid.Value = isVal + 20 end)
+        if type(v) == "number" and v > 1000000000 and looksLikeCooldown(k) then
+            -- это заведомо метка времени «будущее» (os.time-подобная)
+            pcall(function() tool:SetAttribute(k, 0) end)
         end
     end
 end
@@ -3001,6 +2984,30 @@ local function ncFireWeapon(...)
             end
         end
     end
+
+    -- 4) ОБХОД КУЛДАУНА ЧЕРЕЗ ВРЕМЯ ВЫСТРЕЛА.
+    -- FireWeapon(origin, dir, seed, data, time). Сервер сверяет `time`
+    -- с записью о последнем выстреле и режет, если прошло меньше
+    -- Config.Combat.WEAPON_COOLDOWN = 0.3 c (плюс SHOT_FIRE_JITTER).
+    -- Если отдать время = "предыдущий выстрел + WEAPON_COOLDOWN + 0.2",
+    -- сервер посчитает, что интервал выдержан, даже если мы стреляли
+    -- быстрее. Правдоподобно и без резких скачков: подвигали время
+    -- вперёд, как будто выстрел случился чуть позже.
+    if G.BS.ShotTimeHack then
+        local step = tonumber(G.BS.ShotTimeStep)
+        if step == nil then step = 0.55 end
+        local last = NC.lastShotT or 0
+        for i = n, 1, -1 do
+            local t = typeof(out[i])
+            if t == "number" and i >= 2 and out[i] > 1000 then
+                -- похоже на os.time/workspace:GetServerTimeNow (секунды)
+                NC.lastShotT = last
+                out[i] = out[i] + step
+                bits[#bits + 1] = "время выстрела #" .. tostring(i)
+                break
+            end
+        end
+    end
     local how = (#bits > 0) and table.concat(bits, " + ") or nil
 
     -- ДИАГНОСТИКА: печатаем не только типы, но и ЗНАЧЕНИЯ — по ним
@@ -3530,10 +3537,10 @@ local conn = RunService.RenderStepped:Connect(function()
         pcall(function() scanPlayingAnims({}, false) end)
     end
 
-    -- бесконечные патроны (чаще: покадрово держим заряд полным)
-    if G.BS.InfAmmo and now - lastAmmo >= 0.1 then
+    -- снятие кулдауна оружия (метки готовности держим в прошлом)
+    if G.BS.NoCooldown and now - lastAmmo >= 0.1 then
         lastAmmo = now
-        pcall(refillCharges, true)
+        pcall(clearWeaponCooldown, true)
     end
 
     local cam = workspace.CurrentCamera
@@ -3648,7 +3655,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.7",
+    LoadingSubtitle = "ESP + Aim + Танец v11.8",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -3738,20 +3745,31 @@ TB.CreateSlider({ Name = "Макс. дистанция ESP (0 = вся)", Flag =
     Suffix = " studs", Callback = function(v) G.BS.MaxDist = v end })
 
 TB.CreateToggle({
-    Name = "Бесконечные патроны", Flag = "BS_InfAmmo",
-    CurrentValue = G.BS.InfAmmo,
+    Name = "Без кулдауна оружия", Flag = "BS_NoCooldown",
+    CurrentValue = G.BS.NoCooldown,
     Callback = function(v)
-        G.BS.InfAmmo = v
-        ammoDumpDone = false   -- пусть напечатает актуальные атрибуты
-        pcall(refillCharges, false)
+        G.BS.NoCooldown = v
+        cdDumpDone = false   -- пусть напечатает актуальные атрибуты
+        pcall(clearWeaponCooldown, false)
     end,
 })
-TB.CreateButton({ Name = "Показать счётчик патронов (в консоль)",
+TB.CreateButton({ Name = "Показать метки кулдауна (в консоль)",
     Callback = function()
-        ammoDumpDone = false
-        pcall(refillCharges, false)
-        notify("Счётчик патронов — смотри [BS AMMO] в консоли", 4)
+        cdDumpDone = false
+        pcall(clearWeaponCooldown, false)
+        notify("Метки кулдауна — смотри [BS CD] в консоли", 4)
     end })
+TB.CreateToggle({
+    Name = "Время выстрела сдвигать вперёд (обход WEAPON_COOLDOWN)",
+    Flag = "BS_ShotTimeHack",
+    CurrentValue = G.BS.ShotTimeHack,
+    Callback = function(v) G.BS.ShotTimeHack = v end,
+})
+TB.CreateSlider({ Name = "Сдвиг времени выстрела", Flag = "BS_ShotTimeStep",
+    Range = {0.1, 2}, Increment = 0.05,
+    CurrentValue = tonumber(G.BS.ShotTimeStep) or 0.55,
+    Suffix = " c",
+    Callback = function(v) G.BS.ShotTimeStep = v end })
 TB.CreateToggle({ Name = "Подсветка текущей цели", Flag = "BS_TargetMark",
     CurrentValue = G.BS.TargetMark,
     Callback = function(v)
@@ -4158,7 +4176,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.7 остановлен")
+    print("[BS HUB] v11.8 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -4208,11 +4226,11 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.7 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.8 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
     .. " | лома: " .. tostring(G.BS.MeleeAim)
-    .. " | патроны: " .. tostring(G.BS.InfAmmo)
+    .. " | без кулдауна: " .. tostring(G.BS.NoCooldown)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
