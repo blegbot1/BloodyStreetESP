@@ -1,8 +1,27 @@
 # Bloody Street ESP + клиент-айм
 
-Версия **v10.8**. Проверено: `luac -p` — чисто, `luacheck` — 0 ошибок.
+Версия **v10.9**. Проверено: `luac -p` — чисто, `luacheck` — 0 ошибок.
 
 ## Что нового
+
+### v10.9 — приоритет частей тела при наведении
+Новая галочка **«Аим по частям (голова → ноги → руки)»** (вкл).
+Порядок выбора цели:
+
+1. выбранная часть (по умолчанию `Head`) — **приоритет**;
+2. если её нет — `UpperTorso` / `Torso` / `LowerTorso` /
+   `HumanoidRootPart`;
+3. если корпуса нет — **ноги** (`LeftUpperLeg`, `RightUpperLeg`,
+   `LeftLowerLeg`, `RightLowerLeg`, `LeftLeg`, `RightLeg`,
+   `LeftUpLeg`, `RightUpLeg`);
+4. если нет ни корпуса, ни ног — **руки** (`LeftUpperArm`,
+   `RightUpperArm`, `LeftLowerArm`, `RightLowerArm`, `Left Arm`,
+   `Right Arm`, `LeftHand`, `RightHand`).
+
+Часть считается доступной, только если она есть, это `BasePart`, у
+неё есть родитель и она **не прозрачная** (скрытые прокси-части
+игнорируются). Поддержаны и R15 (`UpperTorso`, `LeftUpperLeg`), и R6
+(`Torso`, `Left Arm`), обе схемы сразу.
 
 ### v10.8 — аим для ломы + починены триггер, стены и прыжки
 - **Аим для ломы** (новая галочка, вкл). По логу ремоутов

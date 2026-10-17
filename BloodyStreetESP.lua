@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.8
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.9
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -144,7 +144,9 @@ G.BS.Penetrate       = true
 G.BS.BulletWideAim   = G.BS.BulletWideAim ~= false
 G.BS.AimTargets      = pickOpt(G.BS.AimTargets, AIM_TARGETS, AIM_TARGETS[1])
 G.BS.AimPriority     = pickOpt(G.BS.AimPriority, AIM_PRIORITY, AIM_PRIORITY[1])
+-- АИМ ПО ЧАСТЯМ ТЕЛА: голова/корпус -> ноги -> руки.
 G.BS.AimPart         = pickOpt(G.BS.AimPart, AIM_PART, AIM_PART[1])
+G.BS.AimChain        = G.BS.AimChain ~= false
 -- ДАЛЬНОСТЬ ПОДМЕНЫ. В конфиге игры Config.Combat.BULLET_RANGE = 300
 -- и WEAPON_RANGE = 320: дальше 300 студов пуля физически не летит.
 -- Раньше стояло 0 (без ограничения), и скрипт спокойно выбирал цель
@@ -233,8 +235,9 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 16 then
-    G.BS.CfgV      = 16
+if G.BS.CfgV ~= 17 then
+    G.BS.CfgV      = 17
+    G.BS.AimChain  = true
     G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
     G.BS.AimLead   = 0.08
     G.BS.AimLock   = true
@@ -1361,12 +1364,49 @@ end
 --   - если ничего не распознали — стреляем КАК ЕСТЬ, без подмены.
 local sigLogged = false
 
+-- ПРИОРИТЕТ ЧАСТЕЙ ТЕЛА ПРИ НАВЕДЕНИИ.
+-- 1) ГОЛОВА / КОРПУС — приоритет (если выбранная в G.BS.AimPart есть и
+--    она «свободна», т.е. видима).
+-- 2) НОГИ — если корпуса нет (например персонаж без торса).
+-- 3) РУКИ — если нет ни корпуса, ни ног.
+-- Часть считается «свободной», если она есть, это BasePart, у неё
+-- есть родитель и она не прозрачная (скрытые прокси-части игнорим).
+local AIM_CHAIN = {
+    -- корпус и голова (приоритет)
+    "Head", "UpperTorso", "Torso", "LowerTorso", "HumanoidRootPart",
+    -- ноги
+    "LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg",
+    "LeftLeg", "RightLeg", "LeftUpLeg", "RightUpLeg",
+    -- руки
+    "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm",
+    "Left Arm", "Right Arm", "LeftHand", "RightHand",
+}
+
+local function partUsable(p)
+    if not p or not p:IsA("BasePart") then return false end
+    if not p.Parent then return false end
+    if p.Transparency >= 0.95 then return false end
+    return true
+end
+
 local function pickPartOf(ch)
-    local p = ch:FindFirstChild(G.BS.AimPart)
-    if p and p:IsA("BasePart") and p.Parent then return p end
-    for _, nm in ipairs(AIM_PART) do
-        local q = ch:FindFirstChild(nm)
-        if q and q:IsA("BasePart") and q.Parent then return q end
+    if not G.BS.AimChain then
+        -- старый режим: только выбранная часть, иначе список AIM_PART
+        local p = ch:FindFirstChild(G.BS.AimPart)
+        if partUsable(p) then return p end
+        for _, nm in ipairs(AIM_PART) do
+            local q = ch:FindFirstChild(nm)
+            if partUsable(q) then return q end
+        end
+        return nil
+    end
+    -- приоритет: сначала выбранная часть (по умолчанию Head)
+    local first = ch:FindFirstChild(G.BS.AimPart)
+    if partUsable(first) then return first end
+    -- потом корпус/голова -> ноги -> руки
+    for i = 1, #AIM_CHAIN do
+        local q = ch:FindFirstChild(AIM_CHAIN[i])
+        if partUsable(q) then return q end
     end
     return nil
 end
@@ -2375,7 +2415,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v10.8",
+    LoadingSubtitle = "ESP + Client Aim v10.9",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2502,6 +2542,14 @@ AI.CreateToggle({
 })
 
 -- АИМЛОК доводит взгляд на цель только когда реально стреляешь.
+AI.CreateToggle({
+    Name = "Аим по частям (голова → ноги → руки)", Flag = "BS_AimChain",
+    CurrentValue = G.BS.AimChain,
+    Callback = function(v)
+        G.BS.AimChain = v
+        notify(v and "Голова/корпус, иначе ноги, иначе руки" or "Только выбранная часть", 3)
+    end,
+})
 AI.CreateToggle({
     Name = "Аимлок (камера целится в жертву)", Flag = "BS_AimLock",
     CurrentValue = G.BS.AimLock,
@@ -2646,7 +2694,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v10.8 остановлен")
+    print("[BS HUB] v10.9 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2676,7 +2724,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v10.8 запущен | хуков=" .. #netConns
+print("[BS HUB] v10.9 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | триггер: " .. tostring(G.BS.Trigger)
