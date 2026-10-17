@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.4
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.5
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -201,6 +201,8 @@ G.BS.Hitbox          = G.BS.Hitbox ~= false
 G.BS.HitboxScale     = tonumber(G.BS.HitboxScale) or 1.6
 G.BS.HitboxHead      = G.BS.HitboxHead ~= false
 G.BS.HitboxEnemiesOnly = G.BS.HitboxEnemiesOnly ~= false
+-- АВТОПРОВЕРКА ОРУЖИЯ при запуске (дальность/разброс/урон в консоль).
+G.BS.WeaponProbeOnStart = G.BS.WeaponProbeOnStart ~= false
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
 
@@ -220,8 +222,8 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 12 then
-    G.BS.CfgV      = 12
+if G.BS.CfgV ~= 13 then
+    G.BS.CfgV      = 13
     G.BS.AimLead   = 0.08
     G.BS.AimLock   = true
     G.BS.AimLockSpeed = 14
@@ -1918,6 +1920,98 @@ local installBulletHook = installNamecall
 -- хитбокс сервер всё равно считает по своим частям).
 
 -- ============================================================
+--  АВТОПРОВЕРКА ОРУЖИЯ (дальность, разброс, урон)
+-- ============================================================
+-- Запускается сама через несколько секунд после загрузки и печатает
+-- в консоль ТОЛЬКО то, что относится к стрельбе: дальность, разброс,
+-- урон, темп, заряд. По этим числам видно, почему выстрел не
+-- достаёт (например у дробовика дальность 90 студов, а мы стреляем
+-- на 404).
+local WEAPON_WORDS = {
+    "range", "distance", "dist", "spread", "damage", "dmg", "fire",
+    "rate", "ammo", "charge", "recoil", "speed", "cooldown", "pellet",
+    "hit", "pierce", "wall", "bullet", "shot", "gun", "weapon",
+    "murder", "lethal", "power", "accuracy", "velocity", "duration",
+}
+
+local function weaponKey(k)
+    local n = string.lower(tostring(k or ""))
+    for i = 1, #WEAPON_WORDS do
+        if string.find(n, WEAPON_WORDS[i], 1, true) then return true end
+    end
+    return false
+end
+
+local function probeMod(mod, label, depth, found, cnt)
+    if depth > 3 or cnt[1] > 140 then return end
+    pcall(function()
+        for k, v in pairs(mod) do
+            if type(v) == "table" then
+                probeMod(v, label .. "." .. tostring(k), depth + 1, found, cnt)
+            elseif weaponKey(k) and (type(v) == "number" or type(v) == "string"
+                   or type(v) == "boolean") then
+                cnt[1] = cnt[1] + 1
+                if cnt[1] <= 140 then
+                    found[#found + 1] = label .. "." .. tostring(k) .. " = " .. valToStr(v)
+                end
+            end
+        end
+    end)
+end
+
+local function probeWeapon()
+    hr("ПРОВЕРКА ОРУЖИЯ (дальность / разброс / урон)")
+    local base = TRS:FindFirstChild("BloodyStreet")
+    if not base then
+        print("[BS WEAPON] ReplicatedStorage.BloodyStreet не найден")
+        return
+    end
+    local names = { "Combat", "Ballistics", "Murder", "Mystery",
+                    "Loadout", "Match", "ToolCooldown", "Roles" }
+    for _, nm in ipairs(names) do
+        local found, cnt = {}, { 0 }
+        local mod = base:FindFirstChild(nm)
+        if not mod then
+            pcall(function()
+                for _, d in ipairs(base:GetDescendants()) do
+                    if d.ClassName == "ModuleScript" and d.Name == nm then
+                        mod = d
+                        break
+                    end
+                end
+            end)
+        end
+        if mod then
+            local okr, m2 = pcall(require, mod)
+            if okr and type(m2) == "table" then
+                probeMod(m2, nm, 1, found, cnt)
+                print("  " .. nm .. ": найдено параметров — " .. cnt[1])
+                for i = 1, #found do print("    " .. found[i]) end
+            else
+                print("  " .. nm .. ": require не удался")
+            end
+        end
+    end
+
+    -- моё оружие: что реально в руках
+    local ch = LP and LP.Character
+    local tool = ch and ch:FindFirstChildOfClass("Tool")
+    if tool then
+        print("  ОРУЖИЕ: " .. tool.Name)
+        local okA, at = pcall(function() return tool:GetAttributes() end)
+        if okA and type(at) == "table" then
+            for k, v in pairs(at) do print("    " .. tostring(k) .. " = " .. valToStr(v)) end
+        end
+        local mz = tool:FindFirstChild("Muzzle")
+        if mz then
+            local wp = mz.WorldPosition
+            print(string.format("    Muzzle = (%.1f, %.1f, %.1f)", wp.X, wp.Y, wp.Z))
+        end
+    end
+    hr("ПРОВЕРКА ОРУЖИЯ ЗАКОНЧЕНА")
+end
+
+-- ============================================================
 --  НЕВИДИМЫЙ РАСШИРИТЕЛЬ ХИТБОКСА
 -- ============================================================
 -- К персонажу вешаются ПРОЗРАЧНЫЕ части (CanQuery = true),
@@ -2219,7 +2313,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v10.4",
+    LoadingSubtitle = "ESP + Client Aim v10.5",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2314,6 +2408,10 @@ end })
 TB.CreateButton({ Name = "ГЛУБОКОЕ СКАНИРОВАНИЕ (найти модули оружия)", Callback = function()
     pcall(deepScan)
     notify("Глубокий скан отработал, смотри консоль", 4)
+end })
+TB.CreateButton({ Name = "ПРОВЕРКА ОРУЖИЯ (дальность/разброс)", Callback = function()
+    pcall(probeWeapon)
+    notify("Проверка оружия отработала, смотри консоль", 4)
 end })
 TB.CreateToggle({ Name = "Сканировать при запуске", Flag = "BS_ScanOnStart",
     CurrentValue = G.BS.ScanOnStart,
@@ -2478,7 +2576,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v10.4 остановлен")
+    print("[BS HUB] v10.5 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2499,9 +2597,16 @@ task.spawn(function()
         task.wait(2)
         pcall(scanAll)
     end
+    -- АВТОПРОВЕРКА ОРУЖИЯ: сама собирает дальность/разброс/урон и
+    -- печатает в консоль. Ничего нажимать не нужно — смотри блок
+    -- [BS WEAPON] и пришли его.
+    if G.BS.WeaponProbeOnStart then
+        task.wait(3)
+        pcall(probeWeapon)
+    end
 end)
 
-print("[BS HUB] v10.4 запущен | хуков=" .. #netConns
+print("[BS HUB] v10.5 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | хитбокс: " .. tostring(G.BS.Hitbox)
