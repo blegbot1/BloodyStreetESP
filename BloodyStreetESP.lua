@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v11.2
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v11.3
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -235,6 +235,21 @@ G.BS.WeaponProbeOnStart = G.BS.WeaponProbeOnStart ~= false
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
 
+-- ЗВУКОВЫЕ МЕТКИ. Игра шлёт SoundPing {pos, sound} на каждый шум
+-- (Config.Detection.SOUND_PING_ENABLED, RADIUS 90, DURATION 2.2):
+-- выстрел, крик. Раньше скрипт их только собирал, теперь рисует
+-- кольцо в точке шума - видно, где стреляли, даже если стрелявшего
+-- не видно.
+G.BS.NoiseMarks = G.BS.NoiseMarks ~= false
+G.BS.NoiseLife  = tonumber(G.BS.NoiseLife) or 2.2
+-- ОСОБЫЕ РОЛИ ПО ПРЕДМЕТУ (Config.Roles.ROLE_TOOL_MODEL):
+-- Medkit = доктор, MagnifyingGlass = детектив, SeerStaff = сейер,
+-- HolyCross = жрец, Garlic = торговец, SupplyCrate = оружейщик,
+-- Baton/Claw = вампир. Показывать в подписи к ESP.
+G.BS.ShowSpecialRole = G.BS.ShowSpecialRole ~= false
+-- HUD: одна строка в углу - своя роль, фаза, патроны, текущая цель.
+G.BS.Hud = G.BS.Hud ~= false
+
 -- РАСШИРИТЕЛЬ ХИТБОКСА удалён: невидимая часть на голове не помогала
 -- (попадание считает сервер, наш клиент его не видит).
 -- «ТИХИЙ ВЫСТРЕЛ» удалён: гасил вспышку/звук, но выстрел всё равно
@@ -251,8 +266,12 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 20 then
-    G.BS.CfgV      = 20
+if G.BS.CfgV ~= 21 then
+    G.BS.CfgV      = 21
+    G.BS.NoiseMarks = true
+    G.BS.NoiseLife  = 2.2
+    G.BS.ShowSpecialRole = true
+    G.BS.Hud        = true
     G.BS.TriggerDeg = 12
     G.BS.AimChain  = true
     G.BS.AimFreePart = true
@@ -646,6 +665,7 @@ local function add(plr)
     by[plr] = {
         char = ch, hl = hl, gui = gui, lbl = lbl,
         role = nil, conf = 0, votes = 0, lastStable = nil, box = nil,
+        special = nil,
     }
 end
 
@@ -1123,6 +1143,93 @@ local function pumpHealth()
     end)
 end
 
+-- Названия ролей для HUD и подписи ESP.
+local ROLE_NAME = {
+    doctor     = "Доктор",
+    detective  = "Детектив",
+    seer       = "Сейер",
+    priest     = "Жрец",
+    merchant   = "Торговец",
+    armsdealer = "Оружейщик",
+    vampire    = "Вампир",
+    hunter     = "Хантер",
+    none       = "Гражданский",
+}
+
+-- ============================================================
+--  HUD: своя роль, фаза раунда, патроны, текущая цель
+-- ============================================================
+-- Одна строка в углу: видно, кто мы, что за фаза, сколько патронов
+-- и в кого сейчас целимся - без открытия GUI.
+local hudLabel = nil
+local hudGui = nil
+local lastHud = 0
+
+local function ensureHud()
+    if hudLabel then return true end
+    local okG, gui = pcall(function() return Instance.new("ScreenGui") end)
+    if not okG or not gui then return false end
+    gui.Name                 = "BS_Hud"
+    gui.IgnoreGuiInset       = false
+    gui.ResetOnSpawn         = false
+    gui.DisplayOrder         = 10
+    local okP = pcall(function() gui.Parent = game:GetService("CoreGui") end)
+    if not okP then return false end
+    local okT, t = pcall(function() return Instance.new("TextLabel") end)
+    if not okT or not t then return false end
+    t.Name             = "BS_HudText"
+    t.BackgroundColor3 = Color3.new(0, 0, 0)
+    t.BackgroundTransparency = 0.55
+    t.TextColor3       = Color3.new(0.95, 0.95, 1)
+    t.Size             = UDim2.fromOffset(560, 20)
+    t.Position         = UDim2.new(0, 10, 0, 8)
+    t.Font             = Enum.Font.Code
+    t.TextSize         = 13
+    t.TextXAlignment   = Enum.TextXAlignment.Left
+    t.TextYAlignment   = Enum.TextYAlignment.Center
+    t.Parent           = gui
+    hudGui, hudLabel = gui, t
+    return true
+end
+
+local function updateHud(now)
+    if not G.BS.Hud then
+        if hudLabel then hudLabel.Visible = false end
+        return
+    end
+    if not ensureHud() then return end
+    if now - lastHud < 0.2 then return end
+    lastHud = now
+
+    local me = ROLE_NAME[string.lower(tostring(G.BS.MyRole or ""))] or "?"
+    local ch = LP and LP.Character
+    local tool = ch and ch:FindFirstChildOfClass("Tool")
+    local myRoot = ch and ch:FindFirstChild("HumanoidRootPart")
+    local charges = "?"
+    if tool then
+        local cv = tool:GetAttribute("Charges")
+        local mx = tool:GetAttribute("MaxCharges")
+        if type(cv) == "number" then
+            charges = tostring(math.floor(cv))
+            if type(mx) == "number" then charges = charges .. "/" .. tostring(math.floor(mx)) end
+        end
+    end
+    local pre = bulletPreShot
+    local tgt = "нет"
+    if pre and pre.part and pre.part.Parent then
+        local root = pre.part.Parent:FindFirstChild("HumanoidRootPart")
+        local d = (root and myRoot and (root.Position - myRoot.Position).Magnitude)
+            or pre.dist
+        tgt = pre.part.Name .. " (" .. math.floor(d + 0.5) .. " st)"
+        if pre.wallPast then tgt = tgt .. " [за стеной]" end
+    end
+    local line = string.format("[BS] роль: %s | фаза: %s | заряды: %s | оружие: %s | цель: %s",
+        me, tostring(G.BS.RoundPhase or "?"), charges,
+        tool and tool.Name or "нет", tgt)
+    hudLabel.Text = line
+    hudLabel.Visible = true
+end
+
 -- ============================================================
 --  ТОЧКА ПРИЦЕЛИВАНИЯ
 -- ============================================================
@@ -1160,6 +1267,133 @@ local function updateAimDot()
     aimDot.Radius   = 5
     aimDot.Color    = safeColor(G.BS.AimDotColor, Color3.new(1, 0.25, 0.25))
     aimDot.Visible  = true
+end
+
+-- ============================================================
+--  ЗВУКОВЫЕ МЕТКИ (SoundPing) — радар шума
+-- ============================================================
+-- Игра шлёт SoundPing {pos, sound}, когда кто-то выстрелил или
+-- закричал (Config.Detection.SOUND_PING_ENABLED, RADIUS 90,
+-- DURATION 2.2). Раньше мы эти данные просто собирали в soundMarks и
+-- НИЧЕГО не рисовали. Теперь это видимый радар: кольцо расходится и
+-- гаснет в точке шума, с подписью типа звука.
+local noiseRings, noiseLabels = {}, {}
+local NOISE_POOL = 14
+
+local function noiseColor(s)
+    local n = string.lower(tostring(s or ""))
+    if string.find(n, "gun", 1, true) or string.find(n, "shot", 1, true)
+        or string.find(n, "fire", 1, true) then
+        return Color3.new(1, 0.35, 0.2)
+    end
+    if string.find(n, "scream", 1, true) or string.find(n, "help", 1, true)
+        or string.find(n, "call", 1, true) then
+        return Color3.new(1, 0.95, 0.25)
+    end
+    return Color3.new(0.8, 0.9, 1)
+end
+
+local function ensureNoisePool()
+    if #noiseRings >= NOISE_POOL then return end
+    if not DRAW_OK then return end
+    for i = #noiseRings + 1, NOISE_POOL do
+        local ok, d = pcall(function() return Drawing.new("Circle") end)
+        if not ok or not d then return end
+        d.Thickness    = 2
+        d.NumSides     = 24
+        d.Filled       = false
+        d.Visible      = false
+        noiseRings[i]  = d
+        local ok2, t = pcall(function() return Drawing.new("Text") end)
+        if ok2 and t then
+            t.Visible = false
+            t.Center  = true
+            t.Size    = 13
+            noiseLabels[i] = t
+        end
+    end
+end
+
+local function updateNoiseMarks()
+    ensureNoisePool()
+    if not G.BS.NoiseMarks then
+        for i = 1, #noiseRings do
+            noiseRings[i].Visible = false
+            if noiseLabels[i] then noiseLabels[i].Visible = false end
+        end
+        return
+    end
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    local now = os.clock()
+    local life = tonumber(G.BS.NoiseLife) or 2.2
+    for i = #soundMarks, 1, -1 do
+        if now - soundMarks[i].t > life then table.remove(soundMarks, i) end
+    end
+    local n = #soundMarks
+    for i = 1, NOISE_POOL do
+        local ring = noiseRings[i]
+        if not ring then break end
+        local lb = noiseLabels[i]
+        local idx = n - i + 1
+        if idx >= 1 then
+            local m = soundMarks[idx]
+            local age = now - m.t
+            local sp = cam:WorldToViewportPoint(m.pos)
+            if sp.Z > 0 and age <= life then
+                local k = 1 - age / life          -- 1 = свежее
+                ring.Position = Vector2.new(sp.X, sp.Y)
+                ring.Radius   = math.floor(6 + (1 - k) * 30)
+                ring.Color    = noiseColor(m.s)
+                ring.Transparency = k * 0.55
+                ring.Visible  = true
+                if lb then
+                    lb.Position     = Vector2.new(sp.X, sp.Y - 20)
+                    lb.Text         = tostring(m.s or "шум")
+                    lb.Color        = ring.Color
+                    lb.Transparency = k * 0.4
+                    lb.Visible      = true
+                end
+            else
+                ring.Visible = false
+                if lb then lb.Visible = false end
+            end
+        else
+            ring.Visible = false
+            if lb then lb.Visible = false end
+        end
+    end
+end
+
+-- ============================================================
+--  ОСОБЫЕ РОЛИ ПО ПРЕДМЕТУ В РУКАХ
+-- ============================================================
+-- В конфиге игры прямо прописано:
+--   Config.Roles.ROLE_TOOL_MODEL = { Doctor = Medkit, Merchant = Garlic,
+--     Priest = HolyCross, Detective = MagnifyingGlass, Seer = SeerStaff,
+--     ArmsDealer = SupplyCrate }
+-- Предмет в руках надёжно выдаёт особую роль. Плюс дубинка/когти —
+-- только у вампиров (у остальных Baton лежит в кобуре моделью, а не
+-- экипированным Tool).
+local TOOL_ROLE = {
+    ["medkit"]         = "doctor",
+    ["magnifying glass"] = "detective",
+    ["seerstaff"]      = "seer",
+    ["holycross"]      = "priest",
+    ["garlic"]         = "merchant",
+    ["supplycrate"]    = "armsdealer",
+    ["baton"]          = "vampire",
+    ["claw"]           = "vampire",
+}
+
+local function roleFromTool(plr)
+    local ch = plr and plr.Character
+    if not ch then return nil end
+    local tool = ch:FindFirstChildOfClass("Tool")
+    if not tool then return nil end
+    local r = TOOL_ROLE[string.lower(tostring(tool.Name))]
+    if r then return r end
+    return nil
 end
 
 -- ============================================================
@@ -1306,6 +1540,12 @@ local function scanAll()
         local found, src = roleFromInstance(plr)
         print(string.format("  %s -> %s (%s)", plr.Name,
             tostring(found), tostring(src or "-")))
+        -- ОСОБАЯ РОЛЬ ПО ПРЕДМЕТУ: Medkit = доктор, Baton = вампир...
+        local spRole = roleFromTool(plr)
+        if spRole then
+            print(string.format("      в руках особая роль: %s",
+                tostring(ROLE_NAME[spRole] or spRole)))
+        end
         local okA, attrs = pcall(function() return plr:GetAttributes() end)
         if okA and type(attrs) == "table" then
             for k, v in pairs(attrs) do
@@ -2528,6 +2768,12 @@ local function scan()
                     local rr = roleFromAttr(plr) or netRoles[plr]
                     if rr then applyRole(by[plr], rr, CONF.attr) end
                 end
+                -- ОСОБАЯ РОЛЬ ПО ПРЕДМЕТУ (раз в секунду, вместе со
+                -- сканом): предмет в руках - надёжный признак роли.
+                if G.BS.ShowSpecialRole then
+                    local e2 = by[plr]
+                    if e2 then e2.special = roleFromTool(plr) end
+                end
             end
         end
     end
@@ -2589,6 +2835,9 @@ local conn = RunService.RenderStepped:Connect(function()
     -- точка прицеливания (видно, куда реально летит патрон)
     if G.BS.AimDot then pcall(updateAimDot) end
 
+    -- звуковые метки: радар шума (выстрелы, крики)
+    pcall(updateNoiseMarks)
+
     -- бесконечные патроны (раз в 0.25 с)
     if G.BS.InfAmmo and now - lastAmmo >= 0.25 then
         lastAmmo = now
@@ -2608,6 +2857,9 @@ local conn = RunService.RenderStepped:Connect(function()
         me = LP and LP.Character
         myRoot = me and me:FindFirstChild("HumanoidRootPart")
     end)
+
+    -- HUD: роль / фаза / патроны / цель (внутри — обновление раз в 0.2 с)
+    pcall(updateHud, now)
 
     -- ---------- ESP ----------
     for plr, e in pairs(by) do
@@ -2652,6 +2904,11 @@ local conn = RunService.RenderStepped:Connect(function()
                 if G.BS.ShowHP then
                     local hum = ch:FindFirstChildOfClass("Humanoid")
                     if hum then parts[#parts + 1] = "HP " .. math.floor(hum.Health + 0.5) end
+                end
+                -- ОСОБАЯ РОЛЬ ПО ПРЕДМЕТУ: Medkit = доктор,
+                -- MagnifyingGlass = детектив, Baton = вампир и т.д.
+                if G.BS.ShowSpecialRole and e.special then
+                    parts[#parts + 1] = ROLE_NAME[e.special] or e.special
                 end
                 local txt = table.concat(parts, "  ")
                 if e.lbl.Text ~= txt then e.lbl.Text = txt end
@@ -2699,7 +2956,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v11.2",
+    LoadingSubtitle = "ESP + Client Aim v11.3",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2813,6 +3070,20 @@ TB.CreateToggle({ Name = "Точка прицеливания (видно, ку�
         G.BS.AimDot = v
         if not v and aimDot then aimDot.Visible = false end
     end })
+
+TB.CreateToggle({ Name = "Звуковые метки (где стреляли/кричали)", Flag = "BS_NoiseMarks",
+    CurrentValue = G.BS.NoiseMarks,
+    Callback = function(v) G.BS.NoiseMarks = v end })
+TB.CreateToggle({ Name = "Особая роль по предмету в подписи", Flag = "BS_ShowSpecialRole",
+    CurrentValue = G.BS.ShowSpecialRole,
+    Callback = function(v) G.BS.ShowSpecialRole = v end })
+TB.CreateToggle({ Name = "HUD (роль, фаза, патроны, цель)", Flag = "BS_Hud",
+    CurrentValue = G.BS.Hud,
+    Callback = function(v)
+        G.BS.Hud = v
+        if not v and hudLabel then hudLabel.Visible = false end
+    end })
+
 TB.CreateSection("Сканер")
 TB.CreateButton({ Name = "СКАНИРОВАТЬ ИГРУ (в консоль)", Callback = function()
     pcall(scanAll)
@@ -3004,6 +3275,12 @@ G.BS_Stop = function()
     if TargetHL then pcall(function() TargetHL:Destroy() end) end
     if aimDot then pcall(function() aimDot:Remove() end) end
     if Overlay then pcall(function() Overlay:Destroy() end) end
+    -- звуковые метки и HUD тоже снимаем, иначе останутся висеть
+    for i = 1, #noiseRings do pcall(function() noiseRings[i]:Remove() end) end
+    for i = 1, #noiseLabels do pcall(function() noiseLabels[i]:Remove() end) end
+    noiseRings, noiseLabels = {}, {}
+    if hudGui then pcall(function() hudGui:Destroy() end) end
+    hudGui, hudLabel = nil, nil
     Screen = nil
     Overlay = nil
     TargetHL = nil
@@ -3036,7 +3313,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.2 остановлен")
+    print("[BS HUB] v11.3 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -3066,7 +3343,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.2 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.3 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | триггер: " .. tostring(G.BS.Trigger)
