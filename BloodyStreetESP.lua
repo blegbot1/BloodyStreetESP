@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.10
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.11
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -181,6 +181,9 @@ G.BS.HitMarkLife  = tonumber(G.BS.HitMarkLife) or 0.25
 G.BS.EventsOn     = G.BS.EventsOn ~= false
 -- УСКОРЕНИЕ ПО КЛАВИШЕ: держишь Левый Shift - скорость выше.
 G.BS.SpeedKey = G.BS.SpeedKey ~= false
+G.BS.SpinSpeed = tonumber(G.BS.SpinSpeed) or 50   -- как в EliteHub
+G.BS.SpinOnlyStill = G.BS.SpinOnlyStill == true
+G.BS.AimFireMode   = G.BS.AimFireMode ~= false  -- кнопка "держишь пушку"
 G.BS.SpeedMul = tonumber(G.BS.SpeedMul) or 2
 -- Сдвиг времени выстрела в ремоуте (аргумент №5) вперёд, чтобы
 -- сервер считал, что WEAPON_COOLDOWN уже прошёл.
@@ -258,6 +261,12 @@ G.BS.OriginSlack     = tonumber(G.BS.OriginSlack) or 13
 -- подсчёте урона, а игра считает урон на сервере.
 -- АВТОПРОВЕРКА ОРУЖИЯ при запуске (дальность/разброс/урон в консоль).
 G.BS.WeaponProbeOnStart = G.BS.WeaponProbeOnStart ~= false
+-- ЛОВИМ АНИМАЦИИ, КОТОРЫЕ ИГРА ГРУЗИТ САМА (функция ниже, рядом с
+-- addDance). Главный источник эмоутов: когда открывают колесо эмоутов
+-- или включают танец, игра зовёт Animator:LoadAnimation(Animation) либо
+-- Humanoid:PlayAnimation(Animation) - наш глобальный хук __namecall это
+-- видит, поэтому ID анимации снимается на лету.
+
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
 -- ГЛУБОКИЙ ЛОГ: все 94 ремоута без ограничения вызовов + разбор
@@ -312,8 +321,11 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 27 then
-    G.BS.CfgV      = 27
+if G.BS.CfgV ~= 28 then
+    G.BS.CfgV      = 28
+    G.BS.SpinSpeed = 50        -- как в EliteHub
+    G.BS.SpinOnlyStill = false
+    G.BS.AimFireMode = true
     G.BS.SpeedKey = true
     G.BS.SpeedMul = 2
     -- аимлок: работает, пока держишь пушку (просили «пока держишь пушку»)
@@ -415,6 +427,7 @@ local eventsLabel = nil     -- TextLabel ленты в углу экрана
 local updateHitMark, updateEvents
 local danceDD = nil         -- выпадающий список танцев (создаётся в GUI)
 local refreshDanceDropdown -- наполнение списка найденными анимациями
+local emoteTables = {}      -- таблицы из EmoteSetSlots (список эмоутов)
 local UI_ERR = {}           -- ошибки создания элементов GUI (пишутся в лог)
 
 -- Уверенность источников роли
@@ -1136,6 +1149,17 @@ if Remotes then
                         }
                         if #soundMarks > 40 then table.remove(soundMarks, 1) end
                     end
+                    -- EmoteSetSlots: список эмоутов игрока с ID
+                    -- анимаций. Складываем таблицы и разбираем позже -
+                    -- это главный источник танцев.
+                    if r.Name == "EmoteSetSlots" then
+                        for k = 1, args.n do
+                            if typeof(args[k]) == "table" then
+                                emoteTables[#emoteTables + 1] = args[k]
+                                if #emoteTables > 6 then table.remove(emoteTables, 1) end
+                            end
+                        end
+                    end
                     -- BurstFX #4 = Model(strelka) -> hunter
                     if r.Name == "BurstFX" and args.n >= 4
                        and typeof(args[4]) == "Instance" and args[4]:IsA("Model") then
@@ -1599,6 +1623,22 @@ local function addDance(label, id)
     return true
 end
 
+-- ЛОВИМ АНИМАЦИИ, КОТОРЫЕ ИГРА ГРУЗИТ САМА. Когда открывают колесо
+-- эмоутов или включают танец, игра зовёт Animator:LoadAnimation или
+-- Humanoid:PlayAnimation - наш глобальный хук __namecall это видит,
+-- поэтому ID анимации снимается на лету и список наполняется сам.
+-- Внутри хука только обращения к свойствам, без ":"-вызовов.
+local function captureAnimArg(a)
+    if typeof(a) ~= "Instance" then return end
+    if a.ClassName ~= "Animation" then return end
+    local id = a.AnimationId
+    if type(id) ~= "string" or id == "" then return end
+    local nm = tostring(a.Name or "?")
+    if MOVE_TRACKS[string.lower(nm)] then return end   -- ходьба - не танец
+    addDance(nm, id)
+end
+dance.captureAnimArg = captureAnimArg
+
 -- 1) Animation-объекты игры
 local function scanAnimInstances(out)
     local names = { "ReplicatedStorage", "StarterPlayer", "StarterGui" }
@@ -1648,7 +1688,27 @@ local function scanModuleIds(out)
                 if not okP then return end
                 for k, v in pairsList do
                     if type(v) == "string" then
-                        if normAnimId(v) and addDance(tostring(k) .. " @ " .. m.Name, v) then
+                        -- БЕРЁМ ТОЛЬКО ПОХОЖЕЕ НА АНИМАЦИЮ. Иначе в
+                        -- список попадают ROLE_IMAGE, иконки, звуки:
+                        -- в модулях игры полно rbxassetid://, но почти
+                        -- все они - картинки.
+                        local low = string.lower(tostring(k))
+                        local bad = string.find(low, "image", 1, true)
+                            or string.find(low, "icon", 1, true)
+                            or string.find(low, "sound", 1, true)
+                            or string.find(low, "sfx", 1, true)
+                            or string.find(low, "logo", 1, true)
+                            or string.find(low, "background", 1, true)
+                            or string.find(low, "shader", 1, true)
+                        local good = string.find(low, "anim", 1, true)
+                            or string.find(low, "emote", 1, true)
+                            or string.find(low, "dance", 1, true)
+                            or string.find(low, "pose", 1, true)
+                            or string.find(low, "wave", 1, true)
+                            or string.find(low, "salute", 1, true)
+                            or string.find(low, "applaud", 1, true)
+                        if not bad and good and normAnimId(v)
+                           and addDance(tostring(k) .. " @ " .. m.Name, v) then
                             out[#out + 1] = tostring(k) .. " @ " .. m.Name .. "  (" .. v .. ")"
                             seen = seen + 1
                         end
@@ -1662,7 +1722,40 @@ local function scanModuleIds(out)
     end
 end
 
--- 3) что игра играет прямо сейчас (ловушка на штатные эмоуты)
+-- 3) ЭМОУТЫ ИЗ СЛОТОВ. EmoteSetSlots приходит с сервера при входе:
+--    там список эмоутов игрока, а внутри почти наверняка и ID
+--    анимаций. Разбираем таблицу и забираем всё, что похоже на анимацию.
+-- 4) что игра играет прямо сейчас (ловушка на штатные эмоуты)
+local function scanEmoteTable(t, depth, prefix)
+    if depth > 3 then return end
+    pcall(function()
+        for k, v in pairs(t) do
+            local key = tostring(k):lower()
+            if type(v) == "string" then
+                local low = key
+                local looksAnim = (string.find(low, "anim", 1, true)
+                    or string.find(low, "emote", 1, true)
+                    or string.find(low, "dance", 1, true)
+                    or string.find(low, "pose", 1, true)
+                    or string.find(low, "id", 1, true))
+                local looksBad = (string.find(low, "image", 1, true)
+                    or string.find(low, "icon", 1, true)
+                    or string.find(low, "sound", 1, true)
+                    or string.find(low, "sfx", 1, true)
+                    or string.find(low, "sfx_", 1, true))
+                if looksAnim and not looksBad and normAnimId(v) then
+                    local nm = string.gsub(tostring(k), "^%a+_", "")
+                    if nm == "" or nm == tostring(k) then nm = tostring(k) end
+                    addDance(nm, v)
+                end
+            elseif type(v) == "table" then
+                scanEmoteTable(v, depth + 1, prefix .. "." .. tostring(k))
+            end
+        end
+    end)
+end
+
+-- 4) что игра играет прямо сейчас (ловушка на штатные эмоуты)
 local function scanPlayingAnims(out, all)
     local ch = LP and LP.Character
     if not ch then return end
@@ -1689,11 +1782,24 @@ local function scanPlayingAnims(out, all)
     end
 end
 
+-- ЭМОУТЫ ИЗ СЛОТОВ: разбираем таблицу, которую игра прислала в
+-- EmoteSetSlots (сервер шлёт её при входе - там список эмоутов).
+local function scanEmoteSlots(out)
+    for i = 1, #emoteTables do
+        local before = #DANCES
+        pcall(scanEmoteTable, emoteTables[i], 0, "slots")
+        if #DANCES > before then
+            out[#out + 1] = "из EmoteSetSlots: +" .. (#DANCES - before) .. " анимаций"
+        end
+    end
+end
+
 -- КНОПКА «НАЙТИ ТАНЦЫ В ИГРЕ» + автозапуск при старте.
 local function scanDances(silent)
     local out = {}
     scanAnimInstances(out)
     scanModuleIds(out)
+    scanEmoteSlots(out)
     scanPlayingAnims(out, true)
     -- печатаем только имена (ID - в конце), чтобы не забить консоль
     if #out == 0 then
@@ -1814,38 +1920,82 @@ end
 
 -- КАЖДЫЙ КАДР: ассетный трек сам играет, а спин/покачивание крутим
 -- сами через PivotTo (дельта угла, чтобы не сбивать направление).
--- КАЖДЫЙ КАДР: ассетный трек сам играет, а спин/покачивание крутим
--- сами через PivotTo (дельта угла, чтобы не сбивать направление).
--- Если включён «спринт», модель доворачивается по направлению движения:
--- это боевой вариант (спин-стрейф), а не походка боком.
-local function sprintTick(now)
-    if not G.BS.Sprint then return end
-    local ch = LP and LP.Character
-    if not ch or not ch.Parent then return end
+-- СПИН БОТ (как в EliteHub 14.0). Отличия от прежней версии, из-за
+-- которых спин не работал «по-настоящему»:
+--   * крутим HumanoidRootPart.CFrame напрямую (не PivotTo по модели):
+--     у корня физика и сетевое владение, остальные части следуют за ним
+--     сами через Weld;
+--   * крутим в RunService.Heartbeat, а не в RenderStepped - движение
+--     уходит на сервер с Heartbeat-шага, поэтому поворот не дёргается;
+--   * AutoRotate = false на время вращения, иначе гуманоид каждый
+--     кадр доворачивает персонажа по вектору движения и спин не виден;
+--   * скорость по формуле EliteHub: speed * dt * 3 (по умолчанию 50).
+-- Всё сложено в одну таблицу SPIN: главный блок скрипта упирается в
+-- лимит локальных переменных Lua (200).
+local SPIN = { conn = nil, prevAuto = nil }
+
+function SPIN.applyAuto(ch)
+    if not ch then return end
     local hum = ch:FindFirstChildOfClass("Humanoid")
-    local root = ch:FindFirstChild("HumanoidRootPart")
-    if not (hum and root) then return end
-    if hum.Health <= 0 then return end
-    if not root:IsDescendantOf(workspace) then return end
-    local vel = root.AssemblyLinearVelocity
-    local flat = Vector3.new(vel.X, 0, vel.Z)
-    if flat.Magnitude < (tonumber(G.BS.SprintSpeed) or 1) then return end
-    local look = flat.Unit
-    local cur = root.CFrame.LookVector
-    local flatCur = Vector3.new(cur.X, 0, cur.Z)
-    if flatCur.Magnitude < 0.1 then return end
-    local dot = flatCur.Unit:Dot(look)
-    if dot >= 0.9995 then return end       -- уже смотрит куда надо
-    local ang = math.acos(dot > 1 and 1 or (dot < -1 and -1 or dot))
-    local step = ang * (1 - math.exp(-(tonumber(G.BS.SprintTurn) or 10) * 0.016))
-    if step <= 0.0005 then return end
-    local yaw = CFrame.Angles(0, step, 0)
-    pcall(function()
-        local piv = ch:GetPivot()
-        ch:PivotTo(CFrame.new(piv.Position) * yaw * piv.Rotation)
+    if hum then
+        if SPIN.prevAuto == nil then SPIN.prevAuto = hum.AutoRotate end
+        pcall(function() hum.AutoRotate = false end)
+    end
+end
+
+function SPIN.restoreAuto()
+    local ch = LP and LP.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    if hum and SPIN.prevAuto ~= nil then
+        pcall(function() hum.AutoRotate = SPIN.prevAuto end)
+    end
+    SPIN.prevAuto = nil
+end
+
+function SPIN.stop()
+    if SPIN.conn then pcall(function() SPIN.conn:Disconnect() end) end
+    SPIN.conn = nil
+    SPIN.restoreAuto()
+end
+
+function SPIN.start()
+    if SPIN.conn then return end
+    SPIN.prevAuto = nil
+    SPIN.applyAuto(LP and LP.Character)
+    SPIN.conn = RunService.Heartbeat:Connect(function(dt)
+        if STOPPED or not G.BS.Spin then return end
+        pcall(function()
+            local ch = LP and LP.Character
+            if not ch then return end
+            local hrp = ch:FindFirstChild("HumanoidRootPart")
+            if not hrp or not hrp.Parent then return end
+            local hum = ch:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health <= 0 then return end
+            -- можно крутить и на ходу, а можно только стоя
+            if G.BS.SpinOnlyStill and hum and hum.MoveDirection
+               and hum.MoveDirection.Magnitude > 0.1 then return end
+            SPIN.applyAuto(ch)
+            local spd = tonumber(G.BS.SpinSpeed) or 50
+            local delta = spd * dt * 3
+            hrp.CFrame = hrp.CFrame * CFrame.Angles(0, math.rad(delta), 0)
+        end)
     end)
 end
 
+function SPIN.set(on)
+    on = on and true or false
+    G.BS.Spin = on
+    dance.spin = on
+    if on then
+        dance.yaw, dance.prevYaw = 0, 0
+        pcall(SPIN.start)
+    else
+        pcall(SPIN.stop)
+    end
+end
+
+-- КАЖДЫЙ КАДР: ассетный трек сам играет, а покачивание (если вдруг
+-- включено из консоли) крутим дельтой угла через PivotTo.
 local function danceTick(dt, now)
     if not dance.on then return end
     if not (dance.spin or dance.sway) then return end
@@ -3466,6 +3616,16 @@ end
 -- Сам хук. Хот-путь максимально дешёвый: без ":"-вызовов и без pcall.
 local function ncWrapper(self, ...)
     local method = getnamecallmethod()
+    -- ТАНЦЫ: ловим анимации, которые игра грузит сама (эмоуты).
+    -- Animator:LoadAnimation(Animation) и Humanoid:PlayAnimation(Animation)
+    -- вызываются, когда открывают колесо эмоутов или включают танец -
+    -- значит ID добывается без всякого поиска по папкам.
+    if G.BS.DanceAutoScan and type(method) == "string"
+       and (method == "LoadAnimation" or method == "PlayAnimation") then
+        pcall(captureAnimArg, (select(1, ...)))
+        -- НЕ возвращаемся: дальше вызов уходит в оригинал как обычно,
+        -- иначе игра не сможет загрузить анимацию.
+    end
     -- ЛОГ РЕМОУТОВ: только когда включён (проверка — одно обращение).
     if G.BS.RemoteLog and type(method) == "string"
        and (method == "FireServer" or method == "InvokeServer") then
@@ -3810,10 +3970,8 @@ local conn = RunService.RenderStepped:Connect(function()
     -- звуковые метки: радар шума (выстрелы, крики)
     pcall(updateNoiseMarks)
 
-    -- танец на ходьбе + спин/покачивание (модель крутим сами)
+    -- танец на ходьбе + покачивание (спин крутит отдельный Heartbeat-коннект)
     pcall(danceTick, dt, now)
-    -- боевой спринт: разворачиваем модель по направлению бега
-    pcall(sprintTick, now)
 
     -- раз в 4 с ловим анимации, которые игра играет на персонаже:
     -- если станцевать штатным эмоутом, его ID попадёт в список
@@ -3953,7 +4111,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.10",
+    LoadingSubtitle = "ESP + Aim + Танец v11.11",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -4183,41 +4341,27 @@ mkToggleButton(AI, "АИМЛОК (камера целится)",
         if v then bindAimLockStep() end
     end)
 
-AI.CreateSection("Аим")
-AI.CreateToggle({
-    Name = "Аимлок пока держишь пушку", Flag = "BS_AimLockFireOnly",
-    CurrentValue = G.BS.AimLockFireOnly,
-    Callback = function(v) G.BS.AimLockFireOnly = v end,
-})
-AI.CreateToggle({
-    Name = "Аим по частям (голова → ноги → руки)", Flag = "BS_AimChain",
-    CurrentValue = G.BS.AimChain,
-    Callback = function(v) G.BS.AimChain = v end,
-})
-AI.CreateToggle({
-    Name = "Целиться в свободные (видимые) части", Flag = "BS_AimFreePart",
-    CurrentValue = G.BS.AimFreePart,
-    Callback = function(v) G.BS.AimFreePart = v end,
-})
-AI.CreateToggle({
-    Name = "Аимлок не наводится сквозь стены", Flag = "BS_AimLockNoWall",
-    CurrentValue = G.BS.AimLockNoWall,
-    Callback = function(v) G.BS.AimLockNoWall = v end,
-})
-AI.CreateToggle({
-    Name = "Аим для ломы / формы / тейзера", Flag = "BS_MeleeAim",
-    CurrentValue = G.BS.MeleeAim,
-    Callback = function(v) G.BS.MeleeAim = v end,
-})
-AI.CreateToggle({
-    Name = "Прострел стен (точка вылета за стеной)", Flag = "BS_WallPenetrate",
-    CurrentValue = G.BS.WallPenetrate,
-    Callback = function(v) G.BS.WallPenetrate = v end,
-})
-AI.CreateSlider({ Name = "Дальность подмены (макс 300)", Flag = "BS_AimMaxDist",
-    Range = {30, 300}, Increment = 10, CurrentValue = G.BS.AimMaxDist,
-    Suffix = " studs",
-    Callback = function(v) G.BS.AimMaxDist = v end })
+-- Секция «Аим» с тумблерами (аим по частям, свободные части, сквозь
+-- стены, лома, прострел, дальность подмены) УБРАНА по просьбе.
+-- Логика осталась и работает на дефолтах:
+--   AimChain, AimFreePart, AimLockNoWall, MeleeAim, WallPenetrate,
+--   AimMaxDist = 290 (Config.Combat.BULLET_RANGE = 300).
+-- Меняется из консоли, например:
+--   getgenv().BS.AimMaxDist = 150
+--   getgenv().BS.WallPenetrate = false
+AI.CreateSection("Аим (режим «держишь пушку»)")
+mkToggleButton(AI, "АИМ ПОКА ДЕРЖИШЬ ПУШКУ",
+    function() return G.BS.AimFireMode == true end,
+    function(v)
+        G.BS.AimFireMode = v
+        -- режим: и патрон, и камера работают только пока зажата ЛКМ
+        G.BS.AimLockFireOnly = v
+        if v then
+            pcall(setBulletSwap, true)
+            G.BS.AimLock = true
+            bindAimLockStep()
+        end
+    end)
 
 -- Секция «Расширитель хитбокса» удалена: прозрачные CanQuery-части
 -- видны только клиенту, а урон считает сервер (Config.Combat).
@@ -4266,22 +4410,21 @@ mkToggleButton(DN, "ТАНЦЕВАТЬ",
     function(v) pcall(setDance, v) end)
 mkToggleButton(DN, "СПИН (крутишься)",
     function() return dance.spin == true end,
-    function(v)
-        dance.spin = v
-        G.BS.Spin = v
-        if v then dance.yaw, dance.prevYaw = 0, 0 end
-    end)
+    function(v) pcall(SPIN.set, v) end)
 
 danceDD = DN.CreateDropdown({ Name = "Какой танец", Flag = "BS_DancePick",
     Options = DANCE_PLACEHOLDER,
     CurrentValue = DANCE_PLACEHOLDER[1],
     Callback = function(v) pcall(pickDance, v) end })
 DN.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
-    Range = {60, 1080}, Increment = 10, CurrentValue = G.BS.SpinSpeed,
-    Suffix = " °/с", Callback = function(v)
+    Range = {10, 200}, Increment = 5, CurrentValue = G.BS.SpinSpeed,
+    Suffix = " (как в EliteHub)", Callback = function(v)
         G.BS.SpinSpeed = v
         dance.spinSpeed = v
     end })
+DN.CreateToggle({ Name = "Спин только стоя", Flag = "BS_SpinOnlyStill",
+    CurrentValue = G.BS.SpinOnlyStill == true,
+    Callback = function(v) G.BS.SpinOnlyStill = v end })
 refreshDanceDropdown()
 end   -- конец buildGui
 
@@ -4320,6 +4463,7 @@ G.BS_Stop = function()
     EVENTS = {}
     -- танец: снимаем свой трек, возвращаем походку и AutoRotate
     pcall(stopDance, true)
+    pcall(SPIN.stop)
     pcall(setSpeed, false)
     pcall(function() RunService:UnbindFromRenderStep("BS_AimLock") end)
     AIM_STEP_BOUND = false
@@ -4357,7 +4501,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.10 остановлен")
+    print("[BS HUB] v11.11 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -4417,7 +4561,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.10 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.11 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
