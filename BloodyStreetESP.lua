@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.2
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.3
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -188,6 +188,12 @@ G.BS.AimLead       = tonumber(G.BS.AimLead) or 0.08
 -- Скорость доворота: 0 = мгновенно, 20 = очень быстро, 40 = мягко.
 G.BS.AimLock       = G.BS.AimLock ~= false
 G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 14
+-- Аимlock включается только когда это нужно, чтобы не дёргать камеру:
+--   NeedAim  — цель под прицелом (иначе догоняет всех подряд);
+--   FireOnly — только пока зажат огонь;
+-- плюс в коде проверяется, что в руках именно ОРУЖИЕ.
+G.BS.AimLockNeedAim  = G.BS.AimLockNeedAim ~= false
+G.BS.AimLockFireOnly = G.BS.AimLockFireOnly == true
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
 
@@ -207,11 +213,13 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 10 then
-    G.BS.CfgV      = 10
+if G.BS.CfgV ~= 11 then
+    G.BS.CfgV      = 11
     G.BS.AimLead   = 0.08
     G.BS.AimLock   = true
     G.BS.AimLockSpeed = 14
+    G.BS.AimLockNeedAim = true
+    G.BS.AimLockFireOnly = false
     G.BS.SpoofBack = 0
     G.BS.SilentShot = false
     G.BS.Hitbox    = false
@@ -1450,6 +1458,7 @@ local function computeBulletPreShot()
         src  = srcPos,   -- откуда стреляем
         dist = dist,     -- расстояние до цели
         dir  = dir.Unit, -- направление
+        onScreen = bestAim ~= nil,  -- цель именно ПОД ПРИЦЕЛОМ
     }
 end
 
@@ -1461,17 +1470,55 @@ end
 -- смотрит в сторону — выстрел отклоняется («выстрел защищается»).
 -- Поэтому доводим камеру на ту же цель: тогда и взгляд, и патрон
 -- совпадают, и сервер не придрается.
--- Позиция камеры не меняется (вид от третьего лица сохраняется) —
+-- Позиция камеры не меняется (вид от третьего лица сохраняется),
 -- меняется только направление взгляда.
-local function aimLockTick(dt)
+--
+-- ЧТОБЫ НЕ БЕСИЛО. Доворот включается только когда реально нужно:
+--   1) в руках ОРУЖИЕ (Attachment Muzzle или атрибут Variant) —
+--      взял дубинку/анализатор, аимлок выключен, камера твоя;
+--   2) цель именно ПОД ПРИЦЕЛОМ, а не просто ближайшая сзади;
+--   3) по желанию — только пока зажат огонь;
+--   4) персонаж жив.
+local UIS = game:GetService("UserInputService")
+local gunInHand, gunCheckAt = false, 0
+
+local function refreshGunFlag(now)
+    if now - gunCheckAt < 0.3 then return gunInHand end
+    gunCheckAt = now
+    local res = false
+    pcall(function()
+        local ch = LP and LP.Character
+        if not ch then res = false return end
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health <= 0 then res = false return end
+        local tool = ch:FindFirstChildOfClass("Tool")
+        if not tool then res = false return end
+        if tool:FindFirstChild("Muzzle") then res = true return end
+        if tool:GetAttribute("Variant") then res = true return end
+        local n = string.lower(tool.Name)
+        if string.find(n, "gun", 1, true) then res = true return end
+    end)
+    gunInHand = res
+    return res
+end
+
+local function aimLockTick(dt, now)
     local pre = bulletPreShot
     if not (G.BS.AimLock and pre and pre.part and pre.part.Parent) then return end
+    if not refreshGunFlag(now) then return end
+    if G.BS.AimLockNeedAim and not pre.onScreen then return end
+    if G.BS.AimLockFireOnly then
+        local okP, down = pcall(function()
+            return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+        end)
+        if not (okP and down) then return end
+    end
+
     local cam = workspace.CurrentCamera
     if not cam then return end
     local cf = cam.CFrame
     local pos = cf.Position
-    local toT = pre.part.Position - pos
-    if toT.Magnitude < 0.5 then return end
+    if (pre.part.Position - pos).Magnitude < 0.5 then return end
     local target = CFrame.lookAt(pos, pre.part.Position, cf.UpVector)
     local sp = tonumber(G.BS.AimLockSpeed) or 14
     if sp <= 0 then
@@ -1939,7 +1986,7 @@ local conn = RunService.RenderStepped:Connect(function()
     end
 
     -- аимлок: доводим взгляд на ту же цель, чтобы сервер принял выстрел
-    if G.BS.AimLock then pcall(aimLockTick, dt) end
+    if G.BS.AimLock then pcall(aimLockTick, dt, now) end
 
     local cam = workspace.CurrentCamera
     if not cam then
@@ -2045,7 +2092,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v10.2",
+    LoadingSubtitle = "ESP + Client Aim v10.3",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2167,7 +2214,7 @@ AI.CreateToggle({
     end,
 })
 
--- АИМЛОК: камера целится в жертву, патрон идёт через клиент айм.
+-- АИМЛОК доводит взгляд на цель только когда реально стреляешь.
 AI.CreateToggle({
     Name = "Аимлок (камера целится в жертву)", Flag = "BS_AimLock",
     CurrentValue = G.BS.AimLock,
@@ -2175,6 +2222,16 @@ AI.CreateToggle({
         G.BS.AimLock = v
         notify(v and "Камера доводится на цель" or "Аимлок выключен", 3)
     end,
+})
+AI.CreateToggle({
+    Name = "Аимлок только с оружием в руках", Flag = "BS_AimLockNeedAim",
+    CurrentValue = G.BS.AimLockNeedAim,
+    Callback = function(v) G.BS.AimLockNeedAim = v end,
+})
+AI.CreateToggle({
+    Name = "Аимлок только пока держишь огонь", Flag = "BS_AimLockFireOnly",
+    CurrentValue = G.BS.AimLockFireOnly,
+    Callback = function(v) G.BS.AimLockFireOnly = v end,
 })
 AI.CreateSlider({ Name = "Скорость доворота камеры", Flag = "BS_AimLockSpeed",
     Range = {0, 40}, Increment = 1, CurrentValue = G.BS.AimLockSpeed,
@@ -2259,7 +2316,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v10.2 остановлен")
+    print("[BS HUB] v10.3 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2282,7 +2339,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v10.2 запущен | хуков=" .. #netConns
+print("[BS HUB] v10.3 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
