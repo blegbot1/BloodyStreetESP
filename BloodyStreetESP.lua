@@ -181,7 +181,7 @@ G.BS.EventsOn     = G.BS.EventsOn ~= false
 -- УСКОРЕНИЕ ПО КЛАВИШЕ: держишь Левый Shift - скорость выше.
 G.BS.SpeedKey = G.BS.SpeedKey ~= false
 G.BS.SpinSpeed = tonumber(G.BS.SpinSpeed) or 50   -- как в EliteHub
-G.BS.SpinOnlyStill = G.BS.SpinOnlyStill == true
+G.BS.SpinOnlyStill = nil   -- тумблер удалён: спин крутит и на ходу
 G.BS.AimFireMode   = G.BS.AimFireMode ~= false  -- кнопка "держишь пушку"
 G.BS.SpeedMul = tonumber(G.BS.SpeedMul) or 2
 -- Сдвиг времени выстрела в ремоуте (аргумент №5) вперёд, чтобы
@@ -325,7 +325,6 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 if G.BS.CfgV ~= 29 then
     G.BS.CfgV      = 29
     G.BS.SpinSpeed = 50        -- как в EliteHub
-    G.BS.SpinOnlyStill = false
     G.BS.AimFireMode = true
     G.BS.SpeedKey = true
     G.BS.SpeedMul = 2
@@ -2116,9 +2115,7 @@ function SPIN.start()
             if not hrp or not hrp.Parent then return end
             local hum = ch:FindFirstChildOfClass("Humanoid")
             if hum and hum.Health <= 0 then return end
-            -- можно крутить и на ходу, а можно только стоя
-            if G.BS.SpinOnlyStill and hum and hum.MoveDirection
-               and hum.MoveDirection.Magnitude > 0.1 then return end
+            -- спин крутит и на ходу, и стоя (движение не мешает)
             SPIN.applyAuto(ch)
             -- зажимаем скорость: сохранённые настройки Rayfield могли
             -- остаться от старой версии (там было 360, а формула
@@ -4607,9 +4604,8 @@ DN.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
         G.BS.SpinSpeed = v
         dance.spinSpeed = v
     end })
-DN.CreateToggle({ Name = "Спин только стоя", Flag = "BS_SpinOnlyStill",
-    CurrentValue = G.BS.SpinOnlyStill == true,
-    Callback = function(v) G.BS.SpinOnlyStill = v end })
+-- Тумблер "Спин только стоя" удалён по просьбе: спин крутит и на ходу,
+-- и стоя (движение не мешает - модель просто вращается вокруг корня).
 refreshDanceDropdown()
 end   -- конец buildGui
 
