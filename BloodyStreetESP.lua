@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.9
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.10
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -179,6 +179,9 @@ G.BS.HitMark      = G.BS.HitMark ~= false
 G.BS.HitMarkColor = safeColor(G.BS.HitMarkColor, Color3.new(1, 0.25, 0.25))
 G.BS.HitMarkLife  = tonumber(G.BS.HitMarkLife) or 0.25
 G.BS.EventsOn     = G.BS.EventsOn ~= false
+-- УСКОРЕНИЕ ПО КЛАВИШЕ: держишь Левый Shift - скорость выше.
+G.BS.SpeedKey = G.BS.SpeedKey ~= false
+G.BS.SpeedMul = tonumber(G.BS.SpeedMul) or 2
 -- Сдвиг времени выстрела в ремоуте (аргумент №5) вперёд, чтобы
 -- сервер считал, что WEAPON_COOLDOWN уже прошёл.
 G.BS.ShotTimeHack = G.BS.ShotTimeHack == true
@@ -309,8 +312,14 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 26 then
-    G.BS.CfgV      = 26
+if G.BS.CfgV ~= 27 then
+    G.BS.CfgV      = 27
+    G.BS.SpeedKey = true
+    G.BS.SpeedMul = 2
+    -- аимлок: работает, пока держишь пушку (просили «пока держишь пушку»)
+    G.BS.AimLockFireOnly = true
+    G.BS.AimLock = true
+    G.BS.BulletSwap = true
     G.BS.AimLockSpeed = 1      -- мгновенный доворот (иначе отстаёт на ходу)
     G.BS.LockHold      = 0.6
     G.BS.LockHoldOnFire = true
@@ -404,6 +413,9 @@ local hitMarkAt   = 0       -- os.clock() последнего реальног�
 local hitLines    = {}      -- Drawing-линии хитмаркера
 local eventsLabel = nil     -- TextLabel ленты в углу экрана
 local updateHitMark, updateEvents
+local danceDD = nil         -- выпадающий список танцев (создаётся в GUI)
+local refreshDanceDropdown -- наполнение списка найденными анимациями
+local UI_ERR = {}           -- ошибки создания элементов GUI (пишутся в лог)
 
 -- Уверенность источников роли
 local CONF = { attr = 6, event = 5, deduce = 4, sound = 3, gear = 2 }
@@ -1924,6 +1936,63 @@ local function roleFromTool(plr)
 end
 
 -- ============================================================
+--  УСКОРЕНИЕ ПО КЛАВИШЕ
+-- ============================================================
+-- Пока держишь Левый Shift (или ПКМ - как удобнее), скорость
+-- персонажа выше. Обычная скорость 16 (это видно в игре:
+-- Humanoid WalkSpeed = 16), множитель по умолчанию 2.
+-- Скорость восстанавливается при отпускании клавиши и после смерти,
+-- чтобы не остаться с «быстрым» персонажем после респавна.
+local speedState = { on = false, base = nil, hum = nil }
+
+local function applySpeed(mul)
+    local ch = LP and LP.Character
+    if not ch then return end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if speedState.hum ~= hum then
+        speedState.hum = hum
+        speedState.base = hum.WalkSpeed
+    end
+    if speedState.base == nil then speedState.base = hum.WalkSpeed end
+    hum.WalkSpeed = speedState.base * mul
+end
+
+local function setSpeed(on)
+    on = on and true or false
+    if speedState.on == on then return end
+    speedState.on = on
+    if on then
+        pcall(applySpeed, tonumber(G.BS.SpeedMul) or 2)
+    else
+        local hum = speedState.hum
+        if hum and hum.Parent and speedState.base then
+            pcall(function() hum.WalkSpeed = speedState.base end)
+        end
+        speedState.hum, speedState.base = nil, nil
+    end
+end
+
+local function hookSpeedKey()
+    local okUIS, uis = pcall(function() return game:GetService("UserInputService") end)
+    if not (okUIS and uis) then return end
+    uis.InputBegan:Connect(function(k, gpe)
+        if gpe or not G.BS.SpeedKey then return end
+        if k.KeyCode == Enum.KeyCode.LeftShift then pcall(setSpeed, true) end
+    end)
+    uis.InputEnded:Connect(function(k, gpe)
+        if gpe then return end
+        if k.KeyCode == Enum.KeyCode.LeftShift then pcall(setSpeed, false) end
+    end)
+    -- если клавишу отпустили, а скрипт сняли - вернуть скорость
+    LP.CharacterAdded:Connect(function()
+        speedState.hum, speedState.base = nil, nil
+        task.wait(0.3)
+        if speedState.on then pcall(applySpeed, tonumber(G.BS.SpeedMul) or 2) end
+    end)
+end
+
+-- ============================================================
 --  СТАТУС ЦЕЛИ: сбит / раскрыт / оглушён / разоружён
 -- ============================================================
 -- В игре у персонажа несколько состояний, и они решают всё:
@@ -2940,6 +3009,27 @@ local function aimLockTick(dt, now)
     cam.CFrame = cf:Lerp(target, k)
 end
 
+-- АИМЛОК ВСТРАИВАЕМ В КАДР КАМЕРЫ. Roblox пересчитывает CFrame камеры
+-- в своём BindToRenderStep с приоритетом Enum.RenderPriority.Camera,
+-- а обычные коннекты RenderStepped выполняются РАНЬШЕ (Default).
+-- Из-за этого наш доворот каждый кадр затирался игрой - отсюда и жалобы
+-- «аймлок не работает», и «тянет назад». Поэтому вешаем свой шаг с
+-- приоритетом Camera + 1: тогда камера уже обновилась, и мы правим
+-- её последними.
+local AIM_STEP_BOUND = false
+local function bindAimLockStep()
+    if AIM_STEP_BOUND then return end
+    local prio = 201
+    pcall(function() prio = Enum.RenderPriority.Camera.Value + 1 end)
+    local ok = pcall(function()
+        RunService:BindToRenderStep("BS_AimLock", prio, function(dt)
+            if STOPPED then return end
+            pcall(aimLockTick, dt or 0.016, os.clock())
+        end)
+    end)
+    if ok then AIM_STEP_BOUND = true end
+end
+
 -- ============================================================
 --  МЕЛЬЕ: подмена направления удара
 -- ============================================================
@@ -3702,8 +3792,10 @@ local conn = RunService.RenderStepped:Connect(function()
         bulletPreShot = nil
     end
 
-    -- аимлок: доводим взгляд на ту же цель, чтобы сервер принял выстрел
-    if G.BS.AimLock then pcall(aimLockTick, dt, now) end
+    -- аимлок вызывается НЕ здесь, а в BindToRenderStep с приоритетом
+    -- камеры + 1: Roblox пересчитывает CFrame камеры в своём
+    -- RenderStepped ПОЗЖЕ обычных коннектов, и наш доворот просто
+    -- затирался (отсюда «аймлок не работает» и «тянет назад»).
 
     -- подсветка текущей цели
     pcall(updateTargetMark)
@@ -3727,7 +3819,10 @@ local conn = RunService.RenderStepped:Connect(function()
     -- если станцевать штатным эмоутом, его ID попадёт в список
     if G.BS.DanceAutoScan and now - dance.scanAt > 4 then
         dance.scanAt = now
+        local before = #DANCES
         pcall(function() scanPlayingAnims({}, false) end)
+        -- новые анимации сразу попадают в выпадающий список
+        if #DANCES > before then pcall(refreshDanceDropdown) end
     end
 
     -- снятие кулдауна оружия (метки готовности держим в прошлом)
@@ -3850,10 +3945,15 @@ end)
 -- ============================================================
 --  GUI
 -- ============================================================
+-- Всё создание меню завёрнуто в функцию: в главном блоке скрипта
+-- уже упёрлись в лимит локальных переменных Lua (200), а локальные
+-- переменные из buildGui не нужны снаружи. Всё, что нужно дальше
+-- (refreshDanceDropdown, bindAimLockStep, setSpeed), объявлено выше.
+local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.9",
+    LoadingSubtitle = "ESP + Aim + Танец v11.10",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -3862,8 +3962,8 @@ local AIMT = Window:CreateTab("AIM", 1101060692)
 local DNC  = Window:CreateTab("ТАНЕЦ", 1183774348)
 
 -- ЗАЩИТА СОЗДАНИЯ ЭЛЕМЕНТОВ: один упавший Create* не должен
--- ронять всю вкладку.
-local UI_ERR = {}
+-- ронять всю вкладку. UI_ERR объявлена выше (в блоке состояния),
+-- чтобы её можно было распечатать в стартовом логе.
 local ELEM_NAMES = {
     "CreateSection", "CreateToggle", "CreateColorPicker", "CreateSlider",
     "CreateDropdown", "CreateButton", "CreateParagraph", "CreateInput",
@@ -3894,6 +3994,26 @@ end
 local TB = mkTab(TAB,  "ESP")
 local AI = mkTab(AIMT, "AIM")
 local DN = mkTab(DNC,  "ТАНЕЦ")
+
+-- КНОПКА-ВЫКЛЮЧАТЕЛЬ: сама меняет надпись, чтобы всегда было видно,
+-- включено сейчас или нет (по просьбе - вместо тумблеров).
+-- Объект кнопки лежит в ref[1]: так он доступен из колбэка (в Lua
+-- локальная переменная из аргумента в колбэке ещё не видна).
+local function mkToggleButton(tabApi, name, isOn, onToggle)
+    local ref = { obj = nil, label = isOn() and (name .. ": ВКЛ") or (name .. ": выкл") }
+    local obj = tabApi.CreateButton({ Name = ref.label, Callback = function()
+        local now = not isOn()
+        pcall(onToggle, now)
+        local txt = now and (name .. ": ВКЛ") or (name .. ": выкл")
+        ref.label = txt
+        pcall(function() if ref.obj then ref.obj:SetLabel(txt) end end)
+        pcall(function()
+            if ref.obj and ref.obj.Label then ref.obj.Label.Text = txt end
+        end)
+    end })
+    ref.obj = obj
+    return obj
+end
 
 -- Блок «ГЛАВНЫЙ ЦВЕТ (RGB)» удалён по просьбе: rgbColor/hexStr/
 -- hexToRGB/applyMainColor больше не вызываются.
@@ -4016,125 +4136,83 @@ TB.CreateToggle({ Name = "Лента событий (раунд/разоблач
         if not v and eventsLabel then eventsLabel.Visible = false end
     end })
 
-TB.CreateSection("Сканер")
-TB.CreateButton({ Name = "СКАНИРОВАТЬ ИГРУ (в консоль)", Callback = function()
-    pcall(scanAll)
-    notify("Скан отработал, смотри консоль", 4)
-end })
-TB.CreateButton({ Name = "ГЛУБОКОЕ СКАНИРОВАНИЕ (найти модули оружия)", Callback = function()
-    pcall(deepScan)
-    notify("Глубокий скан отработал, смотри консоль", 4)
-end })
-TB.CreateButton({ Name = "ПРОВЕРКА ОРУЖИЯ (дальность/разброс)", Callback = function()
-    pcall(probeWeapon)
-    notify("Проверка оружия отработала, смотри консоль", 4)
-end })
-TB.CreateToggle({ Name = "Сканировать при запуске", Flag = "BS_ScanOnStart",
-    CurrentValue = G.BS.ScanOnStart,
+-- Секция «Сканер» с кнопками СКАНИРОВАТЬ ИГРУ / ГЛУБОКОЕ СКАНИРОВАНИЕ /
+-- ПРОВЕРКА ОРУЖИЯ / Сканировать при запуске УБРАНА по просьбе (см.
+-- комментарий в конце вкладки AIM): консоль забивалась сотнями строк.
+-- Функции остались в файле и включаются из консоли.
+
+-- ======================= СКОРОСТЬ =======================
+TB.CreateSection("Скорость")
+TB.CreateToggle({ Name = "Ускорение по Левому Shift", Flag = "BS_SpeedKey",
+    CurrentValue = G.BS.SpeedKey,
     Callback = function(v)
-        G.BS.ScanOnStart = v
-        if v then pcall(scanAll) end
+        G.BS.SpeedKey = v
+        if not v then pcall(setSpeed, false) end
+    end })
+TB.CreateSlider({ Name = "Множитель скорости", Flag = "BS_SpeedMul",
+    Range = {1.2, 4}, Increment = 0.1,
+    CurrentValue = tonumber(G.BS.SpeedMul) or 2,
+    Suffix = " x", Callback = function(v)
+        G.BS.SpeedMul = v
+        if speedState.on then pcall(applySpeed, v) end
     end })
 
 -- ======================= AIM =======================
-AI.CreateSection("Клиент айм")
-AI.CreateToggle({
-    Name = "Клиент айм (patron v tsel)", Flag = "BS_BulletSwap",
-    CurrentValue = G.BS.BulletSwap,
-    Callback = function(v)
-        G.BS.BulletSwap = v
-        locked = nil
-        bulletPreShot = nil
-        if v then
-            pcall(installBulletHook)
-            pcall(computeBulletPreShot)
-            notify("Патроны идут в цель", 3)
-        else
-            notify("Клиент айм выключен", 2)
-        end
-    end,
-})
+-- ДВЕ КНОПКИ (по просьбе): «Клиент айм» и «Аимлок».
+-- Аимлок работает, пока держишь пушку (зажата ЛКМ) — камера
+-- доводится на цель только в момент стрельбы, поэтому в покое
+-- камера твоя.
+local function setBulletSwap(v)
+    G.BS.BulletSwap = v
+    locked = nil
+    bulletPreShot = nil
+    if v then
+        pcall(installBulletHook)
+        pcall(computeBulletPreShot)
+    end
+end
 
--- АИМЛОК доводит взгляд на цель только когда реально стреляешь.
+AI.CreateSection("Две кнопки")
+mkToggleButton(AI, "КЛИЕНТ АЙМ (патрон в цель)",
+    function() return G.BS.BulletSwap == true end,
+    function(v) pcall(setBulletSwap, v) end)
+mkToggleButton(AI, "АИМЛОК (камера целится)",
+    function() return G.BS.AimLock == true end,
+    function(v)
+        G.BS.AimLock = v
+        if v then bindAimLockStep() end
+    end)
+
+AI.CreateSection("Аим")
+AI.CreateToggle({
+    Name = "Аимлок пока держишь пушку", Flag = "BS_AimLockFireOnly",
+    CurrentValue = G.BS.AimLockFireOnly,
+    Callback = function(v) G.BS.AimLockFireOnly = v end,
+})
 AI.CreateToggle({
     Name = "Аим по частям (голова → ноги → руки)", Flag = "BS_AimChain",
     CurrentValue = G.BS.AimChain,
-    Callback = function(v)
-        G.BS.AimChain = v
-        notify(v and "Голова/корпус, иначе ноги, иначе руки" or "Только выбранная часть", 3)
-    end,
+    Callback = function(v) G.BS.AimChain = v end,
 })
 AI.CreateToggle({
     Name = "Целиться в свободные (видимые) части", Flag = "BS_AimFreePart",
     CurrentValue = G.BS.AimFreePart,
-    Callback = function(v)
-        G.BS.AimFreePart = v
-        notify(v and "Перекрыто -> берём ноги, потом руки" or "Всегда выбранная часть", 3)
-    end,
-})
-AI.CreateToggle({
-    Name = "Аимлок (камера целится в жертву)", Flag = "BS_AimLock",
-    CurrentValue = G.BS.AimLock,
-    Callback = function(v)
-        G.BS.AimLock = v
-        notify(v and "Камера доводится на цель" or "Аимлок выключен", 3)
-    end,
-})
-AI.CreateToggle({
-    Name = "Аимлок только пока держишь огонь", Flag = "BS_AimLockFireOnly",
-    CurrentValue = G.BS.AimLockFireOnly,
-    Callback = function(v) G.BS.AimLockFireOnly = v end,
-})
-AI.CreateSlider({ Name = "Удержание цели (сек)", Flag = "BS_LockHold",
-    Range = {0, 5}, Increment = 0.1,
-    CurrentValue = tonumber(G.BS.LockHold) or 0.6,
-    Suffix = " c",
-    Callback = function(v) G.BS.LockHold = v end })
-AI.CreateToggle({
-    Name = "Держать цель, пока зажат огонь", Flag = "BS_LockHoldOnFire",
-    CurrentValue = G.BS.LockHoldOnFire,
-    Callback = function(v) G.BS.LockHoldOnFire = v end,
-})
-AI.CreateToggle({
-    Name = "Маркер цели = цели аима", Flag = "BS_SyncTarget",
-    CurrentValue = G.BS.SyncTarget,
-    Callback = function(v)
-        G.BS.SyncTarget = v
-        locked = nil
-    end,
-})
-AI.CreateToggle({
-    Name = "Аим по цели из списка (без выбора свободной части)", Flag = "BS_AimLockListTarget",
-    CurrentValue = G.BS.AimLockListTarget,
-    Callback = function(v) G.BS.AimLockListTarget = v end,
+    Callback = function(v) G.BS.AimFreePart = v end,
 })
 AI.CreateToggle({
     Name = "Аимлок не наводится сквозь стены", Flag = "BS_AimLockNoWall",
     CurrentValue = G.BS.AimLockNoWall,
     Callback = function(v) G.BS.AimLockNoWall = v end,
 })
-AI.CreateSlider({ Name = "Плавность доворота (1 = мгновенно)", Flag = "BS_AimLockSpeed",
-    Range = {0, 1}, Increment = 0.05,
-    CurrentValue = tonumber(G.BS.AimLockSpeed) or 1,
-    Suffix = " (0 = выкл)",
-    Callback = function(v) G.BS.AimLockSpeed = v end })
-
-AI.CreateSection("Прострел и дальность")
 AI.CreateToggle({
     Name = "Аим для ломы / формы / тейзера", Flag = "BS_MeleeAim",
     CurrentValue = G.BS.MeleeAim,
-    Callback = function(v)
-        G.BS.MeleeAim = v
-        notify(v and "Удар ломой идёт в цель" or "Аим для ломы выключен", 3)
-    end,
+    Callback = function(v) G.BS.MeleeAim = v end,
 })
 AI.CreateToggle({
     Name = "Прострел стен (точка вылета за стеной)", Flag = "BS_WallPenetrate",
     CurrentValue = G.BS.WallPenetrate,
-    Callback = function(v)
-        G.BS.WallPenetrate = v
-        notify(v and "Стена ближе 13 студов - выстрел из-за неё" or "Прострел выключен", 4)
-    end,
+    Callback = function(v) G.BS.WallPenetrate = v end,
 })
 AI.CreateSlider({ Name = "Дальность подмены (макс 300)", Flag = "BS_AimMaxDist",
     Range = {30, 300}, Increment = 10, CurrentValue = G.BS.AimMaxDist,
@@ -4150,64 +4228,29 @@ AI.CreateSlider({ Name = "Дальность подмены (макс 300)", Fla
 --   AIM_TARGETS  = противники по роли, AIM_PRIORITY = ближе,
 --   радиус 160 px, прострел включён.
 
-AI.CreateToggle({
-    Name = "Лог попаданий (урон от сервера)", Flag = "BS_DmgLog",
-    CurrentValue = G.BS.DmgLog,
-    Callback = function(v)
-        G.BS.DmgLog = v
-        if v then notify("Каждое попадание будет в консоли", 3) end
-    end,
-})
-AI.CreateButton({ Name = "СЧЁТ: выстрелы / попадания", Callback = function()
-    print(string.format(
-        "[BS DMG] выстрелов подменено: %d | событий урона: %d | цель: %s",
-        tonumber(G.BS.SilentShots) or 0, tonumber(G.BS.DmgEvents) or 0,
-        tostring(bulletPreShot and bulletPreShot.part.Name or "нет")))
-end })
-
-AI.CreateSection("Диагностика")
-AI.CreateToggle({
-    Name = "Диагностика патрона (в консоль)", Flag = "BS_BulletDebug",
-    CurrentValue = G.BS.BulletDebug,
-    Callback = function(v)
-        G.BS.BulletDebug = v
-        if v then pcall(installBulletHook) end
-    end,
-})
-AI.CreateToggle({
-    Name = "Лог ремоутов (что уходит на сервер)", Flag = "BS_RemoteLog",
-    CurrentValue = G.BS.RemoteLog,
-    Callback = function(v)
-        G.BS.RemoteLog = v
-        logSeen = {}
-        if v then
-            pcall(installBulletHook)
-            if v then
-            notify("Глубокий лог: все ремоуты + входящие события", 5)
-        else
-            notify("Лог ремоутов включён: постреляй, смотри [BS REMOTE]", 5)
-        end
-        end
-    end,
-})
+-- Секция «Диагностика» (лог попаданий, диагностика патрона, лог
+-- ремоутов, глубокий лог 94 ремоутов) и кнопки сканеров УБРАНЫ по
+-- просьбе: консоль забивалась, а нужного там всё равно не было.
+-- Если что-то понадобится - всё включается из консоли:
+--   getgenv().BS.RemoteLog = true
+--   getgenv().BS.DeepRemoteLog = true
+--   getgenv().BS.DmgLog = true
+--   getgenv().BS.BulletDebug = true
+-- и вызовом из консоли: loadstring("...") — функции scanAll/deepScan/
+-- probeWeapon остались в файле.
 
 -- ============================================================
---  ТАНЕЦ
+--  ТАНЕЦ: ДВЕ КНОПКИ (по просьбе)
 -- ============================================================
-DN.CreateParagraph({ Name = "Танец играется САМИМ скриптом: свой трек с "
-    .. "высоким приоритетом и Looped, поэтому ходьба его не сбивает. "
-    .. "Спин и покачивание - наш собственный поворот модели, им не нужны "
-    .. "ассеты, работают всегда." })
-
-DN.CreateSection("Танец")
-DN.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
-    CurrentValue = G.BS.DanceOn,
-    Callback = function(v) pcall(setDance, v) end })
-
--- Список анимаций: сначала пусто, потом наполняется сканом.
-local danceDD = nil
-local DANCE_PLACEHOLDER = { "— сначала найди танцы —" }
-local function refreshDanceDropdown()
+-- Раньше тут была целая простыня: тумблеры, слайдеры, поле для ID,
+-- кнопка поиска, F7 и отдельный «спринт». Теперь ровно две кнопки:
+--   ТАНЦЕВАТЬ - включает/выключает найденную анимацию игры;
+--   СПИН      - крутит модель на месте (спин-стрейф), можно вместе
+--               с танцем. Ассеты не нужны, работает всегда.
+-- Танцы ищутся САМИ при запуске (Animation-объекты игры + require
+-- модулей + то, что игра играет сама) и сразу попадают в список.
+local DANCE_PLACEHOLDER = { "ищу танцы в игре…" }
+refreshDanceDropdown = function()
     local opts = {}
     for i = 1, #DANCES do opts[i] = DANCES[i].label end
     if #opts == 0 then opts = DANCE_PLACEHOLDER end
@@ -4217,113 +4260,32 @@ local function refreshDanceDropdown()
     end
 end
 
-danceDD = DN.CreateDropdown({ Name = "Анимация танца", Flag = "BS_DancePick",
+DN.CreateSection("Две кнопки")
+mkToggleButton(DN, "ТАНЦЕВАТЬ",
+    function() return dance.on == true end,
+    function(v) pcall(setDance, v) end)
+mkToggleButton(DN, "СПИН (крутишься)",
+    function() return dance.spin == true end,
+    function(v)
+        dance.spin = v
+        G.BS.Spin = v
+        if v then dance.yaw, dance.prevYaw = 0, 0 end
+    end)
+
+danceDD = DN.CreateDropdown({ Name = "Какой танец", Flag = "BS_DancePick",
     Options = DANCE_PLACEHOLDER,
     CurrentValue = DANCE_PLACEHOLDER[1],
     Callback = function(v) pcall(pickDance, v) end })
-refreshDanceDropdown()
-
-DN.CreateButton({ Name = "НАЙТИ ТАНЦЫ В ИГРЕ", Callback = function()
-    pcall(function()
-        scanDances(false)
-        refreshDanceDropdown()
-    end)
-end })
-DN.CreateInput({ Name = "Свой ID (rbxassetid://...)", Flag = "BS_DanceManual",
-    Placeholder = "rbxassetid://1234567890",
-    Callback = function(txt)
-        local s = normAnimId(txt)
-        if not s then
-            notify("Танец", "Не похоже на ID анимации", 2)
-            return
-        end
-        local lbl = "Мой ID " .. s
-        addDance(lbl, s)
-        pcall(pickDance, lbl)
-        refreshDanceDropdown()
-        if dance.on then pcall(startDance, true) end
-    end })
-
-DN.CreateSection("Спин и покачивание")
-DN.CreateToggle({ Name = "Спин (оборот 360°)", Flag = "BS_Spin",
-    CurrentValue = G.BS.Spin,
-    Callback = function(v)
-        G.BS.Spin = v
-        if v then
-            dance.spin = true
-            if dance.on then pcall(startDance, true) end
-        else
-            dance.spin = false
-        end
-    end })
-DN.CreateToggle({ Name = "Покачивание", Flag = "BS_Sway",
-    CurrentValue = G.BS.Sway,
-    Callback = function(v)
-        G.BS.Sway = v
-        dance.sway = v
-    end })
-DN.CreateSlider({ Name = "Скорость оборота", Flag = "BS_SpinSpeed",
+DN.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
     Range = {60, 1080}, Increment = 10, CurrentValue = G.BS.SpinSpeed,
     Suffix = " °/с", Callback = function(v)
         G.BS.SpinSpeed = v
         dance.spinSpeed = v
     end })
-DN.CreateSlider({ Name = "Размах покачивания", Flag = "BS_SwayAmp",
-    Range = {5, 60}, Increment = 1, CurrentValue = G.BS.SwayAmp,
-    Suffix = " °", Callback = function(v)
-        G.BS.SwayAmp = v
-        dance.swayAmp = v
-    end })
-DN.CreateToggle({ Name = "Клавиша F7 — танец вкл/выкл", Flag = "BS_DanceHotkey",
-    CurrentValue = G.BS.DanceHotkey,
-    Callback = function(v)
-        G.BS.DanceHotkey = v
-        if v then
-            dance.hotkey = "F7"
-            pcall(hookDanceKey)
-        else
-            pcall(function()
-                if connDanceKey then connDanceKey:Disconnect() end
-                connDanceKey = nil
-            end)
-        end
-    end })
-DN.CreateToggle({ Name = "Ловить танцы, которые игра играет сама", Flag = "BS_DanceAutoScan",
-    CurrentValue = G.BS.DanceAutoScan,
-    Callback = function(v) G.BS.DanceAutoScan = v end })
+refreshDanceDropdown()
+end   -- конец buildGui
 
-DN.CreateSection("Спринт («спин» в бою)")
-DN.CreateParagraph({ Name = "Модель доворачивается по направлению бега, "
-    .. "поэтому в бою не уезжает боком. Отдельно от танца: работает "
-    .. "всегда и не требует ассетов." })
-DN.CreateToggle({ Name = "Спинт (поворот по бегу)", Flag = "BS_Sprint",
-    CurrentValue = G.BS.Sprint,
-    Callback = function(v) G.BS.Sprint = v end })
-DN.CreateSlider({ Name = "Порог бега", Flag = "BS_SprintSpeed",
-    Range = {0, 10}, Increment = 0.5,
-    CurrentValue = tonumber(G.BS.SprintSpeed) or 1,
-    Suffix = " studs/c", Callback = function(v) G.BS.SprintSpeed = v end })
-DN.CreateSlider({ Name = "Скорость доворота в бегу", Flag = "BS_SprintTurn",
-    Range = {2, 30}, Increment = 1,
-    CurrentValue = tonumber(G.BS.SprintTurn) or 10,
-    Callback = function(v) G.BS.SprintTurn = v end })
-
-AI.CreateToggle({
-    Name = "Глубокий лог всех 94 ремоутов + входящие события",
-    Flag = "BS_DeepRemoteLog",
-    CurrentValue = G.BS.DeepRemoteLog,
-    Callback = function(v)
-        G.BS.DeepRemoteLog = v
-        logSeen = {}
-        incomingSeen = {}
-        incomingCount = 0
-        if v then pcall(installBulletHook) end
-    end,
-})
-AI.CreateSlider({ Name = "Лимит строк входящего лога", Flag = "BS_MaxInLog",
-    Range = {50, 2000}, Increment = 50,
-    CurrentValue = tonumber(G.BS.MaxInLog) or 400,
-    Callback = function(v) G.BS.MaxInLog = v end })
+buildGui()
 
 -- ============================================================
 --  СТОП
@@ -4358,6 +4320,9 @@ G.BS_Stop = function()
     EVENTS = {}
     -- танец: снимаем свой трек, возвращаем походку и AutoRotate
     pcall(stopDance, true)
+    pcall(setSpeed, false)
+    pcall(function() RunService:UnbindFromRenderStep("BS_AimLock") end)
+    AIM_STEP_BOUND = false
     if connDanceKey then pcall(function() connDanceKey:Disconnect() end) end
     connDanceKey = nil
     Screen = nil
@@ -4392,7 +4357,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.9 остановлен")
+    print("[BS HUB] v11.10 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -4424,9 +4389,19 @@ task.spawn(function()
     -- сразу печатаем список в консоль. Сам танец не включаем -
     -- включается галочкой или клавишей F7.
     hookDanceKey()
+    pcall(hookSpeedKey)
+    bindAimLockStep()
+    -- СКАНЕРЫ ОСТАВЛЕНЫ В КОНСОЛИ (кнопки в GUI убраны по просьбе):
+    --   getgenv().BS.ScanAll()      -- общая структура игры
+    --   getgenv().BS.DeepScan()    -- модули, ремоуты, танцы
+    --   getgenv().BS.ProbeWeapon() -- урон/дальность оружия
+    G.BS.ScanAll     = scanAll
+    G.BS.DeepScan    = deepScan
+    G.BS.ProbeWeapon = probeWeapon
     if G.BS.DanceAutoScan then
         task.wait(1)
         pcall(scanDances, true)
+        pcall(refreshDanceDropdown)
     end
     -- значения из сохранённого конфига Rayfield -> состояние движка
     dance.spin      = G.BS.Spin == true
@@ -4442,7 +4417,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.9 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.10 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
