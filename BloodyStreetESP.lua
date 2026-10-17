@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.11
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.12
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -94,7 +94,6 @@ local RGB_TARGETS  = {
 --  НАСТРОЙКИ
 -- ============================================================
 G.BS.Run = (G.BS.Run or 0) + 1
-local RUN_ID = G.BS.Run
 
 -- ---------- ESP ----------
 G.BS.PlayerESP   = G.BS.PlayerESP   ~= false
@@ -267,6 +266,8 @@ G.BS.WeaponProbeOnStart = G.BS.WeaponProbeOnStart ~= false
 -- Humanoid:PlayAnimation(Animation) - наш глобальный хук __namecall это
 -- видит, поэтому ID анимации снимается на лету.
 
+-- captureEmoteArgs (разбор EmotePlay) - рядом с addDance, ниже.
+
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
 -- ГЛУБОКИЙ ЛОГ: все 94 ремоута без ограничения вызовов + разбор
@@ -321,8 +322,8 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 28 then
-    G.BS.CfgV      = 28
+if G.BS.CfgV ~= 29 then
+    G.BS.CfgV      = 29
     G.BS.SpinSpeed = 50        -- как в EliteHub
     G.BS.SpinOnlyStill = false
     G.BS.AimFireMode = true
@@ -337,13 +338,10 @@ if G.BS.CfgV ~= 28 then
     G.BS.LockHoldOnFire = true
     G.BS.SyncTarget    = true
     G.BS.AimLockListTarget = false
-    G.BS.AimLockSpeed = 25     -- SHOT_ANGLE_SLACK_DEG = 3
     G.BS.DanceOn   = false
     G.BS.Spin      = false
     G.BS.Sway      = false
-    G.BS.SpinSpeed = 360
     G.BS.SwayAmp   = 20
-    G.BS.DanceHotkey   = true
     G.BS.DanceAutoScan = true
     G.BS.NoiseMarks = true
     G.BS.NoiseLife  = 2.2
@@ -361,7 +359,7 @@ if G.BS.CfgV ~= 28 then
     G.BS.AimLead   = 0.08
     G.BS.AimLock   = true
     -- SHOT_ANGLE_SLACK_DEG = 3: взгляд и патрон должны совпадать
-    G.BS.AimLockFireOnly = false
+    G.BS.AimLockFireOnly = true
     G.BS.AimLockNoWall = true
     G.BS.MeleeAim  = true
     G.BS.WallPenetrate = true
@@ -387,7 +385,7 @@ if G.BS_Stop then pcall(function() G.BS_Stop() end) end
 local NC = { orig = nil, installed = false, wrapper = nil,
              fw = nil, ue = nil, myHum = nil,
              melee = nil, tfmelee = nil, stun = nil,
-             burst = nil, burstBlocked = 0,
+             burst = nil, burstBlocked = 0, emote = nil,
              sending = false, lastSend = 0, lastShotT = 0,
              tpl = nil, tplN = nil, tplSrc = nil }
 -- forward-декларация: реализация ниже (после всех зависимостей).
@@ -760,12 +758,68 @@ local function add(plr)
     by[plr] = {
         char = ch, hl = hl, gui = gui, lbl = lbl,
         role = nil, conf = 0, votes = 0, lastStable = nil, box = nil,
-        special = nil, status = nil,
+        special = nil, status = nil, src = nil, manual = nil,
     }
 end
 
-applyRole = function(e, role, conf)
+-- РУЧНАЯ ПРАВКА РОЛИ (игрок сам сказал - не сомневаемся)
+-- Функции ролей сложены в таблицу ROLES: главный блок скрипта упирается
+-- в лимит локальных переменных Lua (200).
+local ROLES = {}
+local RoleOverride = ROLES.override or {}
+ROLES.override = RoleOverride   -- [Player] = "vampire" | "hunter" | nil
+
+function ROLES.clearOverride()
+    for k in pairs(RoleOverride) do RoleOverride[k] = nil end
+end
+
+-- ОГРАНИЧЕНИЕ ПО СЧЁТЧИКАМ РАУНДА. Игра сама сообщает, сколько в
+-- раунде вампиров и хантеров (RoundState: vampires / hunters). Если
+-- помечено больше, чем их на самом деле - значит скрипт ошибся
+-- (например, признак роли нашёлся у косметики), и в ESP становится
+-- "все вампиры". Поэтому лишние метки не выдаём: вместо них роль
+-- снимается с того, у кого уверенность ниже всего.
+local function countRole(kind)
+    local n = 0
+    for _, e in pairs(by) do
+        if e.role == kind and e.manual ~= true then n = n + 1 end
+    end
+    return n
+end
+
+function ROLES.weakest(kind)
+    local weak, wconf = nil, math.huge
+    for _, e in pairs(by) do
+        if e.role == kind and e.manual ~= true and e.conf < wconf then
+            weak, wconf = e, e.conf
+        end
+    end
+    return weak
+end
+
+local function roleAllowed(role, conf)
+    local cap = 0
+    if role == "vampire" then cap = tonumber(G.BS.RoundVamps) or 0
+    elseif role == "hunter" then cap = tonumber(G.BS.RoundHunters) or 0 end
+    if cap <= 0 then return true end          -- счётчика нет - не проверяем
+    if countRole(role) < cap then return true end
+    -- уже набрано - вытесняем самую слабую метку
+    local weak = ROLES.weakest(role)
+    if weak and weak.conf < conf then
+        weak.role, weak.conf, weak.votes, weak.lastStable = nil, 0, 0, nil
+        weak.src = "вытеснен по счётчику раунда"
+        return true
+    end
+    return false
+end
+
+applyRole = function(e, role, conf, src)
     if not e then return end
+    e.src = src or e.src
+    if not roleAllowed(role, conf) then
+        e.role, e.conf, e.votes, e.lastStable = nil, 0, 0, nil
+        return
+    end
     if conf > e.conf then
         -- ВАЖНО: пишем lastStable здесь. Ранее этот путь не писал
         -- его, и при RoleSticks > 1 первая зафиксированная роль
@@ -788,23 +842,80 @@ applyRole = function(e, role, conf)
     e.role, e.conf, e.votes, e.lastStable = role, conf, 1, role
 end
 
-local function detectRole(plr)
+-- СВОДКА ПО РОЛЯМ: сколько помечено против реальных счётчиков раунда.
+-- Печатается при смене фазы и по кнопке - по ней видно, где скрипт
+-- ошибается.
+function ROLES.summary()
+    local v, h, u = countRole("vampire"), countRole("hunter"), 0
+    for _, e in pairs(by) do
+        if e.role == nil and e.manual ~= true then u = u + 1 end
+    end
+    for _, e in pairs(by) do
+        if e.manual == true then
+            if e.role == "vampire" then v = v + 1 else h = h + 1 end
+        end
+    end
+    local rv = tonumber(G.BS.RoundVamps) or 0
+    local rh = tonumber(G.BS.RoundHunters) or 0
+    local msg = string.format("[BS ROLE] отмечено вампиров %d (в раунде %d), "
+        .. "хантеров %d (в раунде %d), неопознанных %d",
+        v, rv, h, rh, u)
+    print(msg)
+    -- кто именно помечен и по какому источнику
+    local names = {}
+    for plr, e in pairs(by) do
+        if e.role then
+            names[#names + 1] = plr.DisplayName .. "=" .. tostring(e.role)
+                .. " (" .. tostring(e.src or "?") .. ")"
+        end
+    end
+    table.sort(names)
+    for i = 1, #names do print("   " .. names[i]) end
+    return msg
+end
+
+-- РУЧНАЯ УСТАНОВКА РОЛИ ПО НИКУ (из GUI или консоли)
+function ROLES.set(plrOrName, role)
+    local plr = plrOrName
+    if type(plrOrName) == "string" then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Name:lower() == plrOrName:lower()
+               or p.DisplayName:lower() == plrOrName:lower() then
+                plr = p
+                break
+            end
+        end
+    end
+    if not plr then
+        print("[BS ROLE] игрок не найден")
+        return false
+    end
     local e = by[plr]
-    if not e then return end
-    -- 1) atribut servera
-    local r = roleFromAttr(plr)
-    if r then
-        applyRole(e, r, CONF.attr)
-        return
+    if not e then
+        print("[BS ROLE] нет ESP для " .. tostring(plr.Name))
+        return false
     end
-    -- 2) сети из ремоутов
-    local nr = netRoles[plr]
-    if nr then
-        applyRole(e, nr, CONF.event)
-        return
+    if role == nil or role == "none" then
+        RoleOverride[plr] = nil
+        e.role, e.conf, e.votes, e.lastStable, e.manual = nil, 0, 0, nil, nil
+        e.src = "сброшено вручную"
+        print("[BS ROLE] " .. plr.Name .. ": роль сброшена")
+        return true
     end
-    -- 3) zdravstvuyushchiy HP > 0 -> ne mertvy
-    applyRole(e, nil, 0)
+    RoleOverride[plr] = role
+    e.role, e.conf, e.votes, e.lastStable = role, 99, 1, role
+    e.manual, e.src = true, "выставлено вручную"
+    print("[BS ROLE] " .. plr.Name .. ": " .. role .. " (вручную)")
+    return true
+end
+
+function ROLES.reset()
+    ROLES.clearOverride()
+    for _, e in pairs(by) do
+        e.role, e.conf, e.votes, e.lastStable, e.manual = nil, 0, 0, nil, nil
+        e.src = nil
+    end
+    print("[BS ROLE] все роли сброшены")
 end
 
 -- ============================================================
@@ -864,12 +975,6 @@ local function placeSeg(seg, from, to, thick, color, alpha)
     seg.BackgroundColor3       = color
     seg.BackgroundTransparency = alpha or 0
     seg.Visible = true
-end
-
-local function hideFOV()
-    for i = 1, FOV_N do
-        if FOVSegs[i] then FOVSegs[i].Visible = false end
-    end
 end
 
 local function hideOverlay()
@@ -1135,6 +1240,7 @@ if Remotes then
                             addEvent("ФАЗА: " .. tostring(st.phase)
                                 .. " (в " .. tostring(st.vampires or 0)
                                 .. " в, " .. tostring(st.hunters or 0) .. " х)")
+                            task.delay(1.5, function() pcall(ROLES.summary) end)
                         end
                     end
                     -- RoleAssigned
@@ -1639,6 +1745,9 @@ local function captureAnimArg(a)
 end
 dance.captureAnimArg = captureAnimArg
 
+-- captureEmoteArgs (разбор EmotePlay) объявлен ниже - после
+-- scanEmoteTable, на который он ссылается.
+
 -- 1) Animation-объекты игры
 local function scanAnimInstances(out)
     local names = { "ReplicatedStorage", "StarterPlayer", "StarterGui" }
@@ -1782,6 +1891,39 @@ local function scanPlayingAnims(out, all)
     end
 end
 
+-- Ловим эмоут по ремоуту EmotePlay: когда игрок включает танец штатно,
+-- игра шлёт EmotePlay:FireServer(...) с названием/ID. Разбираем
+-- аргументы и забираем всё, что похоже на анимацию.
+local emoteNames = {}
+dance.emoteNames = emoteNames
+
+local function captureEmoteArgs(...)
+    local n = select("#", ...)
+    if n > 6 then n = 6 end
+    for i = 1, n do
+        local a = select(i, ...)
+        local t = typeof(a)
+        if t == "string" then
+            if normAnimId(a) then
+                addDance("эмоут " .. i, a)
+            else
+                local low = string.lower(a)
+                if string.find(low, "emote", 1, true)
+                   or string.find(low, "dance", 1, true)
+                   or string.find(low, "pose", 1, true)
+                   or string.find(low, "wave", 1, true) then
+                    -- имя запомнили: ID подхватится из LoadAnimation,
+                    -- когда игра загрузит эту анимацию
+                    emoteNames[tostring(a)] = true
+                end
+            end
+        elseif t == "table" then
+            pcall(scanEmoteTable, a, 1, "emoteplay")
+        end
+    end
+end
+dance.captureEmoteArgs = captureEmoteArgs
+
 -- ЭМОУТЫ ИЗ СЛОТОВ: разбираем таблицу, которую игра прислала в
 -- EmoteSetSlots (сервер шлёт её при входе - там список эмоутов).
 local function scanEmoteSlots(out)
@@ -1803,8 +1945,11 @@ local function scanDances(silent)
     scanPlayingAnims(out, true)
     -- печатаем только имена (ID - в конце), чтобы не забить консоль
     if #out == 0 then
-        print("[BS DANCE] анимаций-танцев не найдено. Включи «Спин» или "
-            .. "вставь ID в поле вручную.")
+        print("[BS DANCE] в папках анимаций-танцев не найдено.")
+        print("[BS DANCE] Открой колесо эмоутов в игре (клавиша эмоутов) "
+            .. "и включи любой танец - ID подхватится сам через хук "
+            .. "LoadAnimation/PlayAnimation и EmotePlay.")
+        addEvent("танцы: открой колесо эмоутов в игре - подхватятся сами")
     else
         print("[BS DANCE] найдено танцев: " .. #out)
         for i = 1, math.min(#out, 30) do
@@ -1975,7 +2120,12 @@ function SPIN.start()
             if G.BS.SpinOnlyStill and hum and hum.MoveDirection
                and hum.MoveDirection.Magnitude > 0.1 then return end
             SPIN.applyAuto(ch)
+            -- зажимаем скорость: сохранённые настройки Rayfield могли
+            -- остаться от старой версии (там было 360, а формула
+            -- EliteHub умножает ещё на 3 - персонан крутился бы рывками)
             local spd = tonumber(G.BS.SpinSpeed) or 50
+            if spd < 5 then spd = 5 end
+            if spd > 200 then spd = 200 end
             local delta = spd * dt * 3
             hrp.CFrame = hrp.CFrame * CFrame.Angles(0, math.rad(delta), 0)
         end)
@@ -3263,6 +3413,7 @@ local function refreshHookTargets()
         NC.melee  = Remotes:FindFirstChild("MeleeSwing")
         NC.tfmelee = Remotes:FindFirstChild("TrueFormMelee")
         NC.stun   = Remotes:FindFirstChild("StunFire")
+        NC.emote  = Remotes:FindFirstChild("EmotePlay")
     end
     local ch = LP and LP.Character
     NC.myHum = (ch and ch:FindFirstChildOfClass("Humanoid")) or nil
@@ -3631,6 +3782,11 @@ local function ncWrapper(self, ...)
        and (method == "FireServer" or method == "InvokeServer") then
         pcall(logRemoteCall, self, method, ...)
     end
+    -- ЭМОУТЫ: EmotePlay летит на сервер, когда включают танец штатно.
+    -- Вынимаем оттуда ID/имя анимации.
+    if G.BS.DanceAutoScan and method == "FireServer" and NC.emote then
+        if self == NC.emote then pcall(captureEmoteArgs, ...) end
+    end
     if type(method) == "string" then
         -- СТАМИНА: не даём игре списывать энергию
         if method == "FireServer" and self == NC.ue then
@@ -3878,11 +4034,24 @@ local function scan()
                     add(plr)
                 end
                 if not G.BS.RoleFreeze then
-                    -- applyRole зовём ТОЛЬКО когда роль реально найдена:
-                    -- иначе nil получал уверенность 6 и мешал настоящим
-                    -- источникам роли перебить его.
-                    local rr = roleFromAttr(plr) or netRoles[plr]
-                    if rr then applyRole(by[plr], rr, CONF.attr) end
+                    -- РУЧНАЯ РОЛЬ ВЫШЕ ВСЕГО: если игрок выставил её
+                    -- сам через GUI/консоль - перетираем любым другим
+                    -- источником (в том числе ошибочным).
+                    local ov = RoleOverride[plr]
+                    if ov then
+                        local e0 = by[plr]
+                        e0.role, e0.conf, e0.manual = ov, 99, true
+                        e0.votes, e0.lastStable = 1, ov
+                    else
+                        -- applyRole зовём ТОЛЬКО когда роль реально
+                        -- найдена: иначе nil получал уверенность 6 и
+                        -- мешал настоящим источникам роли перебить его.
+                        local rr, src = roleFromAttr(plr)
+                        if not rr then rr = netRoles[plr] end
+                        if rr then
+                            applyRole(by[plr], rr, CONF.attr, src)
+                        end
+                    end
                 end
                 -- ОСОБАЯ РОЛЬ ПО ПРЕДМЕТУ (раз в секунду, вместе со
                 -- сканом): предмет в руках - надёжный признак роли.
@@ -3914,8 +4083,19 @@ local function scan()
     rolesFromEvents()
     local deduced = deduceOthers()
     if deduced and not G.BS.RoleFreeze then
+        -- ВЫВОД ПО СЧЁТЧИКУ НЕ ДОЛЖЕН СТАВИТЬ РОЛЬ ВСЕМ ПОДРЯД.
+        -- Если ты хантер и хантеров в раунде 1 - ты и есть тот
+        -- единственный, и все остальные действительно вампиры.
+        -- Но если ты НЕ единственный (хантеров 4) - вывода нет,
+        -- иначе всех остальных пометило бы вампирами.
+        local cap = (deduced == "vampire") and (tonumber(G.BS.RoundVamps) or 0)
+            or (tonumber(G.BS.RoundHunters) or 0)
+        local marked = countRole(deduced)
         for _, e in pairs(by) do
-            if e.role == nil then applyRole(e, deduced, CONF.deduce) end
+            if e.role == nil and marked < cap then
+                applyRole(e, deduced, CONF.deduce, "вывод по счётчику раунда")
+                marked = marked + 1
+            end
         end
     end
 end
@@ -4111,7 +4291,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.11",
+    LoadingSubtitle = "ESP + Aim + Танец v11.12",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -4153,25 +4333,7 @@ local TB = mkTab(TAB,  "ESP")
 local AI = mkTab(AIMT, "AIM")
 local DN = mkTab(DNC,  "ТАНЕЦ")
 
--- КНОПКА-ВЫКЛЮЧАТЕЛЬ: сама меняет надпись, чтобы всегда было видно,
--- включено сейчас или нет (по просьбе - вместо тумблеров).
--- Объект кнопки лежит в ref[1]: так он доступен из колбэка (в Lua
--- локальная переменная из аргумента в колбэке ещё не видна).
-local function mkToggleButton(tabApi, name, isOn, onToggle)
-    local ref = { obj = nil, label = isOn() and (name .. ": ВКЛ") or (name .. ": выкл") }
-    local obj = tabApi.CreateButton({ Name = ref.label, Callback = function()
-        local now = not isOn()
-        pcall(onToggle, now)
-        local txt = now and (name .. ": ВКЛ") or (name .. ": выкл")
-        ref.label = txt
-        pcall(function() if ref.obj then ref.obj:SetLabel(txt) end end)
-        pcall(function()
-            if ref.obj and ref.obj.Label then ref.obj.Label.Text = txt end
-        end)
-    end })
-    ref.obj = obj
-    return obj
-end
+-- Кнопок-выключателей больше нет: везде обычные тумблеры Rayfield.
 
 -- Блок «ГЛАВНЫЙ ЦВЕТ (RGB)» удалён по просьбе: rgbColor/hexStr/
 -- hexToRGB/applyMainColor больше не вызываются.
@@ -4294,6 +4456,33 @@ TB.CreateToggle({ Name = "Лента событий (раунд/разоблач
         if not v and eventsLabel then eventsLabel.Visible = false end
     end })
 
+-- ======================= РОЛИ =======================
+TB.CreateSection("Роли (если скрипт ошибся)")
+TB.CreateParagraph({ Name = "Игра сама сообщает, сколько в раунде "
+    .. "вампиров и хантеров, поэтому скрипт не может пометить больше. "
+    .. "Если роль определилась неверно - выставь её ручно: введи ник "
+    .. "и нажми нужную кнопку." })
+TB.CreateInput({ Name = "Ник игрока", Flag = "BS_RoleName",
+    Placeholder = "ник в игре", Callback = function(txt)
+        G.BS.RoleName = txt
+    end })
+TB.CreateButton({ Name = "ВАМПИР этому нику", Callback = function()
+    pcall(ROLES.set, G.BS.RoleName, "vampire")
+end })
+TB.CreateButton({ Name = "ХАНТЕР этому нику", Callback = function()
+    pcall(ROLES.set, G.BS.RoleName, "hunter")
+end })
+TB.CreateButton({ Name = "Снять роль этому нику", Callback = function()
+    pcall(ROLES.set, G.BS.RoleName, nil)
+end })
+TB.CreateButton({ Name = "СВОДКА РОЛЕЙ (в консоль)", Callback = function()
+    pcall(ROLES.summary)
+    notify("Сводка ролей — смотри [BS ROLE] в консоли", 4)
+end })
+TB.CreateButton({ Name = "СБРОСИТЬ ВСЕ РОЛИ", Callback = function()
+    pcall(ROLES.reset)
+end })
+
 -- Секция «Сканер» с кнопками СКАНИРОВАТЬ ИГРУ / ГЛУБОКОЕ СКАНИРОВАНИЕ /
 -- ПРОВЕРКА ОРУЖИЯ / Сканировать при запуске УБРАНА по просьбе (см.
 -- комментарий в конце вкладки AIM): консоль забивалась сотнями строк.
@@ -4330,29 +4519,24 @@ local function setBulletSwap(v)
     end
 end
 
-AI.CreateSection("Две кнопки")
-mkToggleButton(AI, "КЛИЕНТ АЙМ (патрон в цель)",
-    function() return G.BS.BulletSwap == true end,
-    function(v) pcall(setBulletSwap, v) end)
-mkToggleButton(AI, "АИМЛОК (камера целится)",
-    function() return G.BS.AimLock == true end,
-    function(v)
+AI.CreateSection("Тумблеры аима")
+AI.CreateToggle({
+    Name = "Клиент айм (патрон в цель)", Flag = "BS_BulletSwap",
+    CurrentValue = G.BS.BulletSwap,
+    Callback = function(v) pcall(setBulletSwap, v) end,
+})
+AI.CreateToggle({
+    Name = "Аимлок (камера целится)", Flag = "BS_AimLock",
+    CurrentValue = G.BS.AimLock,
+    Callback = function(v)
         G.BS.AimLock = v
         if v then bindAimLockStep() end
-    end)
-
--- Секция «Аим» с тумблерами (аим по частям, свободные части, сквозь
--- стены, лома, прострел, дальность подмены) УБРАНА по просьбе.
--- Логика осталась и работает на дефолтах:
---   AimChain, AimFreePart, AimLockNoWall, MeleeAim, WallPenetrate,
---   AimMaxDist = 290 (Config.Combat.BULLET_RANGE = 300).
--- Меняется из консоли, например:
---   getgenv().BS.AimMaxDist = 150
---   getgenv().BS.WallPenetrate = false
-AI.CreateSection("Аим (режим «держишь пушку»)")
-mkToggleButton(AI, "АИМ ПОКА ДЕРЖИШЬ ПУШКУ",
-    function() return G.BS.AimFireMode == true end,
-    function(v)
+    end,
+})
+AI.CreateToggle({
+    Name = "Аим пока держишь пушку", Flag = "BS_AimFireMode",
+    CurrentValue = G.BS.AimFireMode,
+    Callback = function(v)
         G.BS.AimFireMode = v
         -- режим: и патрон, и камера работают только пока зажата ЛКМ
         G.BS.AimLockFireOnly = v
@@ -4361,7 +4545,8 @@ mkToggleButton(AI, "АИМ ПОКА ДЕРЖИШЬ ПУШКУ",
             G.BS.AimLock = true
             bindAimLockStep()
         end
-    end)
+    end,
+})
 
 -- Секция «Расширитель хитбокса» удалена: прозрачные CanQuery-части
 -- видны только клиенту, а урон считает сервер (Config.Combat).
@@ -4404,13 +4589,13 @@ refreshDanceDropdown = function()
     end
 end
 
-DN.CreateSection("Две кнопки")
-mkToggleButton(DN, "ТАНЦЕВАТЬ",
-    function() return dance.on == true end,
-    function(v) pcall(setDance, v) end)
-mkToggleButton(DN, "СПИН (крутишься)",
-    function() return dance.spin == true end,
-    function(v) pcall(SPIN.set, v) end)
+DN.CreateSection("Тумблеры танца")
+DN.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
+    CurrentValue = dance.on == true,
+    Callback = function(v) pcall(setDance, v) end })
+DN.CreateToggle({ Name = "Спин (крутишься)", Flag = "BS_Spin",
+    CurrentValue = dance.spin == true,
+    Callback = function(v) pcall(SPIN.set, v) end })
 
 danceDD = DN.CreateDropdown({ Name = "Какой танец", Flag = "BS_DancePick",
     Options = DANCE_PLACEHOLDER,
@@ -4501,7 +4686,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.11 остановлен")
+    print("[BS HUB] v11.12 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -4542,6 +4727,15 @@ task.spawn(function()
     G.BS.ScanAll     = scanAll
     G.BS.DeepScan    = deepScan
     G.BS.ProbeWeapon = probeWeapon
+    -- Роли можно править и из консоли:
+    --   getgenv().BS.SetRole("Ник", "vampire")
+    --   getgenv().BS.SetRole("Ник", "hunter")
+    --   getgenv().BS.SetRole("Ник")          -- снять
+    --   getgenv().BS.RoleSummary()           -- сводка в консоль
+    --   getgenv().BS.ResetRoles()            -- сбросить всё
+    G.BS.SetRole     = ROLES.set
+    G.BS.RoleSummary = ROLES.summary
+    G.BS.ResetRoles  = ROLES.reset
     if G.BS.DanceAutoScan then
         task.wait(1)
         pcall(scanDances, true)
@@ -4561,7 +4755,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.11 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.12 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
