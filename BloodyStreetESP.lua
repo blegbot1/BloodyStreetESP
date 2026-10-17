@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.5
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.6
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -145,13 +145,14 @@ G.BS.BulletWideAim   = G.BS.BulletWideAim ~= false
 G.BS.AimTargets      = pickOpt(G.BS.AimTargets, AIM_TARGETS, AIM_TARGETS[1])
 G.BS.AimPriority     = pickOpt(G.BS.AimPriority, AIM_PRIORITY, AIM_PRIORITY[1])
 G.BS.AimPart         = pickOpt(G.BS.AimPart, AIM_PART, AIM_PART[1])
--- ДАЛЬНОСТЬ ПОДМЕНЫ. 0 = БЕЗ ОГРАНИЧЕНИЯ (через всю карту).
--- Раньше по умолчанию стояло 300, поэтому дальше 300 студов цель
--- вообще не выбиралась и пуля не подменялась. Слайдер этой настройки
--- удалён из GUI, значит 300 мог быть только старым дефолтом —
--- мигрируем его в 0 (без ограничения).
-G.BS.AimMaxDist      = tonumber(G.BS.AimMaxDist) or 0
-if G.BS.AimMaxDist == 300 then G.BS.AimMaxDist = 0 end
+-- ДАЛЬНОСТЬ ПОДМЕНЫ. В конфиге игры Config.Combat.BULLET_RANGE = 300
+-- и WEAPON_RANGE = 320: дальше 300 студов пуля физически не летит.
+-- Раньше стояло 0 (без ограничения), и скрипт спокойно выбирал цель
+-- в 404 студах - такие выстрелы в принципе не могли попасть.
+G.BS.AimMaxDist      = tonumber(G.BS.AimMaxDist) or 290
+if G.BS.AimMaxDist == 0 then G.BS.AimMaxDist = 290 end
+if G.BS.AimMaxDist == 300 then G.BS.AimMaxDist = 290 end
+if G.BS.AimMaxDist > 300 then G.BS.AimMaxDist = 300 end
 G.BS.RGBTarget       = pickOpt(G.BS.RGBTarget, RGB_TARGETS, RGB_TARGETS[1])
 
 -- ---------- RGB ----------
@@ -194,6 +195,13 @@ G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 14
 -- плюс в коде проверяется, что в руках именно ОРУЖИЕ.
 G.BS.AimLockNeedAim  = G.BS.AimLockNeedAim ~= false
 G.BS.AimLockFireOnly = G.BS.AimLockFireOnly == true
+-- ТРИГГЕР: работаем только когда враг ПРЯМО ПО КУРСУ (в конусе
+-- прицела). Нет врага впереди - не целимся и не доворачиваем камеру.
+G.BS.Trigger         = G.BS.Trigger ~= false
+-- ПРОСТРЕЛ СТЕН. Сервер разрешает увести точку вылета на
+-- Config.Combat.SHOT_ORIGIN_SLACK = 14 студов. Ставим её за стеной.
+G.BS.WallPenetrate   = G.BS.WallPenetrate ~= false
+G.BS.OriginSlack     = tonumber(G.BS.OriginSlack) or 13
 -- НЕВИДИМЫЙ РАСШИРИТЕЛЬ ХИТБОКСА: прозрачные CanQuery-части на
 -- корпусе и голове, приварены к телу. Модель не меняется.
 -- Работает, только если попадание считает клиент.
@@ -222,13 +230,19 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 13 then
-    G.BS.CfgV      = 13
+if G.BS.CfgV ~= 14 then
+    G.BS.CfgV      = 14
+    G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
     G.BS.AimLead   = 0.08
     G.BS.AimLock   = true
-    G.BS.AimLockSpeed = 14
+    G.BS.AimLockSpeed = 25     -- SHOT_ANGLE_SLACK_DEG = 3: камера должна
+                              -- совпадать с патроном, доворачиваем быстро
     G.BS.AimLockNeedAim = true
     G.BS.AimLockFireOnly = false
+    G.BS.Trigger   = true
+    G.BS.WallPenetrate = true
+    G.BS.OriginSlack = 13     -- SHOT_ORIGIN_SLACK = 14
+    G.BS.SpoofBack = 0
     G.BS.Hitbox    = true
     G.BS.HitboxScale = 1.6
     G.BS.HitboxHead = true
@@ -1357,6 +1371,10 @@ local function pickPartOf(ch)
 end
 
 -- ВЫЧИСЛЯЕТСЯ КАЖДЫЙ КАДР, чтобы в хуке ничего не искать.
+-- WALLRAY — для проверки стены между нами и целью (прострел).
+local WALLRAY = RaycastParams.new()
+WALLRAY.FilterType = Enum.RaycastFilterType.Exclude
+
 local function computeBulletPreShot()
     if not G.BS.BulletSwap then bulletPreShot = nil return end
     local cam = workspace.CurrentCamera
@@ -1412,6 +1430,14 @@ local function computeBulletPreShot()
     end
     local best = bestAim or bestNear
 
+    -- ТРИГГЕР: если вампир/враг прямо по курсу (в конусе прицела) -
+    -- работаем; если впереди никого нет - НЕ целимся и НЕ ведём
+    -- камеру. Никто сзади/сбоку не трогаем.
+    if G.BS.Trigger and not bestAim then
+        bulletPreShot = nil
+        return
+    end
+
     if not best then
         bulletPreShot = nil
         return
@@ -1465,6 +1491,30 @@ local function computeBulletPreShot()
         bulletPreShot = nil
         return
     end
+    -- СТЕНА МЕЖДУ НАМИ И ЦЕЛЬЮ.
+    -- В конфиге игры: Config.Combat.SHOT_ORIGIN_SLACK = 14 — сервер
+    -- РАЗРЕШАЕТ увести точку вылета на 14 студов в сторону. Значит
+    -- стену можно обойти честно: ставим точку вылета сразу ЗА стеной
+    -- (но не дальше 14 студов, иначе сервер отклонит выстрел).
+    local wallPast = nil
+    if G.BS.WallPenetrate then
+        local len = (aimPos - srcPos).Magnitude
+        if len > 1 then
+            local okW, res = pcall(function()
+                WALLRAY.FilterDescendantsInstances = { LP.Character, best.Parent }
+                local hit = workspace:Raycast(srcPos, aimPos - srcPos, WALLRAY)
+                if not hit then return nil end
+                if hit.Distance >= len - 1.2 then return nil end   -- это цель
+                local slack = tonumber(G.BS.OriginSlack) or 13
+                if slack < 1 then slack = 1 end
+                if hit.Distance > slack then return nil end
+                local d = (aimPos - srcPos).Unit
+                return hit.Position + d * 2
+            end)
+            if okW and res then wallPast = res end
+        end
+    end
+
     bulletPreShot = {
         part = best,     -- цель (Instance)
         pos  = aimPos,   -- куда целимся
@@ -1472,6 +1522,7 @@ local function computeBulletPreShot()
         dist = dist,     -- расстояние до цели
         dir  = dir.Unit, -- направление
         onScreen = bestAim ~= nil,  -- цель именно ПОД ПРИЦЕЛОМ
+        wallPast = wallPast,        -- точка вылета ЗА стеной
     }
 end
 
@@ -1647,17 +1698,22 @@ local function ncFireWeapon(...)
         bits[#bits + 1] = "направление #" .. tostring(dirIdx)
     end
 
-    -- 2) ТОЧКА ВЫЛЕТА. По умолчанию НЕ трогаем (SpoofBack = 0): сервер
-    --    всё равно считает луч от игрока, а подмена точки вылета
-    --    приводила к тому, что выстрел просто не засчитывался.
-    --    Включить из консоли: getgenv().BS.SpoofBack = 6
+    -- 2) ТОЧКА ВЫЛЕТА. Сервер разрешает увести её на SHOT_ORIGIN_SLACK
+    --    (14 студов). Если стена ближе этого - ставим точку ЗА стеной,
+    --    и пуля начинается по ту сторону стены.
     if posIdx then
-        local back = tonumber(G.BS.SpoofBack) or 0
-        if back > 0 then
-            if back > 100 then back = 100 end
-            out[posIdx] = pre.pos - aimDir * back
+        if pre.wallPast then
+            out[posIdx] = pre.wallPast
             replaced = true
-            bits[#bits + 1] = "точка вылета #" .. tostring(posIdx)
+            bits[#bits + 1] = "точка вылета ЗА стеной #" .. tostring(posIdx)
+        else
+            local back = tonumber(G.BS.SpoofBack) or 0
+            if back > 0 then
+                if back > 100 then back = 100 end
+                out[posIdx] = pre.pos - aimDir * back
+                replaced = true
+                bits[#bits + 1] = "точка вылета #" .. tostring(posIdx)
+            end
         end
     end
 
@@ -2313,7 +2369,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v10.5",
+    LoadingSubtitle = "ESP + Client Aim v10.6",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2463,6 +2519,28 @@ AI.CreateSlider({ Name = "Скорость доворота камеры", Flag 
     Suffix = " (0 = мгновенно)",
     Callback = function(v) G.BS.AimLockSpeed = v end })
 
+AI.CreateSection("Триггер и прострел")
+AI.CreateToggle({
+    Name = "Только враг прямо по курсу", Flag = "BS_Trigger",
+    CurrentValue = G.BS.Trigger,
+    Callback = function(v)
+        G.BS.Trigger = v
+        notify(v and "Целимся только тех, кто впереди" or "Целимся и сзади", 3)
+    end,
+})
+AI.CreateToggle({
+    Name = "Прострел стен (точка вылета за стеной)", Flag = "BS_WallPenetrate",
+    CurrentValue = G.BS.WallPenetrate,
+    Callback = function(v)
+        G.BS.WallPenetrate = v
+        notify(v and "Стена ближе 13 студов - выстрел из-за неё" or "Прострел выключен", 4)
+    end,
+})
+AI.CreateSlider({ Name = "Дальность подмены (макс 300)", Flag = "BS_AimMaxDist",
+    Range = {30, 300}, Increment = 10, CurrentValue = G.BS.AimMaxDist,
+    Suffix = " studs",
+    Callback = function(v) G.BS.AimMaxDist = v end })
+
 AI.CreateSection("Расширитель хитбокса")
 AI.CreateToggle({
     Name = "Расширитель хитбокса (невидимый)", Flag = "BS_Hitbox",
@@ -2576,7 +2654,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v10.5 остановлен")
+    print("[BS HUB] v10.6 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2606,9 +2684,10 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v10.5 запущен | хуков=" .. #netConns
+print("[BS HUB] v10.6 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
-    .. " | хитбокс: " .. tostring(G.BS.Hitbox)
+    .. " | триггер: " .. tostring(G.BS.Trigger)
+    .. " | прострел: " .. tostring(G.BS.WallPenetrate)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
