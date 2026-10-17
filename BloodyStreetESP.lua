@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v11.1
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v11.2
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -172,6 +172,9 @@ G.BS.InfAmmo     = G.BS.InfAmmo ~= false
 -- ПОДСВЕТКА ТЕКУЩЕЙ ЦЕЛИ (кто выбран аимом).
 G.BS.TargetMark  = G.BS.TargetMark ~= false
 G.BS.TargetMarkColor = safeColor(G.BS.TargetMarkColor, Color3.new(1, 1, 1))
+-- ТОЧКА ПРИЦЕЛИВАНИЯ: метка там, куда реально уходит патрон.
+G.BS.AimDot      = G.BS.AimDot ~= false
+G.BS.AimDotColor = safeColor(G.BS.AimDotColor, Color3.new(1, 0.25, 0.25))
 -- ЛОГ ПОПАДАНИЙ: печатать каждое событие урона (DamagePopup/CombatFeed).
 G.BS.DmgLog      = G.BS.DmgLog == true
 G.BS.StaminaDebug = G.BS.StaminaDebug or false
@@ -210,7 +213,10 @@ G.BS.AimLockFireOnly = G.BS.AimLockFireOnly == true
 -- ТРИГГЕР: работаем только когда враг ПРЯМО ПО КУРСУ (в конусе
 -- прицела). Нет врага впереди - не целимся и не доворачиваем камеру.
 G.BS.Trigger         = G.BS.Trigger ~= false
--- Радиус триггера: доля высоты экрана. 0.10 = узко, реально по курсу.
+-- Радиус триггера в ГРАДУСАХ (игра сама стреляет по конусу
+-- Config.UI.AUTO_ATTACK.CONE_DEG = 12). Поставь 0, чтобы вернуть
+-- запасной режим "узкий конус на экране" (TriggerCone).
+G.BS.TriggerDeg     = tonumber(G.BS.TriggerDeg) or 12
 G.BS.TriggerCone     = tonumber(G.BS.TriggerCone) or 0.10
 -- АИМ ДЛЯ ЛОМЫ (MeleeSwing) / формы вампира (TrueFormMelee) /
 -- тейзера (StunFire). Удар принимает направление и проверяется так
@@ -245,8 +251,9 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 19 then
-    G.BS.CfgV      = 19
+if G.BS.CfgV ~= 20 then
+    G.BS.CfgV      = 20
+    G.BS.TriggerDeg = 12
     G.BS.AimChain  = true
     G.BS.AimFreePart = true
     G.BS.InfAmmo   = true
@@ -259,6 +266,7 @@ if G.BS.CfgV ~= 19 then
     G.BS.AimLockFireOnly = false
     G.BS.AimLockNoWall = true
     G.BS.Trigger   = true
+    G.BS.TriggerDeg = 12
     G.BS.TriggerCone = 0.10
     G.BS.MeleeAim  = true
     G.BS.WallPenetrate = true
@@ -1116,6 +1124,45 @@ local function pumpHealth()
 end
 
 -- ============================================================
+--  ТОЧКА ПРИЦЕЛИВАНИЯ
+-- ============================================================
+-- Маленькая метка там, куда реально уходит патрон
+-- (bulletPreShot.pos). Без неё не видно, куда скрипт наводится на
+-- самом деле — особенно важно при подборе опережения: видно, что
+-- точка уходит выше/ниже головы бегущего.
+local aimDot = nil
+local function updateAimDot()
+    if not G.BS.AimDot then
+        if aimDot then aimDot.Visible = false end
+        return
+    end
+    local pre = bulletPreShot
+    local cam = workspace.CurrentCamera
+    if not (pre and cam) then
+        if aimDot then aimDot.Visible = false end
+        return
+    end
+    if not aimDot then
+        local ok, d = pcall(function() return Drawing.new("Circle") end)
+        if not ok or not d then return end
+        d.Thickness    = 2
+        d.NumSides     = 16
+        d.Filled       = false
+        d.Transparency = 1
+        aimDot = d
+    end
+    local vp = cam:WorldToViewportPoint(pre.pos)
+    if vp.Z <= 0 then
+        aimDot.Visible = false
+        return
+    end
+    aimDot.Position = Vector2.new(vp.X, vp.Y)
+    aimDot.Radius   = 5
+    aimDot.Color    = safeColor(G.BS.AimDotColor, Color3.new(1, 0.25, 0.25))
+    aimDot.Visible  = true
+end
+
+-- ============================================================
 --  БЕСКОНЕЧНЫЕ ПАТРОНЫ
 -- ============================================================
 -- У оружия атрибуты Charges / MaxCharges (у дробовика 8, у пистолета
@@ -1605,14 +1652,21 @@ local function computeBulletPreShot()
     -- пару пикселей, и в узкий круг он не попадал.
     local CONE = math.max(220, math.floor(vp.Y * 0.35))
     local CONE2 = CONE * CONE
-    -- ТРИГГЕР — УЗКИЙ конус. Отдельный от конуса выбора цели: триггер
-    -- должен срабатывать только когда враг РЕАЛЬНО по курсу, а не где
-    -- угодно на треть экрана.
+    -- ТРИГГЕР В ГРАДУСАХ. Игра сама стреляет по конусу:
+    -- Config.UI.AUTO_ATTACK.CONE_DEG = 12. Считаем ровно тот же угол
+    -- между взглядом и целью - тогда аим и автоатака решают одно и то же
+    -- и скрипт не доворачивает камеру туда, куда игра не стреляет.
+    local look = cam.CFrame.LookVector
+    local camPos = cam.CFrame.Position
+    local trigDeg = tonumber(G.BS.TriggerDeg) or 12
+    if trigDeg <= 0 then trigDeg = 0.1 end
+    local trigCos = math.cos(math.rad(trigDeg))
+    -- запасной вариант: узкий конус на экране (если градусы выключены)
     local TCONE = math.max(80, math.floor(vp.Y * (tonumber(G.BS.TriggerCone) or 0.10)))
     local TCONE2 = TCONE * TCONE
 
     local bestAim,  bestAimS    -- под прицелом (широкий конус)
-    local bestTrig, bestTrigS   -- прямо по курсу (узкий конус)
+    local bestTrig, bestTrigD   -- прямо по курсу (угол взгляда)
     local bestNear, bestNearD   -- иначе — ближайший по расстоянию
     local bestCh = nil                -- персонаж выбранной цели
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -1638,9 +1692,23 @@ local function computeBulletPreShot()
                                     bestCh = ch
                                 end
                             end
-                            if s2 <= TCONE2 then
-                                if not bestTrigS or s2 < bestTrigS then
-                                    bestTrig, bestTrigS = q, s2
+                            if trigDeg > 0 then
+                                -- ТРИГГЕР В ГРАДУСАХ: угол между
+                                -- взглядом и целью <= TriggerDeg
+                                local toT = q.Position - camPos
+                                if toT.Magnitude > 0.5 then
+                                    if toT.Unit:Dot(look) >= trigCos then
+                                        if not bestTrigD or d < bestTrigD then
+                                            bestTrig, bestTrigD = q, d
+                                            bestCh = ch
+                                        end
+                                    end
+                                end
+                            elseif s2 <= TCONE2 then
+                                -- запасной вариант: узкий конус на экране
+                                if not bestTrigD or d < bestTrigD then
+                                    bestTrig, bestTrigD = q, d
+                                    bestCh = ch
                                 end
                             end
                         end
@@ -2134,6 +2202,19 @@ local function ncFireWeapon(...)
         if shots > 0 then pct = math.floor((dmg / shots) * 100) end
         print(string.format("[BS DMG] выстрелов: %d | урон получен: %d | ~%d%%",
             shots, dmg, pct))
+        -- ПОДСКАЗКА, что крутить дальше.
+        if pct >= 85 then
+            print("[BS DMG] Отлично. Если хочешь дальше — снизь AimLead "
+                .. "до 0.05 (стабильнее по стоящим).")
+        elseif pct >= 45 then
+            print("[BS DMG] Работает, но не всегда. По бегущим добавь "
+                .. "опережение: getgenv().BS.AimLead = 0.15")
+        else
+            print("[BS DMG] Мало попаданий. Проверь: 1) скорость аимлока "
+                .. "getgenv().BS.AimLockSpeed = 35  2) угол триггера "
+                .. "getgenv().BS.TriggerDeg = 20  3) дальность "
+                .. "getgenv().BS.AimMaxDist = 150")
+        end
     end
     return out, n
 end
@@ -2505,6 +2586,9 @@ local conn = RunService.RenderStepped:Connect(function()
     -- подсветка текущей цели
     pcall(updateTargetMark)
 
+    -- точка прицеливания (видно, куда реально летит патрон)
+    if G.BS.AimDot then pcall(updateAimDot) end
+
     -- бесконечные патроны (раз в 0.25 с)
     if G.BS.InfAmmo and now - lastAmmo >= 0.25 then
         lastAmmo = now
@@ -2615,7 +2699,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v11.1",
+    LoadingSubtitle = "ESP + Client Aim v11.2",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2720,6 +2804,15 @@ TB.CreateColorPicker({ Name = "Цвет подсветки цели", Flag = "BS
     Color = G.BS.TargetMarkColor,
     Callback = function(c) G.BS.TargetMarkColor = c end })
 
+TB.CreateColorPicker({ Name = "Цвет точки прицела", Flag = "BS_AimDotColor",
+    Color = G.BS.AimDotColor,
+    Callback = function(c) G.BS.AimDotColor = c end })
+TB.CreateToggle({ Name = "Точка прицеливания (видно, куда летит)", Flag = "BS_AimDot",
+    CurrentValue = G.BS.AimDot,
+    Callback = function(v)
+        G.BS.AimDot = v
+        if not v and aimDot then aimDot.Visible = false end
+    end })
 TB.CreateSection("Сканер")
 TB.CreateButton({ Name = "СКАНИРОВАТЬ ИГРУ (в консоль)", Callback = function()
     pcall(scanAll)
@@ -2813,7 +2906,11 @@ AI.CreateToggle({
         notify(v and "Целимся только тех, кто впереди" or "Целимся и сзади", 3)
     end,
 })
-AI.CreateSlider({ Name = "Радиус триггера (узко = 0.10)", Flag = "BS_TriggerCone",
+AI.CreateSlider({ Name = "Угол триггера (как у игры)", Flag = "BS_TriggerDeg",
+    Range = {1, 60}, Increment = 1, CurrentValue = G.BS.TriggerDeg,
+    Suffix = " градусов",
+    Callback = function(v) G.BS.TriggerDeg = v end })
+AI.CreateSlider({ Name = "Радиус триггера (экран, при 0°)", Flag = "BS_TriggerCone",
     Range = {3, 40}, Increment = 1,
     CurrentValue = math.floor((G.BS.TriggerCone or 0.1) * 100),
     Suffix = " x0.01 экрана",
@@ -2905,10 +3002,12 @@ G.BS_Stop = function()
     bulletPreShot = nil
     if Screen then pcall(function() Screen:Destroy() end) end
     if TargetHL then pcall(function() TargetHL:Destroy() end) end
+    if aimDot then pcall(function() aimDot:Remove() end) end
     if Overlay then pcall(function() Overlay:Destroy() end) end
     Screen = nil
     Overlay = nil
     TargetHL = nil
+    aimDot = nil
     G.BS.MyRole = "?"
     -- BulletSwap НЕ трогаем: getgenv() живёт между запусками, и если
     -- выставить false, то при повторном запуске клиент айм не включится.
@@ -2937,7 +3036,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.1 остановлен")
+    print("[BS HUB] v11.2 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2967,7 +3066,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.1 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.2 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | триггер: " .. tostring(G.BS.Trigger)
