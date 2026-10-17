@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.5
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.6
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -205,11 +205,20 @@ G.BS.AimLead       = tonumber(G.BS.AimLead) or 0.08
 G.BS.AimLock       = G.BS.AimLock ~= false
 G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 14
 -- Аимlock включается только когда это нужно, чтобы не дёргать камеру:
---   NeedAim  — цель под прицелом (иначе догоняет всех подряд);
---   FireOnly — только пока зажат огонь;
--- плюс в коде проверяется, что в руках именно ОРУЖИЕ.
-G.BS.AimLockNeedAim  = G.BS.AimLockNeedAim ~= false
+--   FireOnly — только пока зажат огонь.
+-- Плюс в коде проверяется, что в руках именно ОРУЖИЕ.
 G.BS.AimLockFireOnly = G.BS.AimLockFireOnly == true
+-- УДЕРЖАНИЕ ЦЕЛИ, секунды. Пока идёт это время (и тем более пока
+-- зажат огонь), аимлок ведёт ту же цель, даже если она отошла из
+-- под прицела. Раньше цель каждый кадр выбиралась заново, и стоило
+-- чуть дёрнуть камеру - захват слетал.
+G.BS.LockHold       = tonumber(G.BS.LockHold) or 0.6
+G.BS.LockHoldOnFire = G.BS.LockHoldOnFire ~= false
+-- Единый список целей: маркер ESP, аимлок и подмена патрона всегда
+-- про одного и того же врага.
+G.BS.SyncTarget     = G.BS.SyncTarget ~= false
+-- Аимлок и точка прицела по цели ИЗ СПИСКА (а не по свободной части).
+G.BS.AimLockListTarget = G.BS.AimLockListTarget == true
 -- ТРИГГЕР УДАЛЁН (по просьбе): раньше скрипт работал только когда
 -- враг был ПРЯМО в конусе прицела (12 градусов, как автоатака
 -- игры), иначе выстрел вообще не подменялся - бот молчал, пока
@@ -233,6 +242,11 @@ G.BS.OriginSlack     = tonumber(G.BS.OriginSlack) or 13
 G.BS.WeaponProbeOnStart = G.BS.WeaponProbeOnStart ~= false
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
+-- ГЛУБОКИЙ ЛОГ: все 94 ремоута без ограничения вызовов + разбор
+-- таблиц + входящие события сервера ([BS IN]). Консоль будет
+-- большой - это того стоит, по нему видно правила сервера.
+G.BS.DeepRemoteLog = G.BS.DeepRemoteLog == true
+G.BS.MaxInLog    = tonumber(G.BS.MaxInLog) or 400
 
 -- ЗВУКОВЫЕ МЕТКИ. Игра шлёт SoundPing {pos, sound} на каждый шум
 -- (Config.Detection.SOUND_PING_ENABLED, RADIUS 90, DURATION 2.2):
@@ -258,6 +272,11 @@ G.BS.SpinSpeed   = tonumber(G.BS.SpinSpeed) or 360   -- градусов в се
 G.BS.SwayAmp     = tonumber(G.BS.SwayAmp) or 20      -- градусов
 G.BS.DanceHotkey = G.BS.DanceHotkey ~= false        -- клавиша F7
 G.BS.DanceAutoScan = G.BS.DanceAutoScan ~= false
+-- БОЕВОЙ СПРИНТ («спин» в бою): модель доворачивается по направлению
+-- бега, а не едет боком. Отдельно от танца — работает всегда.
+G.BS.Sprint       = G.BS.Sprint ~= false
+G.BS.SprintSpeed  = tonumber(G.BS.SprintSpeed) or 1     -- м/с, порог бега
+G.BS.SprintTurn   = tonumber(G.BS.SprintTurn) or 10    -- скорость доворота
 
 -- РАСШИРИТЕЛЬ ХИТБОКСА удалён: невидимая часть на голове не помогала
 -- (попадание считает сервер, наш клиент его не видит).
@@ -275,8 +294,13 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 22 then
-    G.BS.CfgV      = 22
+if G.BS.CfgV ~= 23 then
+    G.BS.CfgV      = 23
+    G.BS.LockHold      = 0.6
+    G.BS.LockHoldOnFire = true
+    G.BS.SyncTarget    = true
+    G.BS.AimLockListTarget = false
+    G.BS.AimLockSpeed = 25     -- SHOT_ANGLE_SLACK_DEG = 3
     G.BS.DanceOn   = false
     G.BS.Spin      = false
     G.BS.Sway      = false
@@ -296,7 +320,6 @@ if G.BS.CfgV ~= 22 then
     G.BS.AimLead   = 0.08
     G.BS.AimLock   = true
     G.BS.AimLockSpeed = 25     -- SHOT_ANGLE_SLACK_DEG = 3
-    G.BS.AimLockNeedAim = true
     G.BS.AimLockFireOnly = false
     G.BS.AimLockNoWall = true
     G.BS.MeleeAim  = true
@@ -346,6 +369,11 @@ local revealMap    = {}
 local pendingReveal
 local locked       = nil  -- запертая цель (Player)
 local bulletPreShot = nil -- {part, dir} — вычисляется каждый кадр
+-- ОБЩИЙ СПИСОК ЦЕЛЕЙ. Его наполняет computeBulletPreShot (раз в кадр),
+-- а читают: хук подмены патрона, аимлок, маркер цели в ESP и HUD.
+-- Когда список один на всех, они не могут разойтись по целям.
+local bulletList       = {}       -- [{part, char, player, dist, screen}]
+local bulletListTarget = nil      -- выбранный Part (BOS)
 
 -- Уверенность источников роли
 local CONF = { attr = 6, event = 5, deduce = 4, sound = 3, gear = 2 }
@@ -915,7 +943,28 @@ local function targetPart(plr, cam)
     return p
 end
 
+-- СПИСОК ЦЕЛЕЙ, ОТСОРТИРОВАННЫЙ ПО ЭКРАНУ. Именно он выбирается
+    -- и для подмены патрона (хук), и для аимлока, и для точки
+    -- прицела. Раньше каждая из этих вещей решала «какая цель»
+    -- по-своему, из-за чего аимлок смотрел на одного, а патрон летел
+    -- в другого - и всё выглядело сломанным.
+    -- (объявлен ниже, рядом с computeBulletPreShot - там, где уже
+    --  определена pickPartOf)
 local function pickTarget(cam)
+    -- ГЛАВНОЕ: маркер цели и аимлок должны показывать ОДНОГО человека.
+    -- Раньше здесь был отдельный поиск (свои FOV и приоритет), а
+    -- патрон летел по pickPartOf - можно было получить «маркер на
+    -- одном, пуля в другом». Теперь приоритет у bulletListTarget,
+    -- который реально выбрал клиент-айм; старый поиск - запасной.
+    if G.BS.SyncTarget ~= false and bulletListTarget and bulletListTarget.Parent then
+        local ok, plr = pcall(function()
+            return Players:GetPlayerFromCharacter(bulletListTarget.Parent)
+        end)
+        if ok and plr and plr ~= LP and by[plr] and isEnemy(plr) then
+            locked = plr
+            return plr
+        end
+    end
     if locked and locked.Parent and by[locked] then
         if isEnemy(locked) then
             if targetPart(locked, cam) then return locked end
@@ -1007,6 +1056,10 @@ local function rolesFromSounds()
         end
     end
 end
+
+local incomingSeen = {}   -- сколько раз напечатали каждый входящий ремоут
+local incomingCount = 0   -- всего строк входящего лога (ограничиваем)
+local dumpArgs     -- разбор таблицы-аргумента ремоута (объявлен ниже)
 
 -- ТИХИЙ ПЕРЕХВАТ РОЛЕЙ. Консоль не засоряется.
 if Remotes then
@@ -1115,7 +1168,9 @@ if Remotes then
                                 list[#list + 1] = k .. ":" .. t .. (s and ("(" .. s .. ")") or "")
                             end
                             print("[BS DMG] формат " .. r.Name .. ": " .. table.concat(list, " | "))
-                        elseif G.BS.DmgLog then
+                        elseif G.BS.DmgLog and cnt % 10 == 0 then
+                            -- раз в 10 событий, а не каждое: иначе
+                            -- за бой улетало 300+ строк одного и того же
                             print("[BS DMG] " .. r.Name .. " #" .. cnt
                                 .. " | выстрелов подменено: " .. tostring(G.BS.SilentShots or 0))
                         end
@@ -1123,6 +1178,54 @@ if Remotes then
                 end
             end)
             netConns[#netConns + 1] = c
+        end
+    end
+end
+
+-- ЛОГ ВХОДЯЩИХ СОБЫТИЙ (сервер -> клиент). Лог ремоутов выше ловит
+-- только FireServer/InvokeServer, а самые ценные данные игра шлёт
+-- ВНУТРЬ: CombatFeed/DamagePopup (урон), DetectionFeed/Announce
+-- (разоблачение), EmotePlay (эмоуты), MatchResults, SuddenDeath.
+-- С глубоким разбором таблиц это даёт полную картину серверных
+-- правил - по ней и калибруется аим.
+if Remotes and G.BS.DeepRemoteLog then
+    for _, r in ipairs(Remotes:GetChildren()) do
+        if r:IsA("RemoteEvent") then
+            local cc = r.OnClientEvent:Connect(function(...)
+                local cap = tonumber(G.BS.MaxInLog) or 400
+                if incomingCount >= cap then return end
+                local inSeenKey = r.Name
+                local c2 = incomingSeen[inSeenKey] or 0
+                if c2 >= 3 then return end
+                incomingSeen[inSeenKey] = c2 + 1
+                incomingCount = incomingCount + 1
+                local n = select("#", ...)
+                local list = {}
+                for i = 1, math.min(n, 8) do
+                    local a = select(i, ...)
+                    local t = typeof(a)
+                    local v
+                    if t == "string" or t == "boolean" then
+                        v = tostring(a)
+                    elseif t == "number" then
+                        v = string.format("%.2f", a)
+                    elseif t == "Vector3" then
+                        v = string.format("%.1f, %.1f, %.1f", a.X, a.Y, a.Z)
+                    elseif t == "Instance" then
+                        v = a.ClassName .. " " .. a.Name
+                    elseif t == "Player" then
+                        v = "Player " .. a.Name
+                    elseif t == "EnumItem" then
+                        v = tostring(a.Name)
+                    elseif t == "table" then
+                        v = dumpArgs(a, 1)
+                    end
+                    list[i] = i .. ":" .. t .. (v and (" (" .. v .. ")") or "")
+                end
+                print("[BS IN] " .. r.Name .. " n=" .. n .. "  "
+                    .. table.concat(list, " | "))
+            end)
+            netConns[#netConns + 1] = cc
         end
     end
 end
@@ -1659,6 +1762,38 @@ end
 
 -- КАЖДЫЙ КАДР: ассетный трек сам играет, а спин/покачивание крутим
 -- сами через PivotTo (дельта угла, чтобы не сбивать направление).
+-- КАЖДЫЙ КАДР: ассетный трек сам играет, а спин/покачивание крутим
+-- сами через PivotTo (дельта угла, чтобы не сбивать направление).
+-- Если включён «спринт», модель доворачивается по направлению движения:
+-- это боевой вариант (спин-стрейф), а не походка боком.
+local function sprintTick(now)
+    if not G.BS.Sprint then return end
+    local ch = LP and LP.Character
+    if not ch or not ch.Parent then return end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    local root = ch:FindFirstChild("HumanoidRootPart")
+    if not (hum and root) then return end
+    if hum.Health <= 0 then return end
+    if not root:IsDescendantOf(workspace) then return end
+    local vel = root.AssemblyLinearVelocity
+    local flat = Vector3.new(vel.X, 0, vel.Z)
+    if flat.Magnitude < (tonumber(G.BS.SprintSpeed) or 1) then return end
+    local look = flat.Unit
+    local cur = root.CFrame.LookVector
+    local flatCur = Vector3.new(cur.X, 0, cur.Z)
+    if flatCur.Magnitude < 0.1 then return end
+    local dot = flatCur.Unit:Dot(look)
+    if dot >= 0.9995 then return end       -- уже смотрит куда надо
+    local ang = math.acos(dot > 1 and 1 or (dot < -1 and -1 or dot))
+    local step = ang * (1 - math.exp(-(tonumber(G.BS.SprintTurn) or 10) * 0.016))
+    if step <= 0.0005 then return end
+    local yaw = CFrame.Angles(0, step, 0)
+    pcall(function()
+        local piv = ch:GetPivot()
+        ch:PivotTo(CFrame.new(piv.Position) * yaw * piv.Rotation)
+    end)
+end
+
 local function danceTick(dt, now)
     if not dance.on then return end
     if not (dance.spin or dance.sway) then return end
@@ -2210,6 +2345,50 @@ end
 local WALLRAY = RaycastParams.new()
 WALLRAY.FilterType = Enum.RaycastFilterType.Exclude
 
+-- СПИСОК ЦЕЛЕЙ, ОТСОРТИРОВАННЫЙ ПО ЭКРАНУ. Именно он выбирается
+    -- и для подмены патрона (хук), и для аимлока, и для точки
+    -- прицела. Раньше каждая из этих вещей решала «какая цель»
+    -- по-своему, из-за чего аимлок смотрел на одного, а патрон летел
+    -- в другого - и всё выглядело сломанным.
+-- (объявлены выше, в блоке состояния - ими пользуется и pickTarget)
+
+local function buildList(cam, myRoot)
+    bulletList = {}
+    local vp = cam.ViewportSize
+    local ccx, ccy = vp.X * 0.5, vp.Y * 0.5
+    local maxD = tonumber(G.BS.AimMaxDist) or 0
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and by[plr] and isEnemy(plr) then
+            local ch = plr.Character
+            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+            if ch and ch.Parent and hum and hum.Health > 0 then
+                local q = pickPartOf(ch)
+                if q then
+                    local d = (q.Position - myRoot.Position).Magnitude
+                    if maxD <= 0 or d <= maxD then
+                        local scr = 1e9
+                        pcall(function()
+                            local sp = cam:WorldToViewportPoint(q.Position)
+                            if sp.Z > 0 then
+                                local dx, dy = sp.X - ccx, sp.Y - ccy
+                                scr = math.sqrt(dx * dx + dy * dy)
+                            end
+                        end)
+                        bulletList[#bulletList + 1] = {
+                            part = q, char = ch, player = plr,
+                            dist = d, screen = scr,
+                        }
+                    end
+                end
+            end
+        end
+    end
+    table.sort(bulletList, function(a, b)
+        if a.screen ~= b.screen then return a.screen < b.screen end
+        return a.dist < b.dist
+    end)
+end
+
 local function computeBulletPreShot()
     if not G.BS.BulletSwap then bulletPreShot = nil return end
     -- ОБЕЗОРУЖЕН (модуль Disarm, атрибут DisarmedUntil): стрелять
@@ -2231,56 +2410,27 @@ local function computeBulletPreShot()
         return
     end
 
-    -- ПРИОРИТЕТ ЦЕЛИ:
-    --   1) тот, кто ПОД ПРИЦЕЛОМ (близко к центру экрана) — тогда пуля
-    --      идёт именно в того, в кого ты стреляешь;
-    --   2) если под прицелом никого — ближайший по расстоянию.
-    -- Раньше брался только ближайший по расстоянию, поэтому выстрел
-    -- в дальнего врага уходил в ближнего, который стоял сбоку.
-    local vp  = cam.ViewportSize
-    local ccx, ccy = vp.X * 0.5, vp.Y * 0.5
-    -- «Под прицелом» = в пределах ~трети экрана от центра. Шире, чем
-    -- раньше (жёсткие 220 px): дальний враг на экране занимает всего
-    -- пару пикселей, и в узкий круг он не попадал.
-    local CONE = math.max(220, math.floor(vp.Y * 0.35))
+    -- ПРИОРИТЕТ ЦЕЛИ: строим общий список (buildList) и берём из него
+    -- первую цель по экранному расстоянию. Список нужен ещё и хуку
+    -- (подмена патрона), и аимлоку - раньше у каждого была своя
+    -- логика выбора, из-за чего они целились в разных людей.
+    local CONE = math.max(220, math.floor(cam.ViewportSize.Y * 0.35))
     local CONE2 = CONE * CONE
+    buildList(cam, myRoot)
 
-    local bestAim,  bestAimS    -- под прицелом (широкий конус)
-    local bestNear, bestNearD   -- иначе — ближайший по расстоянию
-    local bestCh = nil                -- персонаж выбранной цели
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LP and by[plr] and isEnemy(plr) then
-            local ch = plr.Character
-            local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-            if ch and ch.Parent and hum and hum.Health > 0 then
-                local q = pickPartOf(ch)
-                if q then
-                    local d = (q.Position - myRoot.Position).Magnitude
-                    if G.BS.AimMaxDist <= 0 or d <= G.BS.AimMaxDist then
-                        if not bestNearD or d < bestNearD then
-                            bestNear, bestNearD = q, d
-                            bestCh = ch
-                        end
-                        local sp = cam:WorldToViewportPoint(q.Position)
-                        if sp.Z > 0 then
-                            local dx, dy = sp.X - ccx, sp.Y - ccy
-                            local s2 = dx * dx + dy * dy
-                            if s2 <= CONE2 then
-                                if not bestAimS or s2 < bestAimS then
-                                    bestAim, bestAimS = q, s2
-                                    bestCh = ch
-                                end
-                            end
-                        end
-                    end
-                end
-            end
+    -- первая цель в широком конусе, иначе просто первая в списке
+    local best, bestChar
+    for _, it in ipairs(bulletList) do
+        if it.screen <= CONE2 then
+            best, bestChar = it.part, it.char
+            break
         end
     end
-    -- ТРИГГЕРА БОЛЬШЕ НЕТ: цель выбирается всегда - сначала та, что
-    -- ближе к центру экрана, иначе ближайшая по расстоянию.
-    local best = bestAim or bestNear
-    local bestChar = bestCh
+    if not best then
+        local first = bulletList[1]
+        if first then best, bestChar = first.part, first.char end
+    end
+    bulletListTarget = best
 
     if not best then
         bulletPreShot = nil
@@ -2381,7 +2531,7 @@ local function computeBulletPreShot()
         src  = srcPos,   -- откуда стреляем
         dist = dist,     -- расстояние до цели
         dir  = dir.Unit, -- направление
-        onScreen = bestAim ~= nil,  -- цель именно ПОД ПРИЦЕЛОМ
+        onScreen = true,  -- цель выбирается всегда (триггер удалён)
         wallPast = wallPast,        -- точка вылета ЗА стеной
     }
 end
@@ -2408,6 +2558,60 @@ local AIMLOCKRAY = RaycastParams.new()
 AIMLOCKRAY.FilterType = Enum.RaycastFilterType.Exclude
 local gunInHand, gunCheckAt = false, 0
 
+-- ПРИЦЕЛ С ЦЕЛЬЮ. Пока держим ЛКМ - держим ту же цель, даже если
+-- она отошла из-под прицела: иначе взгляд постоянно «соскакивает» на
+-- того, кто случайно ближе к центру экрана (тот же враг сбоку, второй
+-- враг и т.п.) - аимлок выглядел мигающим: «чуть повернул камеру и
+-- он слетел».
+local LOCK_TARGET = nil          -- Part (BOS)
+local LOCK_LAST_S, LOCK_UNTIL = nil, 0
+
+local function dropLock()
+    LOCK_TARGET, LOCK_LAST_S = nil, nil
+end
+
+local function pointScore(pos)
+    -- насколько точка близка к центру экрана (меньше - лучше)
+    local cam = workspace.CurrentCamera
+    if not cam then return 1e9 end
+    local vp = cam.ViewportSize
+    local sp = cam:WorldToViewportPoint(pos)
+    if sp.Z <= 0 then return 1e9 end
+    local dx, dy = sp.X - vp.X * 0.5, sp.Y - vp.Y * 0.5
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+local function resolveLock(cam, now)
+    local pre = bulletPreShot
+    if not (pre and pre.pos) then dropLock() return end
+    local camPos
+    local okC, p = pcall(function() return cam.CFrame.Position end)
+    if not okC then return end
+    camPos = p
+    local mouseDown = false
+    pcall(function()
+        mouseDown = UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+    end)
+    -- старая цель ещё жива и не улетела с экрана?
+    local stillThere = false
+    if LOCK_TARGET and LOCK_TARGET.Parent then
+        local d = (LOCK_TARGET.Position - camPos).Magnitude
+        if G.BS.AimMaxDist <= 0 or d <= G.BS.AimMaxDist then
+            stillThere = pointScore(LOCK_TARGET.Position) <= (LOCK_LAST_S or 0) + 40
+        end
+    end
+    local held = LOCK_TARGET and LOCK_TARGET.Parent and LOCK_UNTIL > now
+    if held and ((mouseDown and G.BS.LockHoldOnFire ~= false) or stillThere) then return end
+    -- выбираем новую цель
+    dropLock()
+    LOCK_UNTIL = now + (tonumber(G.BS.LockHold) or 0.6)
+    if not (pre.part and pre.part.Parent) then return end
+    local d = (pre.part.Position - camPos).Magnitude
+    if G.BS.AimMaxDist > 0 and d > G.BS.AimMaxDist then return end
+    LOCK_TARGET = pre.part
+    LOCK_LAST_S = pointScore(pre.part.Position)
+end
+
 local function refreshGunFlag(now)
     if now - gunCheckAt < 0.3 then return gunInHand end
     gunCheckAt = now
@@ -2430,9 +2634,8 @@ end
 
 local function aimLockTick(dt, now)
     local pre = bulletPreShot
-    if not (G.BS.AimLock and pre and pre.part and pre.part.Parent) then return end
-    if not refreshGunFlag(now) then return end
-    if G.BS.AimLockNeedAim and not pre.onScreen then return end
+    if not (G.BS.AimLock and pre and pre.pos) then dropLock() return end
+    if not refreshGunFlag(now) then dropLock() return end
     if G.BS.AimLockFireOnly then
         local okP, down = pcall(function()
             return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
@@ -2442,13 +2645,22 @@ local function aimLockTick(dt, now)
 
     local cam = workspace.CurrentCamera
     if not cam then return end
+    -- ЦЕЛЬ АИМЛОКА. По умолчанию - реальная точка удара (pre.pos):
+    -- она уже с опережением и с учётом свободной части тела.
+    -- Если включена «только цель из списка», берём именно её часть -
+    -- тогда аимлок, подмена патрона и точка прицела всегда про одну
+    -- цель и не расходятся между собой.
+    local tgt = pre.part
+    if G.BS.AimLockListTarget and bulletListTarget and bulletListTarget.Parent
+       and bulletListTarget:IsA("BasePart") then
+        tgt = bulletListTarget
+    end
+    resolveLock(cam, now)
+    if LOCK_TARGET and LOCK_TARGET.Parent then tgt = LOCK_TARGET end
+    if not (tgt and tgt.Parent) then dropLock() return end
+
     local cf = cam.CFrame
     local pos = cf.Position
-
-    -- Камера смотрит в ТОЧКУ ПОПАДАНИЯ (pre.pos), а не в Head:
-    -- там уже учтено опережение. Иначе взгляд и патрон смотрят в
-    -- разные точки, а сервер режет выстрел при расхождении больше
-    -- SHOT_ANGLE_SLACK_DEG = 3 градусов.
     local look = pre.pos
     local toT = look - pos
     if toT.Magnitude < 0.5 then return end
@@ -2458,7 +2670,7 @@ local function aimLockTick(dt, now)
     if G.BS.AimLockNoWall then
         local blocked = false
         pcall(function()
-            AIMLOCKRAY.FilterDescendantsInstances = { LP.Character, pre.part.Parent }
+            AIMLOCKRAY.FilterDescendantsInstances = { LP.Character, tgt.Parent }
             local hit = workspace:Raycast(pos, toT, AIMLOCKRAY)
             if hit and hit.Distance < toT.Magnitude - 1.2 then blocked = true end
         end)
@@ -2472,20 +2684,15 @@ local function aimLockTick(dt, now)
         return
     end
 
-    -- ПРЫГАЮЩАЯ ЦЕЛЬ. Плавный доворот отстаёт от быстрого движения
-    -- (особенно вверх) и угол взгляда уходит за 3 градуса. Если
-    -- расхождение большое - доворачиваем мгновенно.
-    local wantDir = toT.Unit
-    local dot = cf.LookVector:Dot(wantDir)
-    if dot < 1 then
-        if dot < -1 then dot = -1 end
-        local ang = math.acos(dot) * (180 / math.pi)
-        if ang > 12 then
-            cam.CFrame = target
-            return
-        end
-    end
+    -- СМЯГЧЕНИЕ ПО РАССТОЯНИЮ. Раньше был один LerCFrame на все
+    -- дистанции: близкая цель требовала доворота на 50+ градусов за
+    -- кадр, взгляд её перелетал, потом уезжал обратно - и аим выглядел
+    -- сломанным. Теперь коэффициент падает с расстоянием: близко мягко,
+    -- далеко быстро. Слайдер остался как множитель скорости.
+    local dist = toT.Magnitude
     local t = sp * (dt or 0.016)
+    t = t * (1 - (dist / 120) * 0.45)
+    if t < 0 then t = 0 end
     if t > 1 then t = 1 end
     cam.CFrame = cf:Lerp(target, t)
 end
@@ -2781,6 +2988,43 @@ end
 -- EliteHub: HitRemote:FireServer(head, 1)), то «тихий выстрел» можно
 -- сделать по-настоящему — урон без выстрела, и тогда его не увидит
 -- вообще никто.
+-- ГЛУБОКИЙ РЕЖИМ (DeepRemoteLog): печатает ВСЕ 94 ремоута без
+-- ограничения по числу вызовов и разбирает вложенные таблицы. Именно
+-- он нужен, чтобы найти, какими ДАННЫМИ сервер рисует урон
+-- (CombatFeed / DamagePopup / DetectionFeed), ставит метку попадания
+-- (HIT_MARK) и различает хантера/вампира в Mystery.
+-- (dumpArgs объявлен выше, рядом с incomingSeen, и заполняется тут)
+dumpArgs = function(v, depth)
+    if depth > 2 then return "{...}" end
+    local parts = {}
+    local n = 0
+    pcall(function()
+        for k, x in pairs(v) do
+            n = n + 1
+            if n > 12 then break end
+            local t = typeof(x)
+            local s
+            if t == "string" or t == "number" or t == "boolean" then
+                s = tostring(x)
+            elseif t == "Vector3" then
+                s = string.format("%.1f, %.1f, %.1f", x.X, x.Y, x.Z)
+            elseif t == "EnumItem" then
+                s = tostring(x.Name)
+            elseif t == "Instance" or t == "Player" then
+                s = tostring(x.Name)
+            elseif t == "table" then
+                s = dumpArgs(x, depth + 1)
+            end
+            if s then
+                parts[#parts + 1] = tostring(k) .. "=" .. s
+            else
+                parts[#parts + 1] = tostring(k) .. "=" .. t
+            end
+        end
+    end)
+    return "{" .. table.concat(parts, ", ") .. "}"
+end
+
 local logSeen = {}
 local function logRemoteCall(self, method, ...)
     local name = "?"
@@ -2790,9 +3034,12 @@ local function logRemoteCall(self, method, ...)
         if p then name = name .. "@" .. tostring(p.Name) end
     end
     local key = name .. "." .. tostring(method)
-    local c = logSeen[key] or 0
-    if c >= 2 then return end
-    logSeen[key] = c + 1
+    local deep = G.BS.DeepRemoteLog == true
+    if not deep then
+        local c = logSeen[key] or 0
+        if c >= 2 then return end
+        logSeen[key] = c + 1
+    end
 
     local n = select("#", ...)
     local show = n
@@ -2814,6 +3061,10 @@ local function logRemoteCall(self, method, ...)
             v = a.ClassName .. " " .. a.Name
         elseif t == "Player" then
             v = "Player " .. a.Name
+        elseif t == "EnumItem" then
+            v = tostring(a.Name)
+        elseif t == "table" and deep then
+            v = dumpArgs(a, 1)
         end
         list[i] = i .. ":" .. t .. (v and (" (" .. v .. ")") or "")
     end
@@ -3154,6 +3405,8 @@ local conn = RunService.RenderStepped:Connect(function()
 
     -- танец на ходьбе + спин/покачивание (модель крутим сами)
     pcall(danceTick, dt, now)
+    -- боевой спринт: разворачиваем модель по направлению бега
+    pcall(sprintTick, now)
 
     -- раз в 4 с ловим анимации, которые игра играет на персонаже:
     -- если станцевать штатным эмоутом, его ID попадёт в список
@@ -3280,7 +3533,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.5",
+    LoadingSubtitle = "ESP + Aim + Танец v11.6",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -3475,14 +3728,32 @@ AI.CreateToggle({
     end,
 })
 AI.CreateToggle({
-    Name = "Аимлок только с оружием в руках", Flag = "BS_AimLockNeedAim",
-    CurrentValue = G.BS.AimLockNeedAim,
-    Callback = function(v) G.BS.AimLockNeedAim = v end,
-})
-AI.CreateToggle({
     Name = "Аимлок только пока держишь огонь", Flag = "BS_AimLockFireOnly",
     CurrentValue = G.BS.AimLockFireOnly,
     Callback = function(v) G.BS.AimLockFireOnly = v end,
+})
+AI.CreateSlider({ Name = "Удержание цели (сек)", Flag = "BS_LockHold",
+    Range = {0, 5}, Increment = 0.1,
+    CurrentValue = tonumber(G.BS.LockHold) or 0.6,
+    Suffix = " c",
+    Callback = function(v) G.BS.LockHold = v end })
+AI.CreateToggle({
+    Name = "Держать цель, пока зажат огонь", Flag = "BS_LockHoldOnFire",
+    CurrentValue = G.BS.LockHoldOnFire,
+    Callback = function(v) G.BS.LockHoldOnFire = v end,
+})
+AI.CreateToggle({
+    Name = "Маркер цели = цели аима", Flag = "BS_SyncTarget",
+    CurrentValue = G.BS.SyncTarget,
+    Callback = function(v)
+        G.BS.SyncTarget = v
+        locked = nil
+    end,
+})
+AI.CreateToggle({
+    Name = "Аим по цели из списка (без выбора свободной части)", Flag = "BS_AimLockListTarget",
+    CurrentValue = G.BS.AimLockListTarget,
+    Callback = function(v) G.BS.AimLockListTarget = v end,
 })
 AI.CreateToggle({
     Name = "Аимлок не наводится сквозь стены", Flag = "BS_AimLockNoWall",
@@ -3557,7 +3828,11 @@ AI.CreateToggle({
         logSeen = {}
         if v then
             pcall(installBulletHook)
+            if v then
+            notify("Глубокий лог: все ремоуты + входящие события", 5)
+        else
             notify("Лог ремоутов включён: постреляй, смотри [BS REMOTE]", 5)
+        end
         end
     end,
 })
@@ -3663,6 +3938,39 @@ DN.CreateToggle({ Name = "Ловить танцы, которые игра иг�
     CurrentValue = G.BS.DanceAutoScan,
     Callback = function(v) G.BS.DanceAutoScan = v end })
 
+DN.CreateSection("Спринт («спин» в бою)")
+DN.CreateParagraph({ Name = "Модель доворачивается по направлению бега, "
+    .. "поэтому в бою не уезжает боком. Отдельно от танца: работает "
+    .. "всегда и не требует ассетов." })
+DN.CreateToggle({ Name = "Спинт (поворот по бегу)", Flag = "BS_Sprint",
+    CurrentValue = G.BS.Sprint,
+    Callback = function(v) G.BS.Sprint = v end })
+DN.CreateSlider({ Name = "Порог бега", Flag = "BS_SprintSpeed",
+    Range = {0, 10}, Increment = 0.5,
+    CurrentValue = tonumber(G.BS.SprintSpeed) or 1,
+    Suffix = " studs/c", Callback = function(v) G.BS.SprintSpeed = v end })
+DN.CreateSlider({ Name = "Скорость доворота в бегу", Flag = "BS_SprintTurn",
+    Range = {2, 30}, Increment = 1,
+    CurrentValue = tonumber(G.BS.SprintTurn) or 10,
+    Callback = function(v) G.BS.SprintTurn = v end })
+
+AI.CreateToggle({
+    Name = "Глубокий лог всех 94 ремоутов + входящие события",
+    Flag = "BS_DeepRemoteLog",
+    CurrentValue = G.BS.DeepRemoteLog,
+    Callback = function(v)
+        G.BS.DeepRemoteLog = v
+        logSeen = {}
+        incomingSeen = {}
+        incomingCount = 0
+        if v then pcall(installBulletHook) end
+    end,
+})
+AI.CreateSlider({ Name = "Лимит строк входящего лога", Flag = "BS_MaxInLog",
+    Range = {50, 2000}, Increment = 50,
+    CurrentValue = tonumber(G.BS.MaxInLog) or 400,
+    Callback = function(v) G.BS.MaxInLog = v end })
+
 -- ============================================================
 --  СТОП
 -- ============================================================
@@ -3727,7 +4035,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.5 остановлен")
+    print("[BS HUB] v11.6 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -3777,7 +4085,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.5 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.6 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
