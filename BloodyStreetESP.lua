@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.9
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v11.0
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -147,6 +147,9 @@ G.BS.AimPriority     = pickOpt(G.BS.AimPriority, AIM_PRIORITY, AIM_PRIORITY[1])
 -- АИМ ПО ЧАСТЯМ ТЕЛА: голова/корпус -> ноги -> руки.
 G.BS.AimPart         = pickOpt(G.BS.AimPart, AIM_PART, AIM_PART[1])
 G.BS.AimChain        = G.BS.AimChain ~= false
+-- «СВОБОДНЫЕ» части тела: целимся в ту часть, до которой есть
+-- прямая видимость. Голова/корпус перекрыты -> ноги -> руки.
+G.BS.AimFreePart     = G.BS.AimFreePart ~= false
 -- ДАЛЬНОСТЬ ПОДМЕНЫ. В конфиге игры Config.Combat.BULLET_RANGE = 300
 -- и WEAPON_RANGE = 320: дальше 300 студов пуля физически не летит.
 -- Раньше стояло 0 (без ограничения), и скрипт спокойно выбирал цель
@@ -235,9 +238,10 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 17 then
-    G.BS.CfgV      = 17
+if G.BS.CfgV ~= 18 then
+    G.BS.CfgV      = 18
     G.BS.AimChain  = true
+    G.BS.AimFreePart = true
     G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
     G.BS.AimLead   = 0.08
     G.BS.AimLock   = true
@@ -1389,6 +1393,41 @@ local function partUsable(p)
     return true
 end
 
+-- «СВОБОДНАЯ» ЧАСТЬ ТЕЛА = та, до которой есть прямая видимость.
+-- Если голова или корпус чем-то перекрыты (стена, ящик, укрытие),
+-- берём первую свободную: ноги, потом руки. Проверяем не больше
+-- AIM_VIS_MAX кандидатов и только для уже выбранной цели.
+local AIM_VIS_MAX = 9
+local VIS_CHECK = RaycastParams.new()
+VIS_CHECK.FilterType = Enum.RaycastFilterType.Exclude
+
+local function visiblePart(ch, part, from)
+    if not partUsable(part) then return false end
+    local ok, res = pcall(function()
+        VIS_CHECK.FilterDescendantsInstances = { LP.Character, ch }
+        local d = part.Position - from
+        if d.Magnitude < 0.5 then return true end
+        local hit = workspace:Raycast(from, d, VIS_CHECK)
+        if not hit then return true end
+        -- попали в самого персонажа (другая его часть) = тоже видно
+        return hit.Instance:IsDescendantOf(ch)
+    end)
+    return ok and res == true
+end
+
+-- Перебираем части по приоритету и берём первую свободную.
+local function refineFreePart(ch, from, cur)
+    if not (ch and from) then return cur end
+    if cur and visiblePart(ch, cur, from) then return cur end
+    local n = #AIM_CHAIN
+    if n > AIM_VIS_MAX then n = AIM_VIS_MAX end
+    for i = 1, n do
+        local p = ch:FindFirstChild(AIM_CHAIN[i])
+        if visiblePart(ch, p, from) then return p end
+    end
+    return cur
+end
+
 local function pickPartOf(ch)
     if not G.BS.AimChain then
         -- старый режим: только выбранная часть, иначе список AIM_PART
@@ -1447,6 +1486,7 @@ local function computeBulletPreShot()
     local bestAim,  bestAimS    -- под прицелом (широкий конус)
     local bestTrig, bestTrigS   -- прямо по курсу (узкий конус)
     local bestNear, bestNearD   -- иначе — ближайший по расстоянию
+    local bestCh = nil                -- персонаж выбранной цели
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP and by[plr] and isEnemy(plr) then
             local ch = plr.Character
@@ -1458,6 +1498,7 @@ local function computeBulletPreShot()
                     if G.BS.AimMaxDist <= 0 or d <= G.BS.AimMaxDist then
                         if not bestNearD or d < bestNearD then
                             bestNear, bestNearD = q, d
+                            bestCh = ch
                         end
                         local sp = cam:WorldToViewportPoint(q.Position)
                         if sp.Z > 0 then
@@ -1466,6 +1507,7 @@ local function computeBulletPreShot()
                             if s2 <= CONE2 then
                                 if not bestAimS or s2 < bestAimS then
                                     bestAim, bestAimS = q, s2
+                                    bestCh = ch
                                 end
                             end
                             if s2 <= TCONE2 then
@@ -1480,6 +1522,7 @@ local function computeBulletPreShot()
         end
     end
     local best = bestAim or bestNear
+    local bestChar = bestCh
 
     -- ТРИГГЕР: если вампир/враг прямо по курсу (в конусе прицела) -
     -- работаем; если впереди никого нет - НЕ целимся и НЕ ведём
@@ -1524,6 +1567,14 @@ local function computeBulletPreShot()
 -- Меняется из консоли (слайдера в GUI нет):
 --   getgenv().BS.AimLead = 0     -- выключить совсем
 --   getgenv().BS.AimLead = 0.15  -- сильнее забег вперёд
+
+    -- «СВОБОДНАЯ» ЧАСТЬ ТЕЛА: если голова или корпус перекрыты (стена,
+    -- ящик, укрытие), берём первую часть с прямой видимостью - ноги,
+    -- потом руки. Проверка только для уже выбранной цели.
+    if G.BS.AimFreePart and bestChar and srcPos then
+        local refined = refineFreePart(bestChar, srcPos, best)
+        if refined then best = refined end
+    end
 
     local aimPos = best.Position
     do
@@ -2415,7 +2466,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v10.9",
+    LoadingSubtitle = "ESP + Client Aim v11.0",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2548,6 +2599,14 @@ AI.CreateToggle({
     Callback = function(v)
         G.BS.AimChain = v
         notify(v and "Голова/корпус, иначе ноги, иначе руки" or "Только выбранная часть", 3)
+    end,
+})
+AI.CreateToggle({
+    Name = "Целиться в свободные (видимые) части", Flag = "BS_AimFreePart",
+    CurrentValue = G.BS.AimFreePart,
+    Callback = function(v)
+        G.BS.AimFreePart = v
+        notify(v and "Перекрыто -> берём ноги, потом руки" or "Всегда выбранная часть", 3)
     end,
 })
 AI.CreateToggle({
@@ -2694,7 +2753,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v10.9 остановлен")
+    print("[BS HUB] v11.0 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2724,7 +2783,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v10.9 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.0 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | триггер: " .. tostring(G.BS.Trigger)
