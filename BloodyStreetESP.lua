@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.3
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.4
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -194,6 +194,13 @@ G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 14
 -- плюс в коде проверяется, что в руках именно ОРУЖИЕ.
 G.BS.AimLockNeedAim  = G.BS.AimLockNeedAim ~= false
 G.BS.AimLockFireOnly = G.BS.AimLockFireOnly == true
+-- НЕВИДИМЫЙ РАСШИРИТЕЛЬ ХИТБОКСА: прозрачные CanQuery-части на
+-- корпусе и голове, приварены к телу. Модель не меняется.
+-- Работает, только если попадание считает клиент.
+G.BS.Hitbox          = G.BS.Hitbox ~= false
+G.BS.HitboxScale     = tonumber(G.BS.HitboxScale) or 1.6
+G.BS.HitboxHead      = G.BS.HitboxHead ~= false
+G.BS.HitboxEnemiesOnly = G.BS.HitboxEnemiesOnly ~= false
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
 
@@ -213,13 +220,17 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 11 then
-    G.BS.CfgV      = 11
+if G.BS.CfgV ~= 12 then
+    G.BS.CfgV      = 12
     G.BS.AimLead   = 0.08
     G.BS.AimLock   = true
     G.BS.AimLockSpeed = 14
     G.BS.AimLockNeedAim = true
     G.BS.AimLockFireOnly = false
+    G.BS.Hitbox    = true
+    G.BS.HitboxScale = 1.6
+    G.BS.HitboxHead = true
+    G.BS.HitboxEnemiesOnly = true
     G.BS.SpoofBack = 0
     G.BS.SilentShot = false
     G.BS.Hitbox    = false
@@ -1907,6 +1918,115 @@ local installBulletHook = installNamecall
 -- хитбокс сервер всё равно считает по своим частям).
 
 -- ============================================================
+--  НЕВИДИМЫЙ РАСШИРИТЕЛЬ ХИТБОКСА
+-- ============================================================
+-- К персонажу вешаются ПРОЗРАЧНЫЕ части (CanQuery = true),
+-- приварены к телу и следуют за ним. Сама модель не меняется:
+-- другие игроки выглядят как обычно, расширитель не видно.
+--
+-- ЧЕСТНО: работает только если попадание считает КЛИЕНТ. Сервер
+-- такие части не получает и считает по своим, так что на серверных
+-- играх смысла ноль. Проверить можно просто: если после включения
+-- попадания не изменились - игра считает урон на сервере.
+local hitboxBy = {}
+
+local function clearHitbox(plr)
+    local b = hitboxBy[plr]
+    if b then
+        if b.body then pcall(function() b.body:Destroy() end) end
+        if b.head then pcall(function() b.head:Destroy() end) end
+    end
+    hitboxBy[plr] = nil
+end
+
+local function clearAllHitboxes()
+    for plr in pairs(hitboxBy) do clearHitbox(plr) end
+    hitboxBy = {}
+end
+
+-- Хитбокс ставим только врагам (ты вампир - только на людях).
+local function hitboxIsEnemy(plr)
+    local me = string.lower(tostring(G.BS.MyRole or "?"))
+    if me == "?" or me == "none" or me == "" then return true end
+    local e = by[plr]
+    local r = (e and e.role) or roleFromAttr(plr)
+    if not r then return true end
+    return r ~= me
+end
+
+local function newBoxPart(parent, weldTo, offCF, size)
+    local ok, np = pcall(function() return Instance.new("Part") end)
+    if not ok or not np then return nil end
+    np.Name         = "BS_Hitbox"
+    np.Transparency  = 1
+    np.CanCollide    = false
+    np.CanTouch      = false
+    np.CanQuery      = true
+    np.Massless      = true
+    np.CastShadow    = false
+    np.Size          = size
+    local ok2 = pcall(function()
+        np.CFrame = weldTo.CFrame * (offCF or CFrame.new())
+        np.Parent = parent
+        local wc = Instance.new("WeldConstraint")
+        wc.Part0 = weldTo
+        wc.Part1 = np
+        wc.Parent = np
+    end)
+    if not ok2 then
+        pcall(function() np:Destroy() end)
+        return nil
+    end
+    return np
+end
+
+local function applyHitbox()
+    if not G.BS.Hitbox then
+        if next(hitboxBy) then clearAllHitboxes() end
+        return
+    end
+    local s = tonumber(G.BS.HitboxScale) or 1.6
+    if s <= 1.001 then s = 1.001 end
+    local ok, list = pcall(function() return Players:GetPlayers() end)
+    if not ok or type(list) ~= "table" then return end
+    for _, plr in ipairs(list) do
+        if plr ~= LP then
+            local ch = plr.Character
+            local root = ch and ch:FindFirstChild("HumanoidRootPart")
+            local head = ch and ch:FindFirstChild("Head")
+            if not (ch and root and head and root.Parent and head.Parent) then
+                if hitboxBy[plr] then clearHitbox(plr) end
+            else
+                local want = G.BS.HitboxEnemiesOnly == false or hitboxIsEnemy(plr)
+                local b = hitboxBy[plr]
+                if not want then
+                    if b then clearHitbox(plr) end
+                else
+                    if not b or not b.body or not b.body.Parent then
+                        local body = newBoxPart(ch, root, CFrame.new(0, 0.3, 0),
+                            Vector3.new(2 * s, 5.2 * s, 2 * s))
+                        if not body then return end
+                        local hb = nil
+                        if G.BS.HitboxHead then
+                            hb = newBoxPart(ch, head, nil,
+                                Vector3.new(1.2 * s, 1.2 * s, 1.2 * s))
+                        end
+                        b = { body = body, head = hb }
+                        hitboxBy[plr] = b
+                    end
+                    pcall(function()
+                        b.body.Size = Vector3.new(2 * s, 5.2 * s, 2 * s)
+                        if b.head then
+                            b.head.Size = Vector3.new(1.2 * s, 1.2 * s, 1.2 * s)
+                        end
+                    end)
+                end
+            end
+        end
+    end
+end
+
+-- ============================================================
 --  СКАН ИГРОКОВ
 -- ============================================================
 local function scan()
@@ -1963,6 +2083,7 @@ connRemoving = Players.PlayerRemoving:Connect(function(p) remove(p) end)
 --  КАДР
 -- ============================================================
 local lastT = os.clock()
+local lastHitbox = 0
 local conn = RunService.RenderStepped:Connect(function()
     local now = os.clock()
     local dt = math.min(0.1, math.max(0.001, now - lastT))
@@ -1987,6 +2108,12 @@ local conn = RunService.RenderStepped:Connect(function()
 
     -- аимлок: доводим взгляд на ту же цель, чтобы сервер принял выстрел
     if G.BS.AimLock then pcall(aimLockTick, dt, now) end
+
+    -- невидимый расширитель хитбокса (раз в 0.2 с)
+    if now - lastHitbox >= 0.2 then
+        lastHitbox = now
+        pcall(applyHitbox)
+    end
 
     local cam = workspace.CurrentCamera
     if not cam then
@@ -2092,7 +2219,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v10.3",
+    LoadingSubtitle = "ESP + Client Aim v10.4",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2238,6 +2365,39 @@ AI.CreateSlider({ Name = "Скорость доворота камеры", Flag 
     Suffix = " (0 = мгновенно)",
     Callback = function(v) G.BS.AimLockSpeed = v end })
 
+AI.CreateSection("Расширитель хитбокса")
+AI.CreateToggle({
+    Name = "Расширитель хитбокса (невидимый)", Flag = "BS_Hitbox",
+    CurrentValue = G.BS.Hitbox,
+    Callback = function(v)
+        G.BS.Hitbox = v
+        pcall(applyHitbox)
+        notify(v and "Хитбокс расширен (видимо только при клиентском подсчете урона)" or "Хитбокс обычный", 5)
+    end,
+})
+AI.CreateSlider({ Name = "Масштаб хитбокса", Flag = "BS_HitboxScale",
+    Range = {1, 5}, Increment = 1, CurrentValue = G.BS.HitboxScale,
+    Suffix = " x", Callback = function(v)
+        G.BS.HitboxScale = v
+        pcall(applyHitbox)
+    end })
+AI.CreateToggle({
+    Name = "Хитбокс и на голове", Flag = "BS_HitboxHead",
+    CurrentValue = G.BS.HitboxHead,
+    Callback = function(v)
+        G.BS.HitboxHead = v
+        pcall(applyHitbox)
+    end,
+})
+AI.CreateToggle({
+    Name = "Хитбокс только врагам", Flag = "BS_HitboxEnemiesOnly",
+    CurrentValue = G.BS.HitboxEnemiesOnly,
+    Callback = function(v)
+        G.BS.HitboxEnemiesOnly = v
+        pcall(applyHitbox)
+    end,
+})
+
 -- Секция «Цель» («Кого целить», «Приоритет», «Радиус захвата») и
 -- пикеры «Цвет: захват цели» / «Цвет метки» удалены по просьбе.
 -- Логика выбора цели осталась и работает на дефолтах:
@@ -2276,6 +2436,8 @@ G.BS_Stop = function()
     if connRemoving then pcall(function() connRemoving:Disconnect() end) end
     if connChar     then pcall(function() connChar:Disconnect() end) end
     connAdded, connRemoving, connChar = nil, nil, nil
+    G.BS.Hitbox = false
+    pcall(clearAllHitboxes)
     for i = #netConns, 1, -1 do
         pcall(function() netConns[i]:Disconnect() end)
         netConns[i] = nil
@@ -2316,7 +2478,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v10.3 остановлен")
+    print("[BS HUB] v10.4 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2339,8 +2501,9 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v10.3 запущен | хуков=" .. #netConns
+print("[BS HUB] v10.4 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
+    .. " | хитбокс: " .. tostring(G.BS.Hitbox)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
