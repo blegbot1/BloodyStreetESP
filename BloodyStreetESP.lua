@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.12
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.13
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -322,8 +322,12 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 29 then
-    G.BS.CfgV      = 29
+if G.BS.CfgV ~= 30 then
+    G.BS.CfgV      = 30
+    -- аимлок работает ВСЕГДА, а не только пока держишь ЛКМ
+    -- (жалоба: "аймлок не работает, только когда я стреляю")
+    G.BS.AimLockFireOnly = false
+    G.BS.AimFireMode     = false
     G.BS.SpinSpeed = 50        -- как в EliteHub
     G.BS.AimFireMode = true
     G.BS.SpeedKey = true
@@ -1719,13 +1723,47 @@ local function addDance(label, id)
     local s = normAnimId(id)
     if not s then return false end
     label = tostring(label or "?")
-    if string.len(label) > 42 then label = string.sub(label, 1, 42) end
+    if string.len(label) > 34 then label = string.sub(label, 1, 34) end
     local key = label .. "|" .. s
     if DANCE_BY_LABEL[key] then return false end
     DANCE_BY_LABEL[key] = true
     if not DANCE_BY_NAME[label] then DANCE_BY_NAME[label] = s end
     DANCES[#DANCES + 1] = { label = label, id = s }
     return true
+end
+
+-- ПОДПИСИ ТАНЦЕВ. В игре почти все анимации названы одинаково
+-- ("Animation"), поэтому в списке было 8 одинаковых строк и непонятно,
+-- что выбирать. Добавляем короткий хвост ID - тогда каждая строка
+-- уникальна и видно, что за анимация.
+dance.labels = function()
+    local opts = {}
+    opts[0] = nil
+    for i = 1, #DANCES do
+        local d = DANCES[i]
+        local tail = string.sub(d.id, -5)
+        opts[i] = d.label .. " …" .. tail
+    end
+    return opts
+end
+
+-- Кнопка «следующий танец»: работает всегда, даже если выпадающий
+-- список в этой версии Rayfield не создался (ошибка GUI).
+dance.next = function(step)
+    dance.idx = dance.idx or 0
+    if #DANCES == 0 then
+        addEvent("танцы не найдены: открой колесо эмоутов в игре")
+        return
+    end
+    dance.idx = (dance.idx + (step or 1)) % #DANCES + 1
+    local d = DANCES[dance.idx]
+    if dance.pick then pcall(dance.pick, d.id, d.label) end
+    if danceDD then
+        pcall(function() danceDD:SetValue(dance.labels()[dance.idx]) end)
+    end
+    addEvent("танец #" .. dance.idx .. "/" .. #DANCES .. ": " .. d.label)
+    print("[BS DANCE] выбран танец #" .. dance.idx .. ": " .. d.label
+        .. " (" .. d.id .. ")")
 end
 
 -- ЛОВИМ АНИМАЦИИ, КОТОРЫЕ ИГРА ГРУЗИТ САМА. Когда открывают колесо
@@ -2054,13 +2092,14 @@ local function setDance(on, silent)
     end
 end
 
-local function pickDance(label)
-    dance.label = tostring(label or "")
-    -- ID лежит в DANCE_BY_NAME по названию (если имя повторяется с
-    -- разными ассетами - берём первый).
-    dance.id = DANCE_BY_NAME[dance.label]
+local function pickDance(id, label)
+    -- Принимаем и ID, и название: с кнопки «следующий» приходит пара,
+    -- из выпадающего списка - только название.
+    dance.id = id or DANCE_BY_NAME[tostring(label or "")]
+    dance.label = tostring(label or dance.label or "")
     if dance.on then startDance(true) end
 end
+dance.pick = pickDance
 
 -- КАЖДЫЙ КАДР: ассетный трек сам играет, а спин/покачивание крутим
 -- сами через PivotTo (дельта угла, чтобы не сбивать направление).
@@ -4288,7 +4327,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.12",
+    LoadingSubtitle = "ESP + Aim + Танец v11.13",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -4577,13 +4616,14 @@ AI.CreateToggle({
 -- модулей + то, что игра играет сама) и сразу попадают в список.
 local DANCE_PLACEHOLDER = { "ищу танцы в игре…" }
 refreshDanceDropdown = function()
-    local opts = {}
-    for i = 1, #DANCES do opts[i] = DANCES[i].label end
+    local opts = dance.labels()
     if #opts == 0 then opts = DANCE_PLACEHOLDER end
-    if danceDD then
-        local ok = pcall(function() danceDD:SetOptions(opts) end)
-        if not ok then pcall(function() danceDD:AddOptions(opts) end) end
-    end
+    if not danceDD then return end
+    -- В сборке Rayfield игрока SetOptions/AddOptions недоступны
+    -- (ошибок GUI=2), поэтому выбор делают кнопки «следующий/предыдущий
+    -- танец», а список - только удобство.
+    if pcall(function() danceDD:SetOptions(opts) end) then return end
+    pcall(function() danceDD:AddOptions(opts) end)
 end
 
 DN.CreateSection("Тумблеры танца")
@@ -4593,11 +4633,32 @@ DN.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
 DN.CreateToggle({ Name = "Спин (крутишься)", Flag = "BS_Spin",
     CurrentValue = dance.spin == true,
     Callback = function(v) pcall(SPIN.set, v) end })
+DN.CreateButton({ Name = "СЛЕДУЮЩИЙ ТАНЕЦ", Callback = function()
+    pcall(dance.next, 1)
+end })
+DN.CreateButton({ Name = "Предыдущий танец", Callback = function()
+    pcall(dance.next, -1)
+end })
 
-danceDD = DN.CreateDropdown({ Name = "Какой танец", Flag = "BS_DancePick",
+-- Выпадающий список - необязательный: в сборке Rayfield игрока он не
+-- создался (ошибок GUI=2), поэтому основной выбор - кнопки выше.
+danceDD = DN.CreateDropdown({ Name = "Какой танец (список)", Flag = "BS_DancePick",
     Options = DANCE_PLACEHOLDER,
     CurrentValue = DANCE_PLACEHOLDER[1],
-    Callback = function(v) pcall(pickDance, v) end })
+    Callback = function(v)
+        pcall(function()
+            local idx = DANCE_PLACEHOLDER
+            for i, o in ipairs(dance.labels()) do
+                if o == v then idx = i break end
+            end
+            if type(idx) == "number" then
+                local d = DANCES[idx]
+                if d then pcall(pickDance, d.id, d.label) end
+            else
+                pcall(pickDance, nil, v)
+            end
+        end)
+    end })
 DN.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
     Range = {10, 200}, Increment = 5, CurrentValue = G.BS.SpinSpeed,
     Suffix = " (как в EliteHub)", Callback = function(v)
@@ -4682,7 +4743,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.12 остановлен")
+    print("[BS HUB] v11.13 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -4751,7 +4812,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.12 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.13 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
@@ -4759,3 +4820,10 @@ print("[BS HUB] v11.12 запущен | хуков=" .. #netConns
     .. " | без кулдауна: " .. tostring(G.BS.NoCooldown)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
+-- Ошибки создания элементов печатаем одной строкой: по прошлому логу
+-- было "ошибок GUI=2", но не было видно, ЧТО именно не создалось
+-- (из-за этого искали причину пустого списка танцев).
+if #UI_ERR > 0 then
+    print("[BS GUI] что не создалось: " .. table.concat(UI_ERR, " ; "))
+    print("[BS GUI] выбор танца работает кнопками «СЛЕДУЮЩИЙ ТАНЕЦ»")
+end
