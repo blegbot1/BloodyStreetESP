@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.8
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.9
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -172,6 +172,13 @@ G.BS.InfStamina  = G.BS.InfStamina  or false
 -- выстрел (проверено на игре). Зато есть кулдаун: он клиентский, и его
 -- можно снять. Config.Combat.WEAPON_COOLDOWN = 0.3.
 G.BS.NoCooldown   = G.BS.NoCooldown ~= false
+-- СТАТУС ЦЕЛИ в ESP (сбит/раскрыт/оглушён) + ХИТМАРКЕР при попадании
+-- + ЛЕНТА СОБЫТИЙ (раунд, разоблачения, смерти) в углу экрана.
+G.BS.ShowStatus   = G.BS.ShowStatus ~= false
+G.BS.HitMark      = G.BS.HitMark ~= false
+G.BS.HitMarkColor = safeColor(G.BS.HitMarkColor, Color3.new(1, 0.25, 0.25))
+G.BS.HitMarkLife  = tonumber(G.BS.HitMarkLife) or 0.25
+G.BS.EventsOn     = G.BS.EventsOn ~= false
 -- Сдвиг времени выстрела в ремоуте (аргумент №5) вперёд, чтобы
 -- сервер считал, что WEAPON_COOLDOWN уже прошёл.
 G.BS.ShotTimeHack = G.BS.ShotTimeHack == true
@@ -302,8 +309,8 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 25 then
-    G.BS.CfgV      = 25
+if G.BS.CfgV ~= 26 then
+    G.BS.CfgV      = 26
     G.BS.AimLockSpeed = 1      -- мгновенный доворот (иначе отстаёт на ходу)
     G.BS.LockHold      = 0.6
     G.BS.LockHoldOnFire = true
@@ -324,6 +331,9 @@ if G.BS.CfgV ~= 25 then
     G.BS.AimChain  = true
     G.BS.AimFreePart = true
     G.BS.NoCooldown = true
+    G.BS.ShowStatus = true
+    G.BS.HitMark    = true
+    G.BS.EventsOn   = true
     G.BS.ShotTimeHack = false
     G.BS.TargetMark = true
     G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
@@ -384,6 +394,16 @@ local bulletPreShot = nil -- {part, dir} — вычисляется каждый
 -- Когда список один на всех, они не могут разойтись по целям.
 local bulletList       = {}       -- [{part, char, player, dist, screen}]
 local bulletListTarget = nil      -- выбранный Part (BOS)
+
+-- ХИТМАРКЕР И ЛЕНТА СОБЫТИЙ. Определения ниже (после hitMarkAt нужно
+-- поймать урон из обработчика ремоутов, который объявлен раньше), здесь
+-- только forward-объявления.
+local EVENTS       = {}     -- последние события (последние 8)
+local addEvent               -- добавить строку в ленту (ниже)
+local hitMarkAt   = 0       -- os.clock() последнего реального попадания
+local hitLines    = {}      -- Drawing-линии хитмаркера
+local eventsLabel = nil     -- TextLabel ленты в углу экрана
+local updateHitMark, updateEvents
 
 -- Уверенность источников роли
 local CONF = { attr = 6, event = 5, deduce = 4, sound = 3, gear = 2 }
@@ -715,7 +735,7 @@ local function add(plr)
     by[plr] = {
         char = ch, hl = hl, gui = gui, lbl = lbl,
         role = nil, conf = 0, votes = 0, lastStable = nil, box = nil,
-        special = nil,
+        special = nil, status = nil,
     }
 end
 
@@ -1087,6 +1107,9 @@ if Remotes then
                         if G.BS.RoundPhase ~= G.BS.LastPhase then
                             if G.BS.RoundPhase == "Lobby" then resetRound() end
                             G.BS.LastPhase = G.BS.RoundPhase
+                            addEvent("ФАЗА: " .. tostring(st.phase)
+                                .. " (в " .. tostring(st.vampires or 0)
+                                .. " в, " .. tostring(st.hunters or 0) .. " х)")
                         end
                     end
                     -- RoleAssigned
@@ -1111,6 +1134,8 @@ if Remotes then
                         local a = args[i]
                         if a.name and a.role then
                             pendingReveal = { role = aliasOf(a.role), t = os.clock() }
+                            addEvent("РАЗОБЛАЧЕНИЕ: " .. tostring(a.name)
+                                .. " = " .. tostring(a.role))
                         end
                     end
                     -- ForensicsFeed {type="testresult", vampire=bool}
@@ -1121,6 +1146,8 @@ if Remotes then
                                 role = (f.vampire == true) and "vampire" or "hunter",
                                 t = os.clock(),
                             }
+                            addEvent("ТЕСТ КРОВИ: " .. tostring(f.name)
+                                .. (f.vampire == true and " = ВАМПИР" or " = не вампир"))
                         end
                     end
                     -- DetectionFeed redoutline: skleivaem s Announce
@@ -1142,6 +1169,9 @@ if Remotes then
                     if r.Name == "DamagePopup" or r.Name == "CombatFeed" then
                         local cnt = (G.BS.DmgEvents or 0) + 1
                         G.BS.DmgEvents = cnt
+                        -- ХИТМАРКЕР: урон пришёл с сервера = попадание
+                        -- реально засчиталось. Плюс строка в ленту событий.
+                        hitMarkAt = os.clock()
                         if not dmgFmt[r.Name] then
                             dmgFmt[r.Name] = true
                             local list = {}
@@ -1891,6 +1921,155 @@ local function roleFromTool(plr)
     local r = TOOL_ROLE[string.lower(tostring(tool.Name))]
     if r then return r end
     return nil
+end
+
+-- ============================================================
+--  СТАТУС ЦЕЛИ: сбит / раскрыт / оглушён / разоружён
+-- ============================================================
+-- В игре у персонажа несколько состояний, и они решают всё:
+--   * Сбит (Downed) — HP ещё есть, но враг лежит: можно добивать;
+--   * Раскрыт (Revealed) — вампира уже открыли, самое время стрелять;
+--   * Оглушён (Stunned) — тайзер, цель стоит;
+--   * Разоружён (DisarmedUntil, модуль Disarm) — стрелять нечем.
+-- Берём из атрибутов, а «Сбит» - из модуля PlayerState
+-- (PlayerState.DOWNED / ALIVE / DEAD / GONE / BODYLESS).
+local PS_MOD = nil        -- require(ReplicatedStorage.BloodyStreet.PlayerState)
+local function loadPlayerState()
+    if PS_MOD ~= nil then return PS_MOD end
+    pcall(function()
+        PS_MOD = require(game:GetService("ReplicatedStorage")
+            .BloodyStreet.PlayerState)
+    end)
+    if PS_MOD == nil then PS_MOD = false end
+    return PS_MOD
+end
+
+local function playerStatus(plr)
+    local ch = plr and plr.Character
+    if not ch or not ch.Parent then return nil end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if not hum then return nil end
+    if hum.Health <= 0 then return "Мёртв", 0 end
+    local now = os.time()
+    local st, pri = nil, 9
+    pcall(function()
+        local r = plr:GetAttribute("RevealedUntil")
+        if type(r) == "number" and r > now then st, pri = "Раскрыт", 1 end
+        local s = plr:GetAttribute("StunnedUntil")
+        if type(s) == "number" and s > now and pri > 2 then st, pri = "Оглушён", 2 end
+        local b = plr:GetAttribute("BloodyUntil")
+        if type(b) == "number" and b > now and pri > 3 then st, pri = "Истекает", 3 end
+        local d = plr:GetAttribute("DisarmedUntil")
+        if type(d) == "number" and d > now and pri > 4 then st, pri = "Разоружён", 4 end
+    end)
+    if st == nil then
+        local ps = loadPlayerState()
+        if ps then
+            pcall(function()
+                local s = ps.of(plr)
+                if s == "Downed" then st, pri = "Сбит", 2
+                elseif s == "Gone" then st, pri = "Пропал", 5
+                elseif s == "Bodyless" then st, pri = "Без тела", 5 end
+            end)
+        end
+    end
+    return st, pri
+end
+
+-- ============================================================
+--  ХИТМАРКЕР: подтверждение попадания
+-- ============================================================
+-- Урон приходит с сервера (DamagePopup / CombatFeed) - значит можно
+-- показать метку в центре экрана в момент реального попадания. Раньше
+-- приходилось считать проценты по логу; теперь видно сразу, попал
+-- конкретный выстрел или нет.
+updateHitMark = function(now)
+    if not G.BS.HitMark then
+        for i = 1, #hitLines do hitLines[i].Visible = false end
+        return
+    end
+    if #hitLines == 0 then
+        if not DRAW_OK then return end
+        for i = 1, 4 do
+            local ok, d = pcall(function() return Drawing.new("Line") end)
+            if not ok or not d then return end
+            d.Thickness = 2
+            d.Visible = false
+            hitLines[i] = d
+        end
+    end
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    local age = now - hitMarkAt
+    local life = tonumber(G.BS.HitMarkLife) or 0.25
+    if hitMarkAt <= 0 or age > life then
+        for i = 1, #hitLines do hitLines[i].Visible = false end
+        return
+    end
+    local vp = cam.ViewportSize
+    local cx, cy = vp.X * 0.5, vp.Y * 0.5
+    local k = 1 - age / life
+    local r0, r1 = 4 + (1 - k) * 4, 12 + (1 - k) * 8
+    local col = safeColor(G.BS.HitMarkColor, Color3.new(1, 0.25, 0.25))
+    for i = 1, 4 do
+        local sx = (i == 1 or i == 4) and 1 or -1
+        local sy = (i == 1 or i == 2) and 1 or -1
+        local l = hitLines[i]
+        l.From = Vector2.new(cx + sx * r0, cy + sy * r0)
+        l.To   = Vector2.new(cx + sx * r1, cy + sy * r1)
+        l.Color = col
+        l.Transparency = (1 - k) * 0.4
+        l.Visible = true
+    end
+end
+
+-- ============================================================
+--  ЛЕНТА СОБЫТИЙ
+-- ============================================================
+-- Раунд, разоблачения, смерти, попадания - короткой строкой в GUI.
+-- Раньше это было только в консоли и терялось.
+addEvent = function(text)
+    if type(text) ~= "string" or text == "" then return end
+    EVENTS[#EVENTS + 1] = os.clock() .. "|" .. string.sub(text, 1, 90)
+    while #EVENTS > 8 do table.remove(EVENTS, 1) end
+    print("[BS EVT] " .. text)
+end
+
+local lastEventsDraw = 0
+updateEvents = function(now)
+    if not G.BS.EventsOn then
+        if eventsLabel then eventsLabel.Visible = false end
+        return
+    end
+    if now - lastEventsDraw < 0.25 then return end
+    lastEventsDraw = now
+    if not ensureHud() then return end
+    if not eventsLabel then
+        local ok, t = pcall(function()
+            local x = Instance.new("TextLabel")
+            x.Name = "BS_Events"
+            x.BackgroundTransparency = 1
+            x.Size = UDim2.fromOffset(560, 92)
+            x.Position = UDim2.new(0, 10, 0, 30)
+            x.Font = Enum.Font.Code
+            x.TextSize = 12
+            x.TextColor3 = Color3.new(0.85, 0.9, 1)
+            x.TextXAlignment = Enum.TextXAlignment.Left
+            x.TextYAlignment = Enum.TextYAlignment.Top
+            x.TextWrapped = true
+            x.Parent = hudGui
+            return x
+        end)
+        if not ok or not t then return end
+        eventsLabel = t
+    end
+    local lines = {}
+    for i = 1, #EVENTS do
+        local p = string.find(EVENTS[i], "|", 1, true)
+        if p then lines[#lines + 1] = string.sub(EVENTS[i], p + 1) end
+    end
+    eventsLabel.Text = table.concat(lines, "\n")
+    eventsLabel.Visible = true
 end
 
 -- ============================================================
@@ -3461,6 +3640,16 @@ local function scan()
                     local e2 = by[plr]
                     if e2 then e2.special = roleFromTool(plr) end
                 end
+                -- СТАТУС ЦЕЛИ (раз в секунду): сбит / раскрыт /
+                -- оглушён / разоружён. По нему видно, кого можно
+                -- добивать, а кого не стоит трогать.
+                if G.BS.ShowStatus then
+                    local e3 = by[plr]
+                    if e3 then
+                        local st = playerStatus(plr)
+                        e3.status = st
+                    end
+                end
             end
         end
     end
@@ -3521,6 +3710,10 @@ local conn = RunService.RenderStepped:Connect(function()
 
     -- точка прицеливания (видно, куда реально летит патрон)
     if G.BS.AimDot then pcall(updateAimDot) end
+
+    -- хитмаркер (подтверждение попадания) + лента событий
+    pcall(updateHitMark, now)
+    pcall(updateEvents, now)
 
     -- звуковые метки: радар шума (выстрелы, крики)
     pcall(updateNoiseMarks)
@@ -3609,6 +3802,11 @@ local conn = RunService.RenderStepped:Connect(function()
                 if G.BS.ShowSpecialRole and e.special then
                     parts[#parts + 1] = ROLE_NAME[e.special] or e.special
                 end
+                -- СТАТУС: сбит / раскрыт / оглушён. Помечаем ярким -
+                -- сбитого можно добивать, раскрытого надо убить сразу.
+                if G.BS.ShowStatus and e.status then
+                    parts[#parts + 1] = "[" .. tostring(e.status) .. "]"
+                end
                 local txt = table.concat(parts, "  ")
                 if e.lbl.Text ~= txt then e.lbl.Text = txt end
                 e.lbl.TextColor3 = color
@@ -3655,7 +3853,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.8",
+    LoadingSubtitle = "ESP + Aim + Танец v11.9",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -3801,6 +3999,21 @@ TB.CreateToggle({ Name = "HUD (роль, фаза, патроны, цель)", F
     Callback = function(v)
         G.BS.Hud = v
         if not v and hudLabel then hudLabel.Visible = false end
+    end })
+TB.CreateToggle({ Name = "Статус цели (сбит/раскрыт/оглушён)", Flag = "BS_ShowStatus",
+    CurrentValue = G.BS.ShowStatus,
+    Callback = function(v) G.BS.ShowStatus = v end })
+TB.CreateToggle({ Name = "Хитмаркер при попадании", Flag = "BS_HitMark",
+    CurrentValue = G.BS.HitMark,
+    Callback = function(v) G.BS.HitMark = v end })
+TB.CreateColorPicker({ Name = "Цвет хитмаркера", Flag = "BS_HitMarkColor",
+    Color = G.BS.HitMarkColor,
+    Callback = function(c) G.BS.HitMarkColor = c end })
+TB.CreateToggle({ Name = "Лента событий (раунд/разоблачения)", Flag = "BS_EventsOn",
+    CurrentValue = G.BS.EventsOn,
+    Callback = function(v)
+        G.BS.EventsOn = v
+        if not v and eventsLabel then eventsLabel.Visible = false end
     end })
 
 TB.CreateSection("Сканер")
@@ -4139,7 +4352,10 @@ G.BS_Stop = function()
     for i = 1, #noiseLabels do pcall(function() noiseLabels[i]:Remove() end) end
     noiseRings, noiseLabels = {}, {}
     if hudGui then pcall(function() hudGui:Destroy() end) end
-    hudGui, hudLabel = nil, nil
+    hudGui, hudLabel, eventsLabel = nil, nil, nil
+    for i = 1, #hitLines do pcall(function() hitLines[i]:Remove() end) end
+    hitLines = {}
+    EVENTS = {}
     -- танец: снимаем свой трек, возвращаем походку и AutoRotate
     pcall(stopDance, true)
     if connDanceKey then pcall(function() connDanceKey:Disconnect() end) end
@@ -4176,7 +4392,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.8 остановлен")
+    print("[BS HUB] v11.9 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -4226,7 +4442,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.8 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.9 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
