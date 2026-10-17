@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.0
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.1
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -1162,6 +1162,7 @@ local function dumpTable(label, t, maxKeys, depth)
     end)
 end
 
+-- ДАМП ИНСТАНСА (атрибуты + дети). Используется точечно.
 local function dumpInst(inst, prefix)
     local okA, at = pcall(function() return inst:GetAttributes() end)
     if okA and type(at) == "table" then
@@ -1172,91 +1173,129 @@ local function dumpInst(inst, prefix)
     local okC, kids = pcall(function() return inst:GetChildren() end)
     if okC and type(kids) == "table" then
         for _, c in ipairs(kids) do
-            local extra = ""
-            if c:IsA("BasePart") then
-                extra = string.format("  size=(%.1f, %.1f, %.1f)",
-                    c.Size.X, c.Size.Y, c.Size.Z)
-            elseif c:IsA("ValueBase") then
-                local okV, v = pcall(function() return c.Value end)
-                if okV then extra = " = " .. valToStr(v) end
-            end
-            print("    " .. prefix .. c.Name .. " [" .. c.ClassName .. "]" .. extra)
-            dumpInst(c, prefix .. "  ")
+            print("    " .. prefix .. c.Name .. " [" .. c.ClassName .. "]")
         end
     end
+end
+
+-- МОДУЛЬ НЕ ИНТЕРЕСУЕТ (внутренние пакеты Roblox) — их сотни, и
+-- они забивали весь вывод, а нужные модули игры не печатались.
+local function isRobloxInternal(path)
+    return string.find(path, "CorePackages", 1, true) ~= nil
+        or string.find(path, "_Index.", 1, true) ~= nil
+        or string.find(path, "_Workspace.", 1, true) ~= nil
+end
+
+-- ВАЖНЫЕ МОДУЛИ ИГРЫ: сначала они, с require + дампом.
+local DEEP_PRIORITY = {
+    "Combat", "Ballistics", "Murder", "Mystery", "Loadout", "Match",
+    "Roles", "Detection", "ToolCooldown", "Disarm", "NearestInFront",
+    "GameModes", "PlayerState", "Config", "Shop", "Lootboxes",
+}
+
+local function requireDump(mod, label, maxKeys, depth)
+    local okr, mod2 = pcall(require, mod)
+    if okr and type(mod2) == "table" then
+        dumpTable(label, mod2, maxKeys or 40, depth or 2)
+        return true
+    end
+    print("     (require: " .. tostring(mod2) .. ")")
+    return false
 end
 
 local function deepScan()
     hr("ГЛУБОКОЕ СКАНИРОВАНИЕ")
     local base = TRS:FindFirstChild("BloodyStreet")
-    if base then
-        hr("СТРУКТУРА ReplicatedStorage.BloodyStreet")
-        for _, d in ipairs(base:GetChildren()) do
-            print("  " .. d.Name .. "  [" .. d.ClassName .. "]")
-            local ok, kids = pcall(function() return d:GetChildren() end)
-            if ok and type(kids) == "table" and #kids > 0 then
-                local names = {}
-                for _, c in ipairs(kids) do
-                    names[#names + 1] = c.Name .. "[" .. c.ClassName .. "]"
-                end
-                table.sort(names)
-                local line = "     "
-                for i = 1, math.min(#names, 20) do
-                    line = line .. names[i] .. ", "
-                end
-                print(line)
-            end
-        end
-    else
+    if not base then
         print("[BS DEEP] ReplicatedStorage.BloodyStreet НЕ НАЙДЕН")
+        return
     end
 
-    -- МОДУЛИ ПО ТЕМЕ: пробуем require и давим содержимое таблиц.
-    hr("МОДУЛИ: gun / weapon / fire / shoot / bullet / damage / combat")
-    local marks = { "gun", "weapon", "fire", "shoot", "bullet", "damage",
-                    "combat", "ammo", "recoil", "spread", "hit" }
-    local found = 0
+    hr("СТРУКТУРА ReplicatedStorage.BloodyStreet")
+    for _, d in ipairs(base:GetChildren()) do
+        local ok, kids = pcall(function() return d:GetChildren() end)
+        local n = 0
+        if ok and type(kids) == "table" then n = #kids end
+        print(string.format("  %s [%s]  потомков: %d", d.Name, d.ClassName, n))
+        if ok and type(kids) == "table" and n > 0 then
+            local names = {}
+            for _, c in ipairs(kids) do
+                names[#names + 1] = c.Name .. "[" .. c.ClassName .. "]"
+            end
+            table.sort(names)
+            local line = "     "
+            for i = 1, math.min(#names, 40) do line = line .. names[i] .. ", " end
+            print(line)
+        end
+    end
+
+    -- 1) ВАЖНЫЕ МОДУЛИ ИГРЫ: require + полный дамп их таблиц.
+    hr("МОДУЛИ ИГРЫ (require + содержимое таблиц)")
+    for _, nm in ipairs(DEEP_PRIORITY) do
+        local m = base:FindFirstChild(nm)
+        local okF, found = pcall(function()
+            if m then return m end
+            for _, d in ipairs(base:GetDescendants()) do
+                if d.ClassName == "ModuleScript" and d.Name == nm then return d end
+            end
+            return nil
+        end)
+        if okF and found and found.ClassName == "ModuleScript" then
+            local okP, fp = pcall(function() return found:GetFullName() end)
+            print("  " .. (okP and fp or nm))
+            pcall(requireDump, found, nm, 60, 2)
+        end
+    end
+
+    -- 2) ОСТАЛЬНЫЕ МОДУЛИ ИГРЫ: только список (require слишком шумно).
+    hr("ВСЕ МОДУЛИ ИГРЫ (список)")
     local okl, all = pcall(function() return game:GetDescendants() end)
+    local cnt = 0
     if okl and type(all) == "table" then
         for _, d in ipairs(all) do
             if d.ClassName == "ModuleScript" then
-                local low = string.lower(d.Name)
-                local hit = false
-                for i = 1, #marks do
-                    if string.find(low, marks[i], 1, true) then hit = true break end
-                end
-                if hit then
-                    found = found + 1
-                    if found <= 60 then
-                        local path = d.Name
-                        local okP, fp = pcall(function() return d:GetFullName() end)
-                        if okP and type(fp) == "string" then path = fp end
-                        print("  " .. path)
-                        if found <= 10 then
-                            local okr, mod = pcall(require, d)
-                            if okr and type(mod) == "table" then
-                                dumpTable(d.Name, mod, 40, 2)
-                            else
-                                print("     (require: " .. tostring(mod) .. ")")
-                            end
-                        end
-                    end
+                local okP, fp = pcall(function() return d:GetFullName() end)
+                local path = okP and fp or d.Name
+                if not isRobloxInternal(path) and cnt < 200 then
+                    cnt = cnt + 1
+                    print("  " .. path)
                 end
             end
         end
     end
-    print("  модулей найдено: " .. found)
+    print("  модулей игры (без внутренних Roblox): " .. cnt)
 
-    -- ЧТО У МЕНЯ В РУКАХ
-    hr("МОЙ ПЕРСОНАЖ / РЮКЗАК (оружие, значения, атрибуты)")
+    -- 3) ОРУЖИЕ И ПЕРСОНАЖ: коротко, без анимаций и аксессуаров.
+    hr("МОЙ ПЕРСОНАЖ (кратко)")
     local ch = LP and LP.Character
     if ch then
-        print("  ПЕРСОНАЖ:")
-        dumpInst(ch, "    ")
-        local bp = LP:FindFirstChildOfClass("Backpack")
-        if bp then
-            print("  РЮКЗАК:")
-            dumpInst(bp, "    ")
+        local okA, at = pcall(function() return ch:GetAttributes() end)
+        if okA and type(at) == "table" then
+            for k, v in pairs(at) do print("  char." .. tostring(k) .. " = " .. valToStr(v)) end
+        end
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        if hum then
+            print(string.format("  Humanoid: HP=%.0f/%.0f  WalkSpeed=%d",
+                hum.Health, hum.MaxHealth, hum.WalkSpeed))
+        end
+        local tool = ch:FindFirstChildOfClass("Tool")
+        if tool then
+            print("  ОРУЖИЕ: " .. tool.Name)
+            dumpInst(tool, "    ")
+            for _, d in ipairs(tool:GetChildren()) do
+                local extra = ""
+                if d:IsA("Attachment") then
+                    extra = string.format("  WorldPosition=(%.1f, %.1f, %.1f)",
+                        d.WorldPosition.X, d.WorldPosition.Y, d.WorldPosition.Z)
+                elseif d:IsA("BasePart") then
+                    extra = string.format("  size=(%.2f, %.2f, %.2f) pos=(%.1f, %.1f, %.1f)",
+                        d.Size.X, d.Size.Y, d.Size.Z,
+                        d.Position.X, d.Position.Y, d.Position.Z)
+                end
+                print("    " .. d.Name .. " [" .. d.ClassName .. "]" .. extra)
+            end
+        else
+            print("  (оружия в руках нет)")
         end
     else
         print("  (персонажа нет)")
@@ -1364,7 +1403,13 @@ local function computeBulletPreShot()
         local myHead = LP.Character and LP.Character:FindFirstChild("Head")
         srcPos = (myHead and myHead.Position) or cam.CFrame.Position
     else
-        srcPos = cam.CFrame.Position
+        -- "camera": берём НАСТОЯЩИЙ ствол. У оружия есть Attachment
+        -- "Muzzle" — это ровно та точка, которую игра кладёт первым
+        -- аргументом FireWeapon. Если ствола нет — камера.
+        local tool = LP.Character and LP.Character:FindFirstChildOfClass("Tool")
+        local mz = tool and tool:FindFirstChild("Muzzle")
+        srcPos = (mz and mz:IsA("Attachment") and mz.WorldPosition)
+            or cam.CFrame.Position
     end
 
     -- ОПЕРЕЖЕНИЕ ЦЕЛИ — фиксированное, без слайдера. Без него по бегущим
@@ -1959,7 +2004,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v10.0",
+    LoadingSubtitle = "ESP + Client Aim v10.1",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2159,7 +2204,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v10.0 остановлен")
+    print("[BS HUB] v10.1 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2182,7 +2227,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v10.0 запущен | хуков=" .. #netConns
+print("[BS HUB] v10.1 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
