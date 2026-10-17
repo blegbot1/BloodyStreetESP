@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v11.0
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v11.1
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -167,6 +167,13 @@ G.BS.B = math.clamp(math.floor(tonumber(G.BS.B) or 55), 0, 255)
 
 -- ---------- ВЫЖИВАНИЕ ----------
 G.BS.InfStamina  = G.BS.InfStamina  or false
+-- БЕСКОНЕЧНЫЕ ПАТРОНЫ: держим Charges = MaxCharges.
+G.BS.InfAmmo     = G.BS.InfAmmo ~= false
+-- ПОДСВЕТКА ТЕКУЩЕЙ ЦЕЛИ (кто выбран аимом).
+G.BS.TargetMark  = G.BS.TargetMark ~= false
+G.BS.TargetMarkColor = safeColor(G.BS.TargetMarkColor, Color3.new(1, 1, 1))
+-- ЛОГ ПОПАДАНИЙ: печатать каждое событие урона (DamagePopup/CombatFeed).
+G.BS.DmgLog      = G.BS.DmgLog == true
 G.BS.StaminaDebug = G.BS.StaminaDebug or false
 G.BS.HealthLock  = G.BS.HealthLock  or false
 G.BS.HealthMax   = G.BS.HealthMax   or 5000
@@ -238,10 +245,12 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 18 then
-    G.BS.CfgV      = 18
+if G.BS.CfgV ~= 19 then
+    G.BS.CfgV      = 19
     G.BS.AimChain  = true
     G.BS.AimFreePart = true
+    G.BS.InfAmmo   = true
+    G.BS.TargetMark = true
     G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
     G.BS.AimLead   = 0.08
     G.BS.AimLock   = true
@@ -345,6 +354,7 @@ end
 
 local Remotes = findRemotes()
 local netConns = {}
+local dmgFmt = {}
 
 -- ПОИСК РОЛИ.
 -- Раньше проверялся только фиксированный список ИМЁН атрибутов
@@ -1022,6 +1032,54 @@ if Remotes then
                             end
                         end
                     end
+                -- СЧЁТ ПОПАДАНИЙ. DamagePopup / CombatFeed сервер
+                    -- шлёт, когда урон РЕАЛЬНО прошёл. Это единственный
+                    -- способ понять, попадает аим или нет: подмена
+                    -- патрона может выглядеть правильно, а урона нет.
+                    if r.Name == "DamagePopup" or r.Name == "CombatFeed" then
+                        local cnt = (G.BS.DmgEvents or 0) + 1
+                        G.BS.DmgEvents = cnt
+                        if not dmgFmt[r.Name] then
+                            dmgFmt[r.Name] = true
+                            local list = {}
+                            for k = 1, args.n do
+                                local a = args[k]
+                                local t = typeof(a)
+                                local s
+                                if t == "number" then
+                                    s = string.format("%.2f", a)
+                                elseif t == "string" then
+                                    s = a
+                                elseif t == "boolean" then
+                                    s = tostring(a)
+                                elseif t == "Instance" then
+                                    s = a.ClassName .. " " .. a.Name
+                                elseif t == "Player" then
+                                    s = "Player " .. a.Name
+                                elseif t == "table" then
+                                    s = "{"
+                                    local n2 = 0
+                                    for k2, v2 in pairs(a) do
+                                        n2 = n2 + 1
+                                        if n2 <= 5 then
+                                            local tv = typeof(v2)
+                                            local sv
+                                            if tv == "number" then sv = string.format("%.2f", v2)
+                                            elseif tv == "string" or tv == "boolean" then sv = tostring(v2)
+                                            else sv = tv end
+                                            s = s .. tostring(k2) .. "=" .. sv .. ","
+                                        end
+                                    end
+                                    s = s .. "}"
+                                end
+                                list[#list + 1] = k .. ":" .. t .. (s and ("(" .. s .. ")") or "")
+                            end
+                            print("[BS DMG] формат " .. r.Name .. ": " .. table.concat(list, " | "))
+                        elseif G.BS.DmgLog then
+                            print("[BS DMG] " .. r.Name .. " #" .. cnt
+                                .. " | выстрелов подменено: " .. tostring(G.BS.SilentShots or 0))
+                        end
+                    end
                 end
             end)
             netConns[#netConns + 1] = c
@@ -1055,6 +1113,64 @@ local function pumpHealth()
         if hum.MaxHealth ~= G.BS.HealthMax then hum.MaxHealth = G.BS.HealthMax end
         if hum.Health < G.BS.HealthMax then hum.Health = G.BS.HealthMax end
     end)
+end
+
+-- ============================================================
+--  БЕСКОНЕЧНЫЕ ПАТРОНЫ
+-- ============================================================
+-- У оружия атрибуты Charges / MaxCharges (у дробовика 8, у пистолета
+-- 12/18, у снайпера 4 - Config.Loadout.TOOL_GUN_CHARGES). Держим
+-- запас полным: клиентский счётчик и проверка «есть ли чем стрелять»
+-- берутся отсюда, и перезарядка не прерывает стрельбу.
+local function refillCharges()
+    if not G.BS.InfAmmo then return end
+    local ch = LP and LP.Character
+    if not ch then return end
+    local tool = ch:FindFirstChildOfClass("Tool")
+    if not tool then return end
+    pcall(function()
+        local mx = tool:GetAttribute("MaxCharges")
+        if type(mx) == "number" and mx > 0 then
+            tool:SetAttribute("Charges", mx)
+        end
+        local cv = tool:FindFirstChild("Charges")
+        if cv and cv:IsA("NumberValue") then
+            local mx2 = mx or cv.Value
+            if type(mx2) == "number" and mx2 > 0 then cv.Value = mx2 end
+        end
+    end)
+end
+
+-- ============================================================
+--  ПОДСВЕТКА ТЕКУЩЕЙ ЦЕЛИ
+-- ============================================================
+-- Показывает, в кого именно сейчас наводится аим. Без неё легко
+-- не понять, что скрипт выбрал соседа, а не того, кто по курсу.
+local TargetHL = nil
+local function updateTargetMark()
+    if not G.BS.TargetMark then
+        if TargetHL then TargetHL.Enabled = false end
+        return
+    end
+    local pre = bulletPreShot
+    local ch = pre and pre.part and pre.part.Parent
+    if not ch then
+        if TargetHL then TargetHL.Enabled = false end
+        return
+    end
+    if not TargetHL then
+        local ok, hl = pcall(function() return Instance.new("Highlight") end)
+        if not ok or not hl then return end
+        hl.Name                = "BS_TargetMark"
+        hl.FillTransparency     = 1
+        hl.OutlineTransparency  = 0.1
+        hl.DepthMode            = Enum.HighlightDepthMode.AlwaysOnTop
+        hl.Parent               = screen()
+        TargetHL                = hl
+    end
+    TargetHL.Adornee      = ch
+    TargetHL.OutlineColor = safeColor(G.BS.TargetMarkColor, Color3.new(1, 1, 1))
+    TargetHL.Enabled      = true
 end
 
 -- ============================================================
@@ -1457,6 +1573,18 @@ WALLRAY.FilterType = Enum.RaycastFilterType.Exclude
 
 local function computeBulletPreShot()
     if not G.BS.BulletSwap then bulletPreShot = nil return end
+    -- ОБЕЗОРУЖЕН (модуль Disarm, атрибут DisarmedUntil): стрелять
+    -- всё равно нечем, цель не выбираем.
+    pcall(function()
+        local du = LP:GetAttribute("DisarmedUntil")
+        if type(du) == "number" and du > os.time() then
+            bulletPreShot = nil
+            G.BS.Disarmed = true
+        else
+            G.BS.Disarmed = false
+        end
+    end)
+    if bulletPreShot == nil and G.BS.Disarmed then return end
     local cam = workspace.CurrentCamera
     local myRoot = LP and LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
     if not cam or not myRoot or not myRoot.Parent then
@@ -1996,6 +2124,17 @@ local function ncFireWeapon(...)
     if not replaced then return nil end
 
     G.BS.SilentShots = G.BS.SilentShots + 1
+    -- КАЖДЫЕ 25 ВЫСТРЕЛОВ печатаем долю попаданий. Так сразу видно,
+    -- работает ли подмена: 0% = выстрелы отклоняются (угол взгляда
+    -- больше SHOT_ANGLE_SLACK_DEG = 3), 100% = попадает.
+    if (G.BS.SilentShots % 25) == 0 then
+        local shots = G.BS.SilentShots
+        local dmg = tonumber(G.BS.DmgEvents) or 0
+        local pct = 0
+        if shots > 0 then pct = math.floor((dmg / shots) * 100) end
+        print(string.format("[BS DMG] выстрелов: %d | урон получен: %d | ~%d%%",
+            shots, dmg, pct))
+    end
     return out, n
 end
 
@@ -2337,6 +2476,7 @@ connRemoving = Players.PlayerRemoving:Connect(function(p) remove(p) end)
 --  КАДР
 -- ============================================================
 local lastT = os.clock()
+local lastAmmo = 0
 local conn = RunService.RenderStepped:Connect(function()
     local now = os.clock()
     local dt = math.min(0.1, math.max(0.001, now - lastT))
@@ -2361,6 +2501,15 @@ local conn = RunService.RenderStepped:Connect(function()
 
     -- аимлок: доводим взгляд на ту же цель, чтобы сервер принял выстрел
     if G.BS.AimLock then pcall(aimLockTick, dt, now) end
+
+    -- подсветка текущей цели
+    pcall(updateTargetMark)
+
+    -- бесконечные патроны (раз в 0.25 с)
+    if G.BS.InfAmmo and now - lastAmmo >= 0.25 then
+        lastAmmo = now
+        pcall(refillCharges)
+    end
 
     local cam = workspace.CurrentCamera
     if not cam then
@@ -2466,7 +2615,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v11.0",
+    LoadingSubtitle = "ESP + Client Aim v11.1",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2552,6 +2701,24 @@ TB.CreateSlider({ Name = "Толщина коробки", Flag = "BS_BoxThick",
 TB.CreateSlider({ Name = "Макс. дистанция ESP (0 = вся)", Flag = "BS_MaxDist",
     Range = {0, 2000}, Increment = 25, CurrentValue = G.BS.MaxDist,
     Suffix = " studs", Callback = function(v) G.BS.MaxDist = v end })
+
+TB.CreateToggle({
+    Name = "Бесконечные патроны", Flag = "BS_InfAmmo",
+    CurrentValue = G.BS.InfAmmo,
+    Callback = function(v)
+        G.BS.InfAmmo = v
+        pcall(refillCharges)
+    end,
+})
+TB.CreateToggle({ Name = "Подсветка текущей цели", Flag = "BS_TargetMark",
+    CurrentValue = G.BS.TargetMark,
+    Callback = function(v)
+        G.BS.TargetMark = v
+        if not v and TargetHL then TargetHL.Enabled = false end
+    end })
+TB.CreateColorPicker({ Name = "Цвет подсветки цели", Flag = "BS_TargetMarkColor",
+    Color = G.BS.TargetMarkColor,
+    Callback = function(c) G.BS.TargetMarkColor = c end })
 
 TB.CreateSection("Сканер")
 TB.CreateButton({ Name = "СКАНИРОВАТЬ ИГРУ (в консоль)", Callback = function()
@@ -2681,6 +2848,21 @@ AI.CreateSlider({ Name = "Дальность подмены (макс 300)", Fla
 --   AIM_TARGETS  = противники по роли, AIM_PRIORITY = ближе,
 --   радиус 160 px, прострел включён.
 
+AI.CreateToggle({
+    Name = "Лог попаданий (урон от сервера)", Flag = "BS_DmgLog",
+    CurrentValue = G.BS.DmgLog,
+    Callback = function(v)
+        G.BS.DmgLog = v
+        if v then notify("Каждое попадание будет в консоли", 3) end
+    end,
+})
+AI.CreateButton({ Name = "СЧЁТ: выстрелы / попадания", Callback = function()
+    print(string.format(
+        "[BS DMG] выстрелов подменено: %d | событий урона: %d | цель: %s",
+        tonumber(G.BS.SilentShots) or 0, tonumber(G.BS.DmgEvents) or 0,
+        tostring(bulletPreShot and bulletPreShot.part.Name or "нет")))
+end })
+
 AI.CreateSection("Диагностика")
 AI.CreateToggle({
     Name = "Диагностика патрона (в консоль)", Flag = "BS_BulletDebug",
@@ -2722,9 +2904,11 @@ G.BS_Stop = function()
     locked = nil
     bulletPreShot = nil
     if Screen then pcall(function() Screen:Destroy() end) end
+    if TargetHL then pcall(function() TargetHL:Destroy() end) end
     if Overlay then pcall(function() Overlay:Destroy() end) end
     Screen = nil
     Overlay = nil
+    TargetHL = nil
     G.BS.MyRole = "?"
     -- BulletSwap НЕ трогаем: getgenv() живёт между запусками, и если
     -- выставить false, то при повторном запуске клиент айм не включится.
@@ -2753,7 +2937,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.0 остановлен")
+    print("[BS HUB] v11.1 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2783,11 +2967,11 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.0 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.1 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | триггер: " .. tostring(G.BS.Trigger)
-    .. " | прострел: " .. tostring(G.BS.WallPenetrate)
     .. " | лома: " .. tostring(G.BS.MeleeAim)
+    .. " | патроны: " .. tostring(G.BS.InfAmmo)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
