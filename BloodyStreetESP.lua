@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.4
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.5
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -210,14 +210,13 @@ G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 14
 -- плюс в коде проверяется, что в руках именно ОРУЖИЕ.
 G.BS.AimLockNeedAim  = G.BS.AimLockNeedAim ~= false
 G.BS.AimLockFireOnly = G.BS.AimLockFireOnly == true
--- ТРИГГЕР: работаем только когда враг ПРЯМО ПО КУРСУ (в конусе
--- прицела). Нет врага впереди - не целимся и не доворачиваем камеру.
-G.BS.Trigger         = G.BS.Trigger ~= false
--- Радиус триггера в ГРАДУСАХ (игра сама стреляет по конусу
--- Config.UI.AUTO_ATTACK.CONE_DEG = 12). Поставь 0, чтобы вернуть
--- запасной режим "узкий конус на экране" (TriggerCone).
-G.BS.TriggerDeg     = tonumber(G.BS.TriggerDeg) or 12
-G.BS.TriggerCone     = tonumber(G.BS.TriggerCone) or 0.10
+-- ТРИГГЕР УДАЛЁН (по просьбе): раньше скрипт работал только когда
+-- враг был ПРЯМО в конусе прицела (12 градусов, как автоатака
+-- игры), иначе выстрел вообще не подменялся - бот молчал, пока
+-- цель не попадала в узкий конус. Теперь цель выбирается всегда:
+-- сначала та, что ближе к центру экрана, иначе ближайшая.
+G.BS.Trigger         = true   -- оставлено только для совместимости
+                               -- старых сохранённых настроек, не влияет
 -- АИМ ДЛЯ ЛОМЫ (MeleeSwing) / формы вампира (TrueFormMelee) /
 -- тейзера (StunFire). Удар принимает направление и проверяется так
 -- же, как выстрел, поэтому направление подменяется на цель.
@@ -289,7 +288,6 @@ if G.BS.CfgV ~= 22 then
     G.BS.NoiseLife  = 2.2
     G.BS.ShowSpecialRole = true
     G.BS.Hud        = true
-    G.BS.TriggerDeg = 12
     G.BS.AimChain  = true
     G.BS.AimFreePart = true
     G.BS.InfAmmo   = true
@@ -301,9 +299,6 @@ if G.BS.CfgV ~= 22 then
     G.BS.AimLockNeedAim = true
     G.BS.AimLockFireOnly = false
     G.BS.AimLockNoWall = true
-    G.BS.Trigger   = true
-    G.BS.TriggerDeg = 12
-    G.BS.TriggerCone = 0.10
     G.BS.MeleeAim  = true
     G.BS.WallPenetrate = true
     G.BS.OriginSlack = 13     -- SHOT_ORIGIN_SLACK = 14
@@ -2249,21 +2244,8 @@ local function computeBulletPreShot()
     -- пару пикселей, и в узкий круг он не попадал.
     local CONE = math.max(220, math.floor(vp.Y * 0.35))
     local CONE2 = CONE * CONE
-    -- ТРИГГЕР В ГРАДУСАХ. Игра сама стреляет по конусу:
-    -- Config.UI.AUTO_ATTACK.CONE_DEG = 12. Считаем ровно тот же угол
-    -- между взглядом и целью - тогда аим и автоатака решают одно и то же
-    -- и скрипт не доворачивает камеру туда, куда игра не стреляет.
-    local look = cam.CFrame.LookVector
-    local camPos = cam.CFrame.Position
-    local trigDeg = tonumber(G.BS.TriggerDeg) or 12
-    if trigDeg <= 0 then trigDeg = 0.1 end
-    local trigCos = math.cos(math.rad(trigDeg))
-    -- запасной вариант: узкий конус на экране (если градусы выключены)
-    local TCONE = math.max(80, math.floor(vp.Y * (tonumber(G.BS.TriggerCone) or 0.10)))
-    local TCONE2 = TCONE * TCONE
 
     local bestAim,  bestAimS    -- под прицелом (широкий конус)
-    local bestTrig, bestTrigD   -- прямо по курсу (угол взгляда)
     local bestNear, bestNearD   -- иначе — ближайший по расстоянию
     local bestCh = nil                -- персонаж выбранной цели
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -2289,41 +2271,16 @@ local function computeBulletPreShot()
                                     bestCh = ch
                                 end
                             end
-                            if trigDeg > 0 then
-                                -- ТРИГГЕР В ГРАДУСАХ: угол между
-                                -- взглядом и целью <= TriggerDeg
-                                local toT = q.Position - camPos
-                                if toT.Magnitude > 0.5 then
-                                    if toT.Unit:Dot(look) >= trigCos then
-                                        if not bestTrigD or d < bestTrigD then
-                                            bestTrig, bestTrigD = q, d
-                                            bestCh = ch
-                                        end
-                                    end
-                                end
-                            elseif s2 <= TCONE2 then
-                                -- запасной вариант: узкий конус на экране
-                                if not bestTrigD or d < bestTrigD then
-                                    bestTrig, bestTrigD = q, d
-                                    bestCh = ch
-                                end
-                            end
                         end
                     end
                 end
             end
         end
     end
+    -- ТРИГГЕРА БОЛЬШЕ НЕТ: цель выбирается всегда - сначала та, что
+    -- ближе к центру экрана, иначе ближайшая по расстоянию.
     local best = bestAim or bestNear
     local bestChar = bestCh
-
-    -- ТРИГГЕР: если вампир/враг прямо по курсу (в конусе прицела) -
-    -- работаем; если впереди никого нет - НЕ целимся и НЕ ведём
-    -- камеру. Никто сзади/сбоку не трогаем.
-    if G.BS.Trigger and not bestTrig then
-        bulletPreShot = nil
-        return
-    end
 
     if not best then
         bulletPreShot = nil
@@ -2808,9 +2765,9 @@ local function ncFireWeapon(...)
                 .. "опережение: getgenv().BS.AimLead = 0.15")
         else
             print("[BS DMG] Мало попаданий. Проверь: 1) скорость аимлока "
-                .. "getgenv().BS.AimLockSpeed = 35  2) угол триггера "
-                .. "getgenv().BS.TriggerDeg = 20  3) дальность "
-                .. "getgenv().BS.AimMaxDist = 150")
+                .. "getgenv().BS.AimLockSpeed = 35  2) дальность "
+                .. "getgenv().BS.AimMaxDist = 150  3) опережение "
+                .. "getgenv().BS.AimLead = 0.15")
         end
     end
     return out, n
@@ -3323,7 +3280,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.4",
+    LoadingSubtitle = "ESP + Aim + Танец v11.5",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -3537,24 +3494,7 @@ AI.CreateSlider({ Name = "Скорость доворота камеры", Flag 
     Suffix = " (0 = мгновенно)",
     Callback = function(v) G.BS.AimLockSpeed = v end })
 
-AI.CreateSection("Триггер и прострел")
-AI.CreateToggle({
-    Name = "Только враг прямо по курсу", Flag = "BS_Trigger",
-    CurrentValue = G.BS.Trigger,
-    Callback = function(v)
-        G.BS.Trigger = v
-        notify(v and "Целимся только тех, кто впереди" or "Целимся и сзади", 3)
-    end,
-})
-AI.CreateSlider({ Name = "Угол триггера (как у игры)", Flag = "BS_TriggerDeg",
-    Range = {1, 60}, Increment = 1, CurrentValue = G.BS.TriggerDeg,
-    Suffix = " градусов",
-    Callback = function(v) G.BS.TriggerDeg = v end })
-AI.CreateSlider({ Name = "Радиус триггера (экран, при 0°)", Flag = "BS_TriggerCone",
-    Range = {3, 40}, Increment = 1,
-    CurrentValue = math.floor((G.BS.TriggerCone or 0.1) * 100),
-    Suffix = " x0.01 экрана",
-    Callback = function(v) G.BS.TriggerCone = v / 100 end })
+AI.CreateSection("Прострел и дальность")
 AI.CreateToggle({
     Name = "Аим для ломы / формы / тейзера", Flag = "BS_MeleeAim",
     CurrentValue = G.BS.MeleeAim,
@@ -3787,7 +3727,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.4 остановлен")
+    print("[BS HUB] v11.5 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -3837,10 +3777,10 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.4 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.5 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
-    .. " | триггер: " .. tostring(G.BS.Trigger)
+    .. " | выбор цели: всегда"
     .. " | лома: " .. tostring(G.BS.MeleeAim)
     .. " | патроны: " .. tostring(G.BS.InfAmmo)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
