@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.6
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.7
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -201,9 +201,11 @@ G.BS.AimLead       = tonumber(G.BS.AimLead) or 0.08
 -- АИМЛОК: камера доворачивается на цель. Нужен потому, что сервер
 -- проверяет направление взгляда: направить патрон в цель, глядя в
 -- сторону, нельзя — выстрел отклоняется.
--- Скорость доворота: 0 = мгновенно, 20 = очень быстро, 40 = мягко.
+-- Скорость доворота: 1 = мгновенно (нужно по правилу сервера
+-- SHOT_ANGLE_SLACK_DEG = 3), меньше 1 = плавно, 0 = не доворачивать.
+-- ПО УМОЛЧАНИЮ 1: плавный доворот давал «отставание» при ходьбе.
 G.BS.AimLock       = G.BS.AimLock ~= false
-G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 14
+G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 1
 -- Аимlock включается только когда это нужно, чтобы не дёргать камеру:
 --   FireOnly — только пока зажат огонь.
 -- Плюс в коде проверяется, что в руках именно ОРУЖИЕ.
@@ -294,8 +296,9 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 23 then
-    G.BS.CfgV      = 23
+if G.BS.CfgV ~= 24 then
+    G.BS.CfgV      = 24
+    G.BS.AimLockSpeed = 1      -- мгновенный доворот (иначе отстаёт на ходу)
     G.BS.LockHold      = 0.6
     G.BS.LockHoldOnFire = true
     G.BS.SyncTarget    = true
@@ -319,7 +322,7 @@ if G.BS.CfgV ~= 23 then
     G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
     G.BS.AimLead   = 0.08
     G.BS.AimLock   = true
-    G.BS.AimLockSpeed = 25     -- SHOT_ANGLE_SLACK_DEG = 3
+    -- SHOT_ANGLE_SLACK_DEG = 3: взгляд и патрон должны совпадать
     G.BS.AimLockFireOnly = false
     G.BS.AimLockNoWall = true
     G.BS.MeleeAim  = true
@@ -1886,27 +1889,91 @@ end
 -- ============================================================
 --  БЕСКОНЕЧНЫЕ ПАТРОНЫ
 -- ============================================================
--- У оружия атрибуты Charges / MaxCharges (у дробовика 8, у пистолета
--- 12/18, у снайпера 4 - Config.Loadout.TOOL_GUN_CHARGES). Держим
--- запас полным: клиентский счётчик и проверка «есть ли чем стрелять»
--- берутся отсюда, и перезарядка не прерывает стрельбу.
-local function refillCharges()
-    if not G.BS.InfAmmo then return end
+-- Имя атрибута с патронами выясняется на лету: перебираем ВСЕ
+-- числовые атрибуты оружия и ищем похожие на заряд/патроны
+-- (charge/ammo/mag/clip/shots/bullets). Раньше жёстко стояло
+-- "Charges" - если игра называла его иначе, скрипт тихо ничего не
+-- делал, и «бесконечные патроны не работали».
+-- Заодно обнуляем готовность (ReadyAt/CooldownUntil/Until - время в
+-- будущем), чтобы оружие было готово к выстрелу всегда.
+local ammoDumpDone = false
+local function looksLikeAmmo(name)
+    local n = string.lower(tostring(name or ""))
+    return string.find(n, "charge", 1, true) ~= nil
+        or string.find(n, "ammo", 1, true) ~= nil
+        or string.find(n, "mag", 1, true) ~= nil
+        or string.find(n, "clip", 1, true) ~= nil
+        or string.find(n, "bullet", 1, true) ~= nil
+        or string.find(n, "shot", 1, true) ~= nil
+end
+local function looksLikeCooldown(name)
+    local n = string.lower(tostring(name or ""))
+    return string.find(n, "ready", 1, true) ~= nil
+        or string.find(n, "cooldown", 1, true) ~= nil
+        or string.find(n, "until", 1, true) ~= nil
+        or string.find(n, "next", 1, true) ~= nil
+        or string.find(n, "last", 1, true) ~= nil
+        or string.find(n, "reload", 1, true) ~= nil
+end
+-- QUIET=true: не печатать дамп (это основной вызов из кадра).
+-- При ручном нажатии кнопки передаём false - один раз печатаем, что
+-- за атрибуты у оружия, чтобы по логу понять реальное имя счётчика.
+local function refillCharges(quiet)
     local ch = LP and LP.Character
     if not ch then return end
     local tool = ch:FindFirstChildOfClass("Tool")
     if not tool then return end
-    pcall(function()
-        local mx = tool:GetAttribute("MaxCharges")
-        if type(mx) == "number" and mx > 0 then
-            tool:SetAttribute("Charges", mx)
+    local okA, attrs = pcall(function() return tool:GetAttributes() end)
+    if not (okA and type(attrs) == "table") then return end
+    local list = {}
+    for k in pairs(attrs) do list[#list + 1] = k end
+    table.sort(list)
+
+    -- печатаем один раз, что вообще есть у оружия
+    if not ammoDumpDone and not quiet then
+        ammoDumpDone = true
+        local parts = {}
+        for _, k in ipairs(list) do
+            parts[#parts + 1] = k .. "=" .. tostring(attrs[k])
         end
-        local cv = tool:FindFirstChild("Charges")
-        if cv and cv:IsA("NumberValue") then
-            local mx2 = mx or cv.Value
-            if type(mx2) == "number" and mx2 > 0 then cv.Value = mx2 end
+        print("[BS AMMO] атрибуты " .. tostring(tool.Name) .. ": "
+            .. (#parts > 0 and table.concat(parts, ", ") or "(пусто)"))
+    end
+    if not G.BS.InfAmmo then return end
+
+    for _, k in ipairs(list) do
+        local v = attrs[k]
+        if type(v) == "number" then
+            if looksLikeAmmo(k) then
+                local mx = nil
+                local kl = string.lower(k)
+                -- ищем "Max<то же самое>" среди атрибутов
+                for k2, v2 in pairs(attrs) do
+                    if k2 ~= k and type(v2) == "number" then
+                        local k2l = string.lower(k2)
+                        if string.find(k2l, "max", 1, true)
+                           and string.find(k2l, string.sub(kl, 1, 4), 1, true) then
+                            mx = v2
+                            break
+                        end
+                    end
+                end
+                pcall(function()
+                    tool:SetAttribute(k, mx or (v + 20))
+                end)
+            elseif looksLikeCooldown(k) and v > 1000000000 then
+                -- это заведомо метка времени "будущее" -> сбрасываем
+                pcall(function() tool:SetAttribute(k, 0) end)
+            end
         end
-    end)
+    end
+    -- NumberValue/IntValue внутри оружия (иногда счётчик там)
+    for _, kid in ipairs(tool:GetChildren()) do
+        local okV, isVal = pcall(function() return kid.Value end)
+        if okV and type(isVal) == "number" and looksLikeAmmo(kid.Name) then
+            pcall(function() kid.Value = isVal + 20 end)
+        end
+    end
 end
 
 -- ============================================================
@@ -2678,23 +2745,37 @@ local function aimLockTick(dt, now)
     end
 
     local target = CFrame.lookAt(pos, look, cf.UpVector)
-    local sp = tonumber(G.BS.AimLockSpeed) or 25
+
+    -- ДОВОРОТ. По умолчанию МГНОВЕННЫЙ (доля 1), и это не «крутая
+    -- опция», а требование сервера: Config.Combat.SHOT_ANGLE_SLACK_DEG
+    -- = 3, то есть взгляд и патрон должны совпадать в пределах 3°.
+    -- Плавный LerCFrame как раз и давал жалобу «иду вперёд - аимлок
+    -- тянет назад»: каждый кадр камера недодоводила, и на ходу взгляд
+    -- оставался ПОЗАДИ цели. Ползунок скорости уменьшает доворот
+    -- только осознанно: 1 = мгновенно, 0 = не доворачивать, 0.3 = плавно.
+    local sp = tonumber(G.BS.AimLockSpeed)
+    if sp == nil then sp = 1.0 end
+    local frac
     if sp <= 0 then
+        frac = 0
+    elseif sp >= 1 then
+        frac = 1
+    else
+        local dist = toT.Magnitude
+        frac = sp * (1 - (dist / 400) * 0.5)
+        if frac < 0.02 then frac = 0.02 end
+        if frac > 1 then frac = 1 end
+    end
+    if frac <= 0 then return end
+    if frac >= 1 then
         cam.CFrame = target
         return
     end
-
-    -- СМЯГЧЕНИЕ ПО РАССТОЯНИЮ. Раньше был один LerCFrame на все
-    -- дистанции: близкая цель требовала доворота на 50+ градусов за
-    -- кадр, взгляд её перелетал, потом уезжал обратно - и аим выглядел
-    -- сломанным. Теперь коэффициент падает с расстоянием: близко мягко,
-    -- далеко быстро. Слайдер остался как множитель скорости.
-    local dist = toT.Magnitude
-    local t = sp * (dt or 0.016)
-    t = t * (1 - (dist / 120) * 0.45)
-    if t < 0 then t = 0 end
-    if t > 1 then t = 1 end
-    cam.CFrame = cf:Lerp(target, t)
+    -- Плавный режим: сглаживание по ВРЕМЕНИ, а не по кадрам, чтобы
+    -- скорость не зависела от FPS.
+    local k = 1 - math.exp(-frac / math.max(dt or 0.016, 0.001))
+    if k > 1 then k = 1 end
+    cam.CFrame = cf:Lerp(target, k)
 end
 
 -- ============================================================
@@ -2839,6 +2920,40 @@ local function ncFireWeapon(...)
         if v.Magnitude > 0.001 then
             aimDir  = v.Unit
             aimDist = v.Magnitude
+        end
+    end
+
+    -- ПЕРЕСЧЁТ ТОЧКИ ПРИЦЕЛА В МОМЕНТ ВЫСТРЕЛА. pre.pos посчитан в
+    -- начале кадра, а пока мы шли вперёд, камера (и точка вылета,
+    -- которую игра передаёт аргументом №1) уже сдвинулась. Разница
+    -- небольшая, но именно из-за неё пуля уходила чуть НАЗАД - «аймлок
+    -- отставал». Поэтому здесь цель и опережение считаются заново, по
+    -- актуальной позиции цели.
+    -- Внутри хука ":"-вызовы запрещены, поэтому только свойства.
+    local tgtPart = LOCK_TARGET or bulletListTarget
+    if tgtPart and tgtPart.Parent then
+        local p = tgtPart.Position
+        local vel = tgtPart.AssemblyLinearVelocity
+        if vel and (vel.X * vel.X + vel.Y * vel.Y + vel.Z * vel.Z) > 1 then
+            local lead = tonumber(G.BS.AimLead) or 0
+            if lead > 0 then
+                local ox, oy, oz = vel.X * lead, vel.Y * lead, vel.Z * lead
+                local m = math.sqrt(ox * ox + oy * oy + oz * oz)
+                if m > 2.5 then
+                    local s = 2.5 / m
+                    ox, oy, oz = ox * s, oy * s, oz * s
+                end
+                p = p + Vector3.new(ox, oy, oz)
+            end
+        end
+        local from = (posIdx and typeof(out[posIdx]) == "Vector3") and out[posIdx] or pre.src
+        if from then
+            local dx, dy, dz = p.X - from.X, p.Y - from.Y, p.Z - from.Z
+            local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if d > 0.001 then
+                aimDir  = Vector3.new(dx / d, dy / d, dz / d)
+                aimDist = d
+            end
         end
     end
 
@@ -3415,10 +3530,10 @@ local conn = RunService.RenderStepped:Connect(function()
         pcall(function() scanPlayingAnims({}, false) end)
     end
 
-    -- бесконечные патроны (раз в 0.25 с)
-    if G.BS.InfAmmo and now - lastAmmo >= 0.25 then
+    -- бесконечные патроны (чаще: покадрово держим заряд полным)
+    if G.BS.InfAmmo and now - lastAmmo >= 0.1 then
         lastAmmo = now
-        pcall(refillCharges)
+        pcall(refillCharges, true)
     end
 
     local cam = workspace.CurrentCamera
@@ -3533,7 +3648,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.6",
+    LoadingSubtitle = "ESP + Aim + Танец v11.7",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -3627,9 +3742,16 @@ TB.CreateToggle({
     CurrentValue = G.BS.InfAmmo,
     Callback = function(v)
         G.BS.InfAmmo = v
-        pcall(refillCharges)
+        ammoDumpDone = false   -- пусть напечатает актуальные атрибуты
+        pcall(refillCharges, false)
     end,
 })
+TB.CreateButton({ Name = "Показать счётчик патронов (в консоль)",
+    Callback = function()
+        ammoDumpDone = false
+        pcall(refillCharges, false)
+        notify("Счётчик патронов — смотри [BS AMMO] в консоли", 4)
+    end })
 TB.CreateToggle({ Name = "Подсветка текущей цели", Flag = "BS_TargetMark",
     CurrentValue = G.BS.TargetMark,
     Callback = function(v)
@@ -3760,9 +3882,10 @@ AI.CreateToggle({
     CurrentValue = G.BS.AimLockNoWall,
     Callback = function(v) G.BS.AimLockNoWall = v end,
 })
-AI.CreateSlider({ Name = "Скорость доворота камеры", Flag = "BS_AimLockSpeed",
-    Range = {0, 40}, Increment = 1, CurrentValue = G.BS.AimLockSpeed,
-    Suffix = " (0 = мгновенно)",
+AI.CreateSlider({ Name = "Плавность доворота (1 = мгновенно)", Flag = "BS_AimLockSpeed",
+    Range = {0, 1}, Increment = 0.05,
+    CurrentValue = tonumber(G.BS.AimLockSpeed) or 1,
+    Suffix = " (0 = выкл)",
     Callback = function(v) G.BS.AimLockSpeed = v end })
 
 AI.CreateSection("Прострел и дальность")
@@ -4035,7 +4158,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.6 остановлен")
+    print("[BS HUB] v11.7 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -4085,7 +4208,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.6 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.7 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
