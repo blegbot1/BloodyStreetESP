@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.1
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ  v10.2
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -182,6 +182,12 @@ G.BS.AimOrigin     = G.BS.AimOrigin or "camera"
 -- приходит туда, где враг БЫЛ. Меняется на ходу:
 --   getgenv().BS.AimLead = 0.15
 G.BS.AimLead       = tonumber(G.BS.AimLead) or 0.08
+-- АИМЛОК: камера доворачивается на цель. Нужен потому, что сервер
+-- проверяет направление взгляда: направить патрон в цель, глядя в
+-- сторону, нельзя — выстрел отклоняется.
+-- Скорость доворота: 0 = мгновенно, 20 = очень быстро, 40 = мягко.
+G.BS.AimLock       = G.BS.AimLock ~= false
+G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 14
 -- ЛОГ РЕМОУТОВ (клиент -> сервер) в консоль. Вкладка AIM.
 G.BS.RemoteLog  = G.BS.RemoteLog or false
 
@@ -201,9 +207,11 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 9 then
-    G.BS.CfgV      = 9
+if G.BS.CfgV ~= 10 then
+    G.BS.CfgV      = 10
     G.BS.AimLead   = 0.08
+    G.BS.AimLock   = true
+    G.BS.AimLockSpeed = 14
     G.BS.SpoofBack = 0
     G.BS.SilentShot = false
     G.BS.Hitbox    = false
@@ -1446,6 +1454,36 @@ local function computeBulletPreShot()
 end
 
 -- ============================================================
+--  АИМЛОК: камера доворачивается на цель
+-- ============================================================
+-- ЗАЧЕМ. Сервер проверяет, что выстрел уходит ТУДА, КУДА СМОТРИТ
+-- игрок: если подменить направление патрона на цель, а камера
+-- смотрит в сторону — выстрел отклоняется («выстрел защищается»).
+-- Поэтому доводим камеру на ту же цель: тогда и взгляд, и патрон
+-- совпадают, и сервер не придрается.
+-- Позиция камеры не меняется (вид от третьего лица сохраняется) —
+-- меняется только направление взгляда.
+local function aimLockTick(dt)
+    local pre = bulletPreShot
+    if not (G.BS.AimLock and pre and pre.part and pre.part.Parent) then return end
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    local cf = cam.CFrame
+    local pos = cf.Position
+    local toT = pre.part.Position - pos
+    if toT.Magnitude < 0.5 then return end
+    local target = CFrame.lookAt(pos, pre.part.Position, cf.UpVector)
+    local sp = tonumber(G.BS.AimLockSpeed) or 14
+    if sp <= 0 then
+        cam.CFrame = target
+    else
+        local t = sp * (dt or 0.016)
+        if t > 1 then t = 1 end
+        cam.CFrame = cf:Lerp(target, t)
+    end
+end
+
+-- ============================================================
 --  ЕДИНЫЙ ХУК __namecall
 --  (прострел стен / клиент айм + блок стамины + защита от урона)
 -- ============================================================
@@ -1900,6 +1938,9 @@ local conn = RunService.RenderStepped:Connect(function()
         bulletPreShot = nil
     end
 
+    -- аимлок: доводим взгляд на ту же цель, чтобы сервер принял выстрел
+    if G.BS.AimLock then pcall(aimLockTick, dt) end
+
     local cam = workspace.CurrentCamera
     if not cam then
         hideOverlay()
@@ -2004,7 +2045,7 @@ end)
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Client Aim v10.1",
+    LoadingSubtitle = "ESP + Client Aim v10.2",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -2126,6 +2167,20 @@ AI.CreateToggle({
     end,
 })
 
+-- АИМЛОК: камера целится в жертву, патрон идёт через клиент айм.
+AI.CreateToggle({
+    Name = "Аимлок (камера целится в жертву)", Flag = "BS_AimLock",
+    CurrentValue = G.BS.AimLock,
+    Callback = function(v)
+        G.BS.AimLock = v
+        notify(v and "Камера доводится на цель" or "Аимлок выключен", 3)
+    end,
+})
+AI.CreateSlider({ Name = "Скорость доворота камеры", Flag = "BS_AimLockSpeed",
+    Range = {0, 40}, Increment = 1, CurrentValue = G.BS.AimLockSpeed,
+    Suffix = " (0 = мгновенно)",
+    Callback = function(v) G.BS.AimLockSpeed = v end })
+
 -- Секция «Цель» («Кого целить», «Приоритет», «Радиус захвата») и
 -- пикеры «Цвет: захват цели» / «Цвет метки» удалены по просьбе.
 -- Логика выбора цели осталась и работает на дефолтах:
@@ -2204,7 +2259,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v10.1 остановлен")
+    print("[BS HUB] v10.2 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -2227,7 +2282,8 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v10.1 запущен | хуков=" .. #netConns
+print("[BS HUB] v10.2 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
+    .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
