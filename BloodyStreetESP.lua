@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.22
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.23
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -212,7 +212,7 @@ G.BS.JumpPowerMul  = tonumber(G.BS.JumpPowerMul) or 1.5
 G.BS.CoinAuto      = G.BS.CoinAuto ~= false
 G.BS.CoinLearn     = G.BS.CoinLearn or false
 G.BS.CoinRange     = tonumber(G.BS.CoinRange) or 600
-G.BS.CoinScanEvery = tonumber(G.BS.CoinScanEvery) or 0.5
+G.BS.CoinScanEvery = tonumber(G.BS.CoinScanEvery) or 1.0
 -- ТЕЛЕПОРТ-ВЫСТРЕЛ ЧЕРЕЗ СТЕНЫ. На время выстрела персонаж окажется
 -- за спиной/над целью (для сервера), потом вернётся. Требует аимлока:
 -- камера должна смотреть на цель, иначе сервер может отклонить выстрел.
@@ -554,6 +554,10 @@ end
 
 function COIN.findRemote()
     if COIN.remote and COIN.remote.Parent then return COIN.remote end
+    -- не сканировать всю игру каждые 0.5 с: если ремоут ещё не найден,
+    -- повторяем поиск не чаще раза в 5 с
+    if COIN.remoteScanAt and (os.clock() - COIN.remoteScanAt) < 5 then return nil end
+    COIN.remoteScanAt = os.clock()
     local found
     local function check(inst)
         if not found and (inst:IsA("RemoteEvent") or inst:IsA("UnreliableRemoteEvent")) then
@@ -624,7 +628,7 @@ end
 
 function COIN.autoTick(now)
     if G.BS.CoinAuto == false then return end
-    if now - COIN.lastScan < (tonumber(G.BS.CoinScanEvery) or 0.5) then return end
+    if now - COIN.lastScan < (tonumber(G.BS.CoinScanEvery) or 1.0) then return end
     COIN.lastScan = now
     pcall(COIN.scan)
 end
@@ -1440,6 +1444,7 @@ end
 local incomingSeen = {}   -- сколько раз напечатали каждый входящий ремоут
 local incomingCount = 0   -- всего строк входящего лога (ограничиваем)
 local dumpArgs     -- разбор таблицы-аргумента ремоута (объявлен ниже)
+local summaryToken = 0 -- защита от двойной сводки ролей при быстрой смене фаз
 
 -- ТИХИЙ ПЕРЕХВАТ РОЛЕЙ. Консоль не засоряется.
 if Remotes then
@@ -1466,12 +1471,18 @@ if Remotes then
                         G.BS.RoundVamps   = tonumber(st.vampires) or 0
                         G.BS.RoundHunters = tonumber(st.hunters) or 0
                         if G.BS.RoundPhase ~= G.BS.LastPhase then
-                            if G.BS.RoundPhase == "Lobby" then resetRound() end
+                            if G.BS.RoundPhase == "Lobby" or G.BS.RoundPhase == "Ending" then
+                                resetRound()
+                            end
                             G.BS.LastPhase = G.BS.RoundPhase
                             addEvent("ФАЗА: " .. tostring(st.phase)
                                 .. " (в " .. tostring(st.vampires or 0)
                                 .. " в, " .. tostring(st.hunters or 0) .. " х)")
-                            task.delay(1.5, function() pcall(ROLES.summary) end)
+                            summaryToken = summaryToken + 1
+                            local tok = summaryToken
+                            task.delay(1.5, function()
+                                if tok == summaryToken then pcall(ROLES.summary) end
+                            end)
                         end
                     end
                     -- RoleAssigned
@@ -1555,6 +1566,13 @@ if Remotes then
                     -- способ понять, попадает аим или нет: подмена
                     -- патрона может выглядеть правильно, а урона нет.
                     if r.Name == "DamagePopup" or r.Name == "CombatFeed" then
+                        local a0 = args[1]
+                        local skip = false
+                        if type(a0) == "table" then
+                            if a0.type == "progress" or a0.done == true then skip = true end
+                            if type(a0.value) == "number" and a0.value <= 0 then skip = true end
+                        end
+                        if not skip then
                         local cnt = (G.BS.DmgEvents or 0) + 1
                         G.BS.DmgEvents = cnt
                         -- ХИТМАРКЕР: урон пришёл с сервера = попадание
@@ -1601,6 +1619,7 @@ if Remotes then
                             -- за бой улетало 300+ строк одного и того же
                             print("[BS DMG] " .. r.Name .. " #" .. cnt
                                 .. " | выстрелов подменено: " .. tostring(G.BS.SilentShots or 0))
+                        end
                         end
                     end
                 end
@@ -6011,13 +6030,14 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.22",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.23",
     ConfigurationSaving = { Enabled = true },
 })
 
 local TAB  = Window:CreateTab("ESP", 4483362458)
 local AIMT = Window:CreateTab("AIM", 1101060692)
 local PLRT = Window:CreateTab("ИГРОК", 1183774348)
+local HUDT = Window:CreateTab("HUD", 1111111111)
 
 -- ЗАЩИТА СОЗДАНИЯ ЭЛЕМЕНТОВ: один упавший Create* не должен
 -- ронять всю вкладку. UI_ERR объявлена выше (в блоке состояния),
@@ -6052,6 +6072,31 @@ end
 local TB = mkTab(TAB,  "ESP")
 local AI = mkTab(AIMT, "AIM")
 local PL = mkTab(PLRT, "ИГРОК")
+local HUD = mkTab(HUDT, "HUD")
+
+-- ======================= HUD =======================
+HUD.CreateSection("HUD")
+HUD.CreateToggle({ Name = "HUD (роль, фаза, патроны, цель)", Flag = "BS_Hud",
+    CurrentValue = G.BS.Hud,
+    Callback = function(v)
+        G.BS.Hud = v
+        if not v and hudLabel then hudLabel.Visible = false end
+    end })
+HUD.CreateToggle({ Name = "Статус цели (сбит/раскрыт/оглушён)", Flag = "BS_ShowStatus",
+    CurrentValue = G.BS.ShowStatus,
+    Callback = function(v) G.BS.ShowStatus = v end })
+HUD.CreateToggle({ Name = "Хитмаркер при попадании", Flag = "BS_HitMark",
+    CurrentValue = G.BS.HitMark,
+    Callback = function(v) G.BS.HitMark = v end })
+HUD.CreateColorPicker({ Name = "Цвет хитмаркера", Flag = "BS_HitMarkColor",
+    Color = G.BS.HitMarkColor,
+    Callback = function(c) G.BS.HitMarkColor = c end })
+HUD.CreateToggle({ Name = "Лента событий (раунд/разоблачения)", Flag = "BS_EventsOn",
+    CurrentValue = G.BS.EventsOn,
+    Callback = function(v)
+        G.BS.EventsOn = v
+        if not v and eventsLabel then eventsLabel.Visible = false end
+    end })
 
 -- Кнопок-выключателей больше нет: везде обычные тумблеры Rayfield.
 
@@ -6102,119 +6147,13 @@ TB.CreateSlider({ Name = "Макс. дистанция ESP (0 = вся)", Flag =
     Range = {0, 2000}, Increment = 25, CurrentValue = G.BS.MaxDist,
     Suffix = " studs", Callback = function(v) G.BS.MaxDist = v end })
 
-TB.CreateToggle({
-    Name = "Без кулдауна оружия", Flag = "BS_NoCooldown",
-    CurrentValue = G.BS.NoCooldown,
-    Callback = function(v)
-        G.BS.NoCooldown = v
-        cdDumpDone = false   -- пусть напечатает актуальные атрибуты
-        pcall(clearWeaponCooldown, false)
-    end,
-})
-TB.CreateButton({ Name = "Показать метки кулдауна (в консоль)",
-    Callback = function()
-        cdDumpDone = false
-        pcall(clearWeaponCooldown, false)
-        notify("Метки кулдауна — смотри [BS CD] в консоли", 4)
-    end })
-TB.CreateToggle({
-    Name = "Время выстрела сдвигать вперёд (обход WEAPON_COOLDOWN)",
-    Flag = "BS_ShotTimeHack",
-    CurrentValue = G.BS.ShotTimeHack,
-    Callback = function(v) G.BS.ShotTimeHack = v end,
-})
-TB.CreateSlider({ Name = "Сдвиг времени выстрела", Flag = "BS_ShotTimeStep",
-    Range = {0.1, 2}, Increment = 0.05,
-    CurrentValue = tonumber(G.BS.ShotTimeStep) or 0.55,
-    Suffix = " c",
-    Callback = function(v) G.BS.ShotTimeStep = v end })
-TB.CreateToggle({ Name = "Подсветка текущей цели", Flag = "BS_TargetMark",
-    CurrentValue = G.BS.TargetMark,
-    Callback = function(v)
-        G.BS.TargetMark = v
-        if not v and TargetHL then TargetHL.Enabled = false end
-    end })
-TB.CreateColorPicker({ Name = "Цвет подсветки цели", Flag = "BS_TargetMarkColor",
-    Color = G.BS.TargetMarkColor,
-    Callback = function(c) G.BS.TargetMarkColor = c end })
 
-TB.CreateColorPicker({ Name = "Цвет точки прицела", Flag = "BS_AimDotColor",
-    Color = G.BS.AimDotColor,
-    Callback = function(c) G.BS.AimDotColor = c end })
-TB.CreateToggle({ Name = "Точка прицеливания (видно, куда летит)", Flag = "BS_AimDot",
-    CurrentValue = G.BS.AimDot,
-    Callback = function(v)
-        G.BS.AimDot = v
-        if not v and aimDot then aimDot.Visible = false end
-    end })
 
-TB.CreateToggle({ Name = "Звуковые метки (где стреляли/кричали)", Flag = "BS_NoiseMarks",
-    CurrentValue = G.BS.NoiseMarks,
-    Callback = function(v) G.BS.NoiseMarks = v end })
 TB.CreateToggle({ Name = "Особая роль по предмету в подписи", Flag = "BS_ShowSpecialRole",
     CurrentValue = G.BS.ShowSpecialRole,
     Callback = function(v) G.BS.ShowSpecialRole = v end })
-TB.CreateToggle({ Name = "HUD (роль, фаза, патроны, цель)", Flag = "BS_Hud",
-    CurrentValue = G.BS.Hud,
-    Callback = function(v)
-        G.BS.Hud = v
-        if not v and hudLabel then hudLabel.Visible = false end
-    end })
-TB.CreateToggle({ Name = "Статус цели (сбит/раскрыт/оглушён)", Flag = "BS_ShowStatus",
-    CurrentValue = G.BS.ShowStatus,
-    Callback = function(v) G.BS.ShowStatus = v end })
-TB.CreateToggle({ Name = "Хитмаркер при попадании", Flag = "BS_HitMark",
-    CurrentValue = G.BS.HitMark,
-    Callback = function(v) G.BS.HitMark = v end })
-TB.CreateColorPicker({ Name = "Цвет хитмаркера", Flag = "BS_HitMarkColor",
-    Color = G.BS.HitMarkColor,
-    Callback = function(c) G.BS.HitMarkColor = c end })
-TB.CreateToggle({ Name = "Лента событий (раунд/разоблачения)", Flag = "BS_EventsOn",
-    CurrentValue = G.BS.EventsOn,
-    Callback = function(v)
-        G.BS.EventsOn = v
-        if not v and eventsLabel then eventsLabel.Visible = false end
-    end })
 
--- ======================= РОЛИ =======================
-TB.CreateSection("Роли (если скрипт ошибся)")
--- ВАЖНО: в сборке Rayfield игрока CreateParagraph читает НЕ Name, а
--- Text/Content, а CreateInput - PlaceholderText. Раньше передавали только
--- Name/Placeholder, из-за этого в логе было «ошибок GUI=2»
--- (Unable to assign property Text / PlaceholderText). Передаём все
--- варианты ключей - лишние поля сборка просто игнорирует.
-local ROLE_HELP = "Игра сама сообщает, сколько в раунде вампиров и "
-    .. "хантеров, поэтому скрипт не может пометить больше. Если роль "
-    .. "определилась неверно - выставь её ручно: введи ник и нажми "
-    .. "нужную кнопку."
-TB.CreateParagraph({
-    Name    = ROLE_HELP,
-    Title   = "Роли",
-    Content = ROLE_HELP,
-    Text    = ROLE_HELP,
-})
-TB.CreateInput({ Name = "Ник игрока", Flag = "BS_RoleName",
-    Placeholder = "ник в игре",
-    PlaceholderText = "ник в игре",
-    Callback = function(txt)
-        G.BS.RoleName = txt
-    end })
-TB.CreateButton({ Name = "ВАМПИР этому нику", Callback = function()
-    pcall(ROLES.set, G.BS.RoleName, "vampire")
-end })
-TB.CreateButton({ Name = "ХАНТЕР этому нику", Callback = function()
-    pcall(ROLES.set, G.BS.RoleName, "hunter")
-end })
-TB.CreateButton({ Name = "Снять роль этому нику", Callback = function()
-    pcall(ROLES.set, G.BS.RoleName, nil)
-end })
-TB.CreateButton({ Name = "СВОДКА РОЛЕЙ (в консоль)", Callback = function()
-    pcall(ROLES.summary)
-    notify("Сводка ролей — смотри [BS ROLE] в консоли", 4)
-end })
-TB.CreateButton({ Name = "СБРОСИТЬ ВСЕ РОЛИ", Callback = function()
-    pcall(ROLES.reset)
-end })
+
 
 -- Секция «Сканер» с кнопками СКАНИРОВАТЬ ИГРУ / ГЛУБОКОЕ СКАНИРОВАНИЕ /
 -- ПРОВЕРКА ОРУЖИЯ / Сканировать при запуске УБРАНА по просьбе (см.
@@ -6278,6 +6217,63 @@ AI.CreateSlider({ Name = "Радиус круга (FOV)", Flag = "BS_AimFOV2",
 AI.CreateToggle({ Name = "Показывать круг аима",
     CurrentValue = G.BS.AimFOVShow ~= false,
     Callback = function(v) G.BS.AimFOVShow = v end })
+
+AI.CreateSection("Бой")
+AI.CreateToggle({
+    Name = "Без кулдауна оружия", Flag = "BS_NoCooldown",
+    CurrentValue = G.BS.NoCooldown,
+    Callback = function(v)
+        G.BS.NoCooldown = v
+        cdDumpDone = false   -- пусть напечатает актуальные атрибуты
+        pcall(clearWeaponCooldown, false)
+    end,
+})
+AI.CreateButton({ Name = "Показать метки кулдауна (в консоль)",
+    Callback = function()
+        cdDumpDone = false
+        pcall(clearWeaponCooldown, false)
+        notify("Метки кулдауна — смотри [BS CD] в консоли", 4)
+    end })
+AI.CreateToggle({
+    Name = "Время выстрела сдвигать вперёд (обход WEAPON_COOLDOWN)",
+    Flag = "BS_ShotTimeHack",
+    CurrentValue = G.BS.ShotTimeHack,
+    Callback = function(v) G.BS.ShotTimeHack = v end,
+})
+AI.CreateSlider({ Name = "Сдвиг времени выстрела", Flag = "BS_ShotTimeStep",
+    Range = {0.1, 2}, Increment = 0.05,
+    CurrentValue = tonumber(G.BS.ShotTimeStep) or 0.55,
+    Suffix = " c",
+    Callback = function(v) G.BS.ShotTimeStep = v end })
+AI.CreateToggle({ Name = "Подсветка текущей цели", Flag = "BS_TargetMark",
+    CurrentValue = G.BS.TargetMark,
+    Callback = function(v)
+        G.BS.TargetMark = v
+        if not v and TargetHL then TargetHL.Enabled = false end
+    end })
+AI.CreateColorPicker({ Name = "Цвет подсветки цели", Flag = "BS_TargetMarkColor",
+    Color = G.BS.TargetMarkColor,
+    Callback = function(c) G.BS.TargetMarkColor = c end })
+AI.CreateColorPicker({ Name = "Цвет точки прицела", Flag = "BS_AimDotColor",
+    Color = G.BS.AimDotColor,
+    Callback = function(c) G.BS.AimDotColor = c end })
+AI.CreateToggle({ Name = "Точка прицеливания (видно, куда летит)", Flag = "BS_AimDot",
+    CurrentValue = G.BS.AimDot,
+    Callback = function(v)
+        G.BS.AimDot = v
+        if not v and aimDot then aimDot.Visible = false end
+    end })
+AI.CreateToggle({ Name = "Звуковые метки (где стреляли/кричали)", Flag = "BS_NoiseMarks",
+    CurrentValue = G.BS.NoiseMarks,
+    Callback = function(v) G.BS.NoiseMarks = v end })
+AI.CreateToggle({ Name = "Стрельба через стены (телепорт за спину)",
+    Flag = "BS_GhostShot",
+    CurrentValue = G.BS.GhostShot == true,
+    Callback = function(v) G.BS.GhostShot = v end })
+AI.CreateSlider({ Name = "Удержание телепорта (с)", Flag = "BS_GhostHold",
+    Range = {0, 0.2}, Increment = 0.01,
+    CurrentValue = tonumber(G.BS.GhostHold) or 0.03,
+    Suffix = " s", Callback = function(v) G.BS.GhostHold = v end })
 
 -- Секция «Цель» («Кого целить», «Приоритет», «Радиус захвата») и
 -- пикеры «Цвет: захват цели» / «Цвет метки» удалены по просьбе.
@@ -6367,15 +6363,6 @@ PL.CreateSlider({ Name = "Сила прыжка (множитель)", Flag = "B
     Range = {1, 10}, Increment = 0.1,
     CurrentValue = tonumber(G.BS.JumpPowerMul) or 1.5,
     Suffix = " x", Callback = function(v) G.BS.JumpPowerMul = v end })
-PL.CreateToggle({ Name = "Стрельба через стены (телепорт за спину)",
-    Flag = "BS_GhostShot",
-    CurrentValue = G.BS.GhostShot == true,
-    Callback = function(v) G.BS.GhostShot = v end })
-PL.CreateSlider({ Name = "Удержание телепорта (с)", Flag = "BS_GhostHold",
-    Range = {0, 0.2}, Increment = 0.01,
-    CurrentValue = tonumber(G.BS.GhostHold) or 0.03,
-    Suffix = " s", Callback = function(v) G.BS.GhostHold = v end })
-
 PL.CreateSection("Монеты")
 PL.CreateToggle({ Name = "Авто-сбор монет", Flag = "BS_CoinAuto",
     CurrentValue = G.BS.CoinAuto ~= false,
@@ -6506,6 +6493,44 @@ PL.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
     end })
 -- Тумблер "Спин только стоя" удалён по просьбе: спин крутит и на ходу,
 -- и стоя (движение не мешает - модель просто вращается вокруг корня).
+
+PL.CreateSection("Роли (если скрипт ошибся)")
+local ROLE_HELP2 = "Игра сама сообщает, сколько в раунде вампиров и "
+    .. "хантеров, поэтому скрипт не может пометить больше. Если роль "
+    .. "определилась неверно - выставь её ручно: введи ник и нажми "
+    .. "нужную кнопку."
+PL.CreateParagraph({
+    Name    = ROLE_HELP2,
+    Title   = "Роли",
+    Content = ROLE_HELP2,
+    Text    = ROLE_HELP2,
+})
+PL.CreateInput({ Name = "Ник игрока", Flag = "BS_RoleName",
+    Placeholder = "ник в игре",
+    PlaceholderText = "ник в игре",
+    Callback = function(txt)
+        G.BS.RoleName = txt
+    end })
+PL.CreateButton({ Name = "ВАМПИР этому нику", Callback = function()
+    pcall(ROLES.set, G.BS.RoleName, "vampire")
+end })
+PL.CreateButton({ Name = "ХАНТЕР этому нику", Callback = function()
+    pcall(ROLES.set, G.BS.RoleName, "hunter")
+end })
+PL.CreateButton({ Name = "Снять роль этому нику", Callback = function()
+    pcall(ROLES.set, G.BS.RoleName, nil)
+end })
+PL.CreateButton({ Name = "СВОДКА РОЛЕЙ (в консоль)", Callback = function()
+    pcall(ROLES.summary)
+    notify("Сводка ролей — смотри [BS ROLE] в консоли", 4)
+end })
+PL.CreateButton({ Name = "СБРОСИТЬ ВСЕ РОЛИ", Callback = function()
+    pcall(ROLES.reset)
+end })
+PL.CreateButton({ Name = "ОСТАНОВИТЬ СКРИПТ", Callback = function()
+    pcall(function() G.BS_Stop() end)
+end })
+
 refreshDanceDropdown()
 end   -- конец buildGui
 
@@ -6613,7 +6638,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.22 остановлен")
+    print("[BS HUB] v11.23 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -6714,7 +6739,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.22 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.23 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
