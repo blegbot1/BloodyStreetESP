@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.14
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.15
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -203,7 +203,9 @@ G.BS.ScanOnStart = G.BS.ScanOnStart or false
 G.BS.AimLockColor  = safeColor(G.BS.AimLockColor,  Color3.fromRGB(255, 50, 50))
 G.BS.AimMarkColor  = safeColor(G.BS.AimMarkColor,  Color3.fromRGB(255, 200, 0))
 -- Радиус захвата в пикселях. 600 = без ограничения.
-G.BS.AimFOV        = G.BS.AimFOV or 160
+G.BS.AimFOV        = tonumber(G.BS.AimFOV) or 160
+G.BS.AimFOVShow    = G.BS.AimFOVShow ~= false
+G.BS.AimFOVColor   = safeColor(G.BS.AimFOVColor, Color3.fromRGB(255, 255, 255))
 -- ОТКУДА СЧИТЫВАЕТСЯ НАПРАВЛЕНИЕ ВЫСТРЕЛА:
 --   "camera" (по умолчанию) — от камеры, как стреляет сама игра;
 --   "head"   — от головы персонажа;
@@ -326,8 +328,8 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 31 then
-    G.BS.CfgV      = 31
+if G.BS.CfgV ~= 32 then
+    G.BS.CfgV      = 32
     -- АИМЛОК РАБОТАЕТ ВСЕГДА, а не только пока зажата ЛКМ
     -- (жалоба: «аймлок не работает, только когда я стреляю»).
     G.BS.AimLockFireOnly = false
@@ -352,7 +354,8 @@ if G.BS.CfgV ~= 31 then
     G.BS.NoiseLife  = 2.2
     G.BS.ShowSpecialRole = true
     G.BS.Hud        = true
-    G.BS.QuickPanel = true     -- быстрая панель под HUD
+    G.BS.AimFOV     = 160      -- круг аима (ПОВ), px
+    G.BS.AimFOVShow = true
     G.BS.AimChain  = true
     G.BS.AimFreePart = true
     G.BS.NoCooldown = true
@@ -992,6 +995,37 @@ local function hideOverlay()
     if NameLabel then NameLabel.Visible = false end
 end
 
+local function drawFOV()
+    -- КРУГ АЙМА (ПОВ). Показывает радиус, внутри которого скрипт видит
+    -- цель: игрок в круге - аим/выстрел в него, вне круга - не трогаем.
+    local on = (G.BS.AimFOVShow ~= false)
+        and (G.BS.AimLock ~= false or G.BS.BulletSwap ~= false)
+    if not on then
+        for i = 1, FOV_N do
+            local s = FOVSegs[i]
+            if s then s.Visible = false end
+        end
+        return
+    end
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    ensureOverlay()
+    local vp = cam.ViewportSize
+    local cx, cy = vp.X * 0.5, vp.Y * 0.5
+    local r = tonumber(G.BS.AimFOV) or 160
+    if r < 10 then r = 10 end
+    if r > 900 then r = 900 end
+    local col = safeColor(G.BS.AimFOVColor, Color3.new(1, 1, 1))
+    for i = 1, FOV_N do
+        local a1 = (i - 1) / FOV_N * math.pi * 2
+        local a2 = i / FOV_N * math.pi * 2
+        local from = Vector2.new(cx + math.cos(a1) * r, cy + math.sin(a1) * r)
+        local to   = Vector2.new(cx + math.cos(a2) * r, cy + math.sin(a2) * r)
+        local seg  = FOVSegs[i]
+        if seg then placeSeg(seg, from, to, 2, col, 0.35) end
+    end
+end
+
 local function drawTarget(plr)
     ensureOverlay()
     if not plr then
@@ -1476,18 +1510,31 @@ local function ensureHud()
     gui.DisplayOrder         = 10
     local okP = pcall(function() gui.Parent = game:GetService("CoreGui") end)
     if not okP then return false end
+
+    -- ФОН ПОД HUD (по просьбе): полупрозрачная плашка, а не голая строка.
+    local okBg, bg = pcall(function() return Instance.new("Frame") end)
+    if okBg and bg then
+        bg.Name                 = "BS_HudBg"
+        bg.BackgroundColor3     = Color3.fromRGB(8, 8, 12)
+        bg.BackgroundTransparency = 0.45
+        bg.BorderSizePixel      = 0
+        bg.Position             = UDim2.new(0, 4, 0, 4)
+        bg.Size                 = UDim2.fromOffset(660, 46)
+        bg.Parent               = gui
+    end
+
     local okT, t = pcall(function() return Instance.new("TextLabel") end)
     if not okT or not t then return false end
     t.Name             = "BS_HudText"
-    t.BackgroundColor3 = Color3.new(0, 0, 0)
-    t.BackgroundTransparency = 0.55
+    t.BackgroundTransparency = 1
     t.TextColor3       = Color3.new(0.95, 0.95, 1)
-    t.Size             = UDim2.fromOffset(560, 20)
-    t.Position         = UDim2.new(0, 10, 0, 8)
+    t.Size             = UDim2.fromOffset(640, 38)
+    t.Position         = UDim2.new(0, 12, 0, 7)
     t.Font             = Enum.Font.Code
-    t.TextSize         = 13
+    t.TextSize         = 12
+    t.TextWrapped      = true
     t.TextXAlignment   = Enum.TextXAlignment.Left
-    t.TextYAlignment   = Enum.TextYAlignment.Center
+    t.TextYAlignment   = Enum.TextYAlignment.Top
     t.Parent           = gui
     hudGui, hudLabel = gui, t
     return true
@@ -1496,9 +1543,17 @@ end
 local function updateHud(now)
     if not G.BS.Hud then
         if hudLabel then hudLabel.Visible = false end
+        if hudGui then
+            local bg = hudGui:FindFirstChild("BS_HudBg")
+            if bg then bg.Visible = false end
+        end
         return
     end
     if not ensureHud() then return end
+    if hudGui then
+        local bg = hudGui:FindFirstChild("BS_HudBg")
+        if bg then bg.Visible = true end
+    end
     if now - lastHud < 0.2 then return end
     lastHud = now
 
@@ -1524,9 +1579,12 @@ local function updateHud(now)
         tgt = pre.part.Name .. " (" .. math.floor(d + 0.5) .. " st)"
         if pre.wallPast then tgt = tgt .. " [за стеной]" end
     end
-    local line = string.format("[BS] роль: %s | фаза: %s | заряды: %s | оружие: %s | цель: %s",
+    local dn = "?"
+    if G.BS.DanceName then pcall(function() dn = G.BS.DanceName() end) end
+    local line = string.format(
+        "[BS] роль: %s | фаза: %s | заряды: %s | оружие: %s\nцель: %s | танец: %s",
         me, tostring(G.BS.RoundPhase or "?"), charges,
-        tool and tool.Name or "нет", tgt)
+        tool and tool.Name or "нет", tgt, dn)
     hudLabel.Text = line
     hudLabel.Visible = true
 end
@@ -1784,6 +1842,9 @@ dance.next = function(step)
     end
     dance.idx = (dance.idx + (step or 1)) % #DANCES + 1
     local d = DANCES[dance.idx]
+    -- СРАЗУ ВКЛЮЧАЕМ: нажал «следующий танец» - он и заиграл.
+    dance.on = true
+    G.BS.DanceOn = true
     if dance.pick then pcall(dance.pick, d.id, d.label) end
     if danceDD then
         pcall(function() danceDD:SetValue(dance.labels()[dance.idx]) end)
@@ -2191,6 +2252,22 @@ local function pickDance(id, label)
 end
 dance.pick = pickDance
 
+-- Имя текущего танца для HUD (updateHud объявлен раньше dance, поэтому
+-- он зовёт эту функцию через G.BS, а не через локальную переменную).
+G.BS.DanceName = function()
+    local nm
+    if dance.emote then
+        nm = "эмоут " .. tostring(dance.emote)
+    elseif dance.id then
+        nm = tostring(dance.label) .. " …" .. string.sub(tostring(dance.id), -5)
+    else
+        nm = tostring(dance.label or "?")
+        if nm == "" then nm = "?" end
+    end
+    if dance.on then return nm end
+    return "выкл (" .. nm .. ")"
+end
+
 -- КАЖДЫЙ КАДР: ассетный трек сам играет, а спин/покачивание крутим
 -- сами через PivotTo (дельта угла, чтобы не сбивать направление).
 -- СПИН БОТ. Отличия от прежней версии, из-за
@@ -2540,18 +2617,32 @@ local lastEventsDraw = 0
 updateEvents = function(now)
     if not G.BS.EventsOn then
         if eventsLabel then eventsLabel.Visible = false end
+        local bg = hudGui and hudGui:FindFirstChild("BS_EventsBg")
+        if bg then bg.Visible = false end
         return
     end
     if now - lastEventsDraw < 0.25 then return end
     lastEventsDraw = now
     if not ensureHud() then return end
+    local bg = hudGui and hudGui:FindFirstChild("BS_EventsBg")
     if not eventsLabel then
         local ok, t = pcall(function()
+            -- фон под ленту событий
+            local f = Instance.new("Frame")
+            f.Name = "BS_EventsBg"
+            f.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+            f.BackgroundTransparency = 0.5
+            f.BorderSizePixel = 0
+            f.Position = UDim2.new(0, 4, 0, 54)
+            f.Size = UDim2.fromOffset(660, 108)
+            f.Visible = false
+            f.Parent = hudGui
+
             local x = Instance.new("TextLabel")
             x.Name = "BS_Events"
             x.BackgroundTransparency = 1
-            x.Size = UDim2.fromOffset(560, 92)
-            x.Position = UDim2.new(0, 10, 0, 30)
+            x.Size = UDim2.fromOffset(640, 100)
+            x.Position = UDim2.new(0, 12, 0, 58)
             x.Font = Enum.Font.Code
             x.TextSize = 12
             x.TextColor3 = Color3.new(0.85, 0.9, 1)
@@ -2563,14 +2654,21 @@ updateEvents = function(now)
         end)
         if not ok or not t then return end
         eventsLabel = t
+        bg = hudGui and hudGui:FindFirstChild("BS_EventsBg")
     end
     local lines = {}
     for i = 1, #EVENTS do
         local p = string.find(EVENTS[i], "|", 1, true)
         if p then lines[#lines + 1] = string.sub(EVENTS[i], p + 1) end
     end
+    if #lines == 0 then
+        eventsLabel.Visible = false
+        if bg then bg.Visible = false end
+        return
+    end
     eventsLabel.Text = table.concat(lines, "\n")
     eventsLabel.Visible = true
+    if bg then bg.Visible = true end
 end
 
 -- ============================================================
@@ -3147,21 +3245,20 @@ local function computeBulletPreShot()
     -- первую цель по экранному расстоянию. Список нужен ещё и хуку
     -- (подмена патрона), и аимлоку - раньше у каждого была своя
     -- логика выбора, из-за чего они целились в разных людей.
-    local CONE = math.max(220, math.floor(cam.ViewportSize.Y * 0.35))
-    local CONE2 = CONE * CONE
+    -- ПОВ: КРУГ АИМА. Цель берём только внутри круга (G.BS.AimFOV):
+    -- игрок вошёл в круг - аимлок/выстрел работают, вышел - не трогаем.
+    -- 600 и больше = без ограничения (весь экран).
+    local FOV = tonumber(G.BS.AimFOV) or 160
+    local UNLIM = FOV >= 600
+    local FOV2 = FOV * FOV
     buildList(cam, myRoot)
 
-    -- первая цель в широком конусе, иначе просто первая в списке
     local best, bestChar
     for _, it in ipairs(bulletList) do
-        if it.screen <= CONE2 then
+        if UNLIM or it.screen <= FOV2 then
             best, bestChar = it.part, it.char
             break
         end
-    end
-    if not best then
-        local first = bulletList[1]
-        if first then best, bestChar = first.part, first.char end
     end
     bulletListTarget = best
 
@@ -4289,6 +4386,9 @@ local conn = RunService.RenderStepped:Connect(function()
     -- подсветка текущей цели
     pcall(updateTargetMark)
 
+    -- круг аима (ПОВ): видно, в каком радиусе скрипт видит цель
+    pcall(drawFOV)
+
     -- точка прицеливания (видно, куда реально летит патрон)
     if G.BS.AimDot then pcall(updateAimDot) end
 
@@ -4440,7 +4540,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.14",
+    LoadingSubtitle = "ESP + Aim + Танец v11.15",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -4686,7 +4786,7 @@ AI.CreateToggle({
     end,
 })
 AI.CreateToggle({
-    Name = "ПОВ: камера доворачивается",
+    Name = "Камера доворачивается (аимлок)",
     CurrentValue = G.BS.AimLockTurn ~= false,
     Callback = function(v) G.BS.AimLockTurn = v end,
 })
@@ -4705,8 +4805,17 @@ AI.CreateToggle({
     end,
 })
 
--- Секция «Расширитель хитбокса» удалена: прозрачные CanQuery-части
--- видны только клиенту, а урон считает сервер (Config.Combat).
+AI.CreateSection("Круг аима (ПОВ)")
+-- ПОВ = круг вокруг прицела. Внутри круга скрипт видит цель и стреляет,
+-- вне круга - не трогает. 600 px = без ограничения (весь экран).
+AI.CreateSlider({ Name = "Радиус круга (FOV)", Flag = "BS_AimFOV",
+    Range = {40, 600}, Increment = 10, CurrentValue = G.BS.AimFOV,
+    Suffix = " px", Callback = function(v)
+        G.BS.AimFOV = v
+    end })
+AI.CreateToggle({ Name = "Показывать круг аима",
+    CurrentValue = G.BS.AimFOVShow ~= false,
+    Callback = function(v) G.BS.AimFOVShow = v end })
 
 -- Секция «Цель» («Кого целить», «Приоритет», «Радиус захвата») и
 -- пикеры «Цвет: захват цели» / «Цвет метки» удалены по просьбе.
@@ -4761,25 +4870,20 @@ DN.CreateButton({ Name = "Предыдущий танец", Callback = function(
     pcall(dance.next, -1)
 end })
 
--- Выпадающий список - необязательный: в сборке Rayfield игрока он не
--- создался (ошибок GUI=2), поэтому основной выбор - кнопки выше.
-danceDD = DN.CreateDropdown({ Name = "Какой танец (список)", Flag = "BS_DancePick",
-    Options = DANCE_PLACEHOLDER,
-    CurrentValue = DANCE_PLACEHOLDER[1],
-    Callback = function(v)
-        pcall(function()
-            local idx = DANCE_PLACEHOLDER
-            for i, o in ipairs(dance.labels()) do
-                if o == v then idx = i break end
-            end
-            if type(idx) == "number" then
-                local d = DANCES[idx]
-                if d then pcall(pickDance, d.id, d.label) end
-            else
-                pcall(pickDance, nil, v)
-            end
-        end)
-    end })
+-- Выпадающий список УБРАН: в сборке Rayfield игрока он не создаётся
+-- (в поле навсегда остаётся «ищу танцы в игре…»). Выбор - кнопками,
+-- название текущего танца видно в HUD и в ленте событий.
+DN.CreateButton({ Name = "СПИСОК ТАНЦЕВ (в консоль)", Callback = function()
+    pcall(function()
+        print("[BS DANCE] всего танцев: " .. #DANCES)
+        for i = 1, #DANCES do
+            local d = DANCES[i]
+            print("  " .. i .. ") " .. tostring(d.label)
+                .. "  (" .. tostring(d.id or d.emote) .. ")")
+        end
+    end)
+    addEvent("список танцев выведен в консоль")
+end })
 DN.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
     Range = {10, 200}, Increment = 5, CurrentValue = G.BS.SpinSpeed,
     Suffix = " °/с", Callback = function(v)
@@ -4788,111 +4892,6 @@ DN.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
     end })
 -- Тумблер "Спин только стоя" удалён по просьбе: спин крутит и на ходу,
 -- и стоя (движение не мешает - модель просто вращается вокруг корня).
--- ============================================================
---  БЫСТРАЯ ПАНЕЛЬ В ИГРЕ (GUI под HUD)
--- ============================================================
--- Компактные кнопки-переключатели прямо на экране: не нужно каждый раз
--- открывать меню Rayfield. Зелёные - включено, тёмные - выключено.
-local qpItems = {}
-local qpFrame = nil
-
-local function buildQuickPanel()
-    if G.BS.QuickPanel == false then return end
-    pcall(ensureHud)
-    if not hudGui then return end
-    local old = hudGui:FindFirstChild("BS_QuickPanel")
-    if old then pcall(function() old:Destroy() end) end
-
-    qpFrame = Instance.new("Frame")
-    qpFrame.Name                 = "BS_QuickPanel"
-    qpFrame.BackgroundColor3     = Color3.fromRGB(15, 15, 18)
-    qpFrame.BackgroundTransparency = 0.35
-    qpFrame.BorderSizePixel      = 0
-    qpFrame.Position             = UDim2.new(0, 10, 0, 32)
-    qpFrame.Size                 = UDim2.fromOffset(456, 28)
-    qpFrame.Parent               = hudGui
-
-    local lay = Instance.new("UIListLayout")
-    lay.FillDirection     = Enum.FillDirection.Horizontal
-    lay.HorizontalAlignment = Enum.HorizontalAlignment.Left
-    lay.VerticalAlignment = Enum.VerticalAlignment.Center
-    lay.Padding           = UDim.new(0, 4)
-    lay.SortOrder         = Enum.SortOrder.LayoutOrder
-    lay.Parent            = qpFrame
-
-    local defs = {
-        { "АИМ",      68, function() return G.BS.BulletSwap == true end,
-          function(v) pcall(setBulletSwap, v) end },
-        { "АИМЛОК",   68, function() return G.BS.AimLock == true end,
-          function(v)
-              G.BS.AimLock = v
-              if v then bindAimLockStep() end
-          end },
-        { "ПОВ",      58, function() return G.BS.AimLockTurn ~= false end,
-          function(v) G.BS.AimLockTurn = v end },
-        { "ТАНЕЦ",    68, function() return dance.on == true end,
-          function(v) pcall(setDance, v) end },
-        { "СПИН",     62, function() return dance.spin == true end,
-          function(v) pcall(SPIN.set, v) end },
-        { "ТАНЕЦ →",  78, nil, function() pcall(dance.next, 1) end },
-        { "МЕНЮ",     62, nil, function()
-              pcall(function() Window:Toggle() end)
-          end },
-    }
-
-    for i = 1, #defs do
-        local d = defs[i]
-        local b = Instance.new("TextButton")
-        b.Name               = "BS_Qp" .. i
-        b.LayoutOrder        = i
-        b.Size               = UDim2.fromOffset(d[2], 24)
-        b.BackgroundColor3   = Color3.fromRGB(35, 35, 42)
-        b.BorderSizePixel    = 0
-        b.TextColor3         = Color3.fromRGB(225, 225, 235)
-        b.Font               = Enum.Font.Code
-        b.TextSize           = 12
-        b.Text               = d[1]
-        b.AutoButtonColor    = false
-        b.Parent             = qpFrame
-        b.MouseButton1Click:Connect(function()
-            local now = true
-            if d[3] then
-                local okOn, on = pcall(d[3])
-                now = not (okOn and on)
-            end
-            pcall(d[4], now)
-        end)
-        qpItems[#qpItems + 1] = { btn = b, get = d[3] }
-    end
-
-    -- обновляем подсветку кнопок (в т.ч. когда переключили из меню)
-    local acc = 0
-    local connQp
-    connQp = RunService.Heartbeat:Connect(function(dt)
-        if STOPPED or not qpFrame or not qpFrame.Parent then
-            pcall(function() connQp:Disconnect() end)
-            return
-        end
-        acc = acc + (dt or 0)
-        if acc < 0.25 then return end
-        acc = 0
-        for i = 1, #qpItems do
-            local it = qpItems[i]
-            if it.get then
-                local on = false
-                pcall(function() on = it.get() end)
-                if on then
-                    it.btn.BackgroundColor3 = Color3.fromRGB(28, 125, 58)
-                else
-                    it.btn.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
-                end
-            end
-        end
-    end)
-end
-
-buildQuickPanel()
-
 refreshDanceDropdown()
 end   -- конец buildGui
 
@@ -4969,7 +4968,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.14 остановлен")
+    print("[BS HUB] v11.15 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -5044,7 +5043,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.14 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.15 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
