@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.16
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.17
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -35,6 +35,15 @@
 
 local G = getgenv()
 G.BS = G.BS or {}
+-- Ускоритель по Левому Shift удалён в v11.17. Флаг гасим явно:
+-- InputBegan-хэндлеры предыдущего запуска читают именно G.BS.SpeedKey,
+-- и без этого Shift продолжал бы разгонять персонажа после перезапуска.
+G.BS.SpeedKey = false
+G.BS.SpeedMul  = nil
+-- Старые прыжковые хэндлеры v11.16 читают G.BS.JumpBoost. Гасим его,
+-- чтобы после перезапуска поверх старой версии рывок не срабатывал
+-- дважды. Новый флаг - JumpBoostV2.
+G.BS.JumpBoost = false
 
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -178,14 +187,13 @@ G.BS.HitMark      = G.BS.HitMark ~= false
 G.BS.HitMarkColor = safeColor(G.BS.HitMarkColor, Color3.new(1, 0.25, 0.25))
 G.BS.HitMarkLife  = tonumber(G.BS.HitMarkLife) or 0.25
 G.BS.EventsOn     = G.BS.EventsOn ~= false
--- УСКОРЕНИЕ ПО КЛАВИШЕ: держишь Левый Shift - скорость выше.
-G.BS.SpeedKey = G.BS.SpeedKey ~= false
 G.BS.SpinSpeed = tonumber(G.BS.SpinSpeed) or 50
 G.BS.SpinOnlyStill = nil   -- тумблер удалён: спин крутит и на ходу
 G.BS.AimFireMode   = G.BS.AimFireMode ~= false  -- кнопка "держишь пушку"
-G.BS.SpeedMul = tonumber(G.BS.SpeedMul) or 2
 -- УСКОРЕНИЕ В ПРЫЖКЕ: при каждом прыжке кратковременный рывок.
-G.BS.JumpBoost     = G.BS.JumpBoost ~= false
+-- Ускоритель по Shift удалён по просьбе. V2 - чтобы старые хэндлеры
+-- (они читают JumpBoost) не срабатывали вместе с новым.
+G.BS.JumpBoostV2   = G.BS.JumpBoostV2 ~= false
 G.BS.JumpBoostMul  = tonumber(G.BS.JumpBoostMul) or 1.7
 G.BS.JumpBoostTime = tonumber(G.BS.JumpBoostTime) or 0.8
 -- Сдвиг времени выстрела в ремоуте (аргумент №5) вперёд, чтобы
@@ -347,8 +355,6 @@ if G.BS.CfgV ~= 32 then
     G.BS.SyncTarget    = true
     G.BS.AimLockListTarget = false
     G.BS.SpinSpeed = 50        -- оборотов/с по формуле спина
-    G.BS.SpeedKey = true
-    G.BS.SpeedMul = 2
     G.BS.DanceOn   = false
     G.BS.Spin      = false
     G.BS.Sway      = false
@@ -2685,75 +2691,19 @@ local function roleFromTool(plr)
 end
 
 -- ============================================================
---  УСКОРЕНИЕ ПО КЛАВИШЕ
--- ============================================================
--- Пока держишь Левый Shift (или ПКМ - как удобнее), скорость
--- персонажа выше. Обычная скорость 16 (это видно в игре:
--- Humanoid WalkSpeed = 16), множитель по умолчанию 2.
--- Скорость восстанавливается при отпускании клавиши и после смерти,
--- чтобы не остаться с «быстрым» персонажем после респавна.
-local speedState = { on = false, base = nil, hum = nil }
-
-local function applySpeed(mul)
-    local ch = LP and LP.Character
-    if not ch then return end
-    local hum = ch:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
-    if speedState.hum ~= hum then
-        speedState.hum = hum
-        speedState.base = hum.WalkSpeed
-    end
-    if speedState.base == nil then speedState.base = hum.WalkSpeed end
-    hum.WalkSpeed = speedState.base * mul
-end
-
-local function setSpeed(on)
-    on = on and true or false
-    if speedState.on == on then return end
-    speedState.on = on
-    if on then
-        pcall(applySpeed, tonumber(G.BS.SpeedMul) or 2)
-    else
-        local hum = speedState.hum
-        if hum and hum.Parent and speedState.base then
-            pcall(function() hum.WalkSpeed = speedState.base end)
-        end
-        speedState.hum, speedState.base = nil, nil
-    end
-end
-
-local function hookSpeedKey()
-    local okUIS, uis = pcall(function() return game:GetService("UserInputService") end)
-    if not (okUIS and uis) then return end
-    uis.InputBegan:Connect(function(k, gpe)
-        if gpe or not G.BS.SpeedKey then return end
-        if k.KeyCode == Enum.KeyCode.LeftShift then pcall(setSpeed, true) end
-    end)
-    uis.InputEnded:Connect(function(k, gpe)
-        if gpe then return end
-        if k.KeyCode == Enum.KeyCode.LeftShift then pcall(setSpeed, false) end
-    end)
-    -- если клавишу отпустили, а скрипт сняли - вернуть скорость
-    LP.CharacterAdded:Connect(function()
-        speedState.hum, speedState.base = nil, nil
-        task.wait(0.3)
-        if speedState.on then pcall(applySpeed, tonumber(G.BS.SpeedMul) or 2) end
-    end)
-end
-
--- ============================================================
 --  УСКОРЕНИЕ В ПРЫЖКЕ
 -- ============================================================
--- По просьбе: при каждом прыжке персонаж получает рывок.
--- WalkSpeed умножается на JumpBoostMul на JumpBoostTime секунд, плюс
--- небольшой горизонтальный импульс по направлению движения - тогда
--- ускорение видно сразу, а не только в цифре WalkSpeed.
+-- Ускоритель по Левому Shift удалён по просьбе. Остался только
+-- рывок при каждом прыжке: WalkSpeed умножается на JumpBoostMul на
+-- JumpBoostTime секунд, плюс небольшой горизонтальный импульс по
+-- направлению движения - тогда ускорение видно сразу.
+local speedState = { base = nil, hum = nil }
+
 function speedState.applyWalk(hum, base)
     if not hum or not hum.Parent then return end
     local m = 1
-    if speedState.on then m = tonumber(G.BS.SpeedMul) or 2 end
     if os.clock() < (G.BS._jumpUntil or 0) then
-        m = m * (tonumber(G.BS.JumpBoostMul) or 1.7)
+        m = tonumber(G.BS.JumpBoostMul) or 1.7
     end
     pcall(function() hum.WalkSpeed = base * m end)
 end
@@ -2767,7 +2717,7 @@ function speedState.hookJump()
             speedState.base = hum.WalkSpeed
         end
         hum.Jumping:Connect(function(active)
-            if not active or G.BS.JumpBoost == false then return end
+            if not active or G.BS.JumpBoostV2 == false then return end
             if not hum.Parent or hum.Health <= 0 then return end
             local base = speedState.base or hum.WalkSpeed
             local t = tonumber(G.BS.JumpBoostTime) or 0.8
@@ -4850,12 +4800,12 @@ end)
 -- Всё создание меню завёрнуто в функцию: в главном блоке скрипта
 -- уже упёрлись в лимит локальных переменных Lua (200), а локальные
 -- переменные из buildGui не нужны снаружи. Всё, что нужно дальше
--- (refreshDanceDropdown, bindAimLockStep, setSpeed), объявлено выше.
+-- (refreshDanceDropdown, bindAimLockStep), объявлено выше.
 local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.16",
+    LoadingSubtitle = "ESP + Aim + Танец v11.17",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -5065,25 +5015,12 @@ end })
 -- комментарий в конце вкладки AIM): консоль забивалась сотнями строк.
 -- Функции остались в файле и включаются из консоли.
 
--- ======================= СКОРОСТЬ =======================
-TB.CreateSection("Скорость")
-TB.CreateToggle({ Name = "Ускорение по Левому Shift", Flag = "BS_SpeedKey",
-    CurrentValue = G.BS.SpeedKey,
-    Callback = function(v)
-        G.BS.SpeedKey = v
-        if not v then pcall(setSpeed, false) end
-    end })
-TB.CreateSlider({ Name = "Множитель скорости", Flag = "BS_SpeedMul",
-    Range = {1.2, 4}, Increment = 0.1,
-    CurrentValue = tonumber(G.BS.SpeedMul) or 2,
-    Suffix = " x", Callback = function(v)
-        G.BS.SpeedMul = v
-        if speedState.on then pcall(applySpeed, v) end
-    end })
--- УСКОРЕНИЕ В ПРЫЖКЕ (по просьбе): каждый прыжок даёт рывок.
-TB.CreateToggle({ Name = "Ускорение в прыжке", Flag = "BS_JumpBoost",
-    CurrentValue = G.BS.JumpBoost ~= false,
-    Callback = function(v) G.BS.JumpBoost = v end })
+-- ======================= ПРЫЖОК =======================
+-- Ускоритель по Shift удалён: остался только рывок в прыжке.
+TB.CreateSection("Прыжок")
+TB.CreateToggle({ Name = "Ускорение в прыжке", Flag = "BS_JumpBoostV2",
+    CurrentValue = G.BS.JumpBoostV2 ~= false,
+    Callback = function(v) G.BS.JumpBoostV2 = v end })
 TB.CreateSlider({ Name = "Множитель прыжка", Flag = "BS_JumpBoostMul",
     Range = {1.1, 3}, Increment = 0.1,
     CurrentValue = tonumber(G.BS.JumpBoostMul) or 1.7,
@@ -5266,7 +5203,15 @@ G.BS_Stop = function()
     -- танец: снимаем свой трек, возвращаем походку и AutoRotate
     pcall(stopDance, true)
     pcall(SPIN.stop)
-    pcall(setSpeed, false)
+    -- вернуть скорость, если скрипт сняли в момент прыжкового рывка
+    pcall(function()
+        local hum = speedState.hum
+        if hum and hum.Parent and speedState.base then
+            hum.WalkSpeed = speedState.base
+        end
+        speedState.hum, speedState.base = nil, nil
+        G.BS._jumpUntil = 0
+    end)
     pcall(function() RunService:UnbindFromRenderStep("BS_AimLock") end)
     AIM_STEP_BOUND = false
     if connDanceKey then pcall(function() connDanceKey:Disconnect() end) end
@@ -5303,7 +5248,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.16 остановлен")
+    print("[BS HUB] v11.17 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -5335,7 +5280,6 @@ task.spawn(function()
     -- сразу печатаем список в консоль. Сам танец не включаем -
     -- включается галочкой или клавишей F7.
     hookDanceKey()
-    pcall(hookSpeedKey)
     pcall(speedState.hookJump)
     bindAimLockStep()
     -- СКАНЕРЫ ОСТАВЛЕНЫ В КОНСОЛИ (кнопки в GUI убраны по просьбе):
@@ -5379,7 +5323,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.16 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.17 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
