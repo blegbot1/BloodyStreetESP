@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.21
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.22
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -206,6 +206,18 @@ G.BS.JumpBoostTime = tonumber(G.BS.JumpBoostTime) or 0.8
 -- По умолчанию 1.5 x — прыжок сразу выше; ползунком до 10 x.
 G.BS.JumpPowerOn   = G.BS.JumpPowerOn ~= false
 G.BS.JumpPowerMul  = tonumber(G.BS.JumpPowerMul) or 1.5
+-- МОНЕТЫ (Workspace.CoinPickups). Сбор через ремоут игры. Если точный
+-- ремоут неизвестен — включи «НАУЧИТЬ СБОР МОНЕТ» и подбери одну
+-- монету руками: скрипт запомнит ремоут и аргументы.
+G.BS.CoinAuto      = G.BS.CoinAuto ~= false
+G.BS.CoinLearn     = G.BS.CoinLearn or false
+G.BS.CoinRange     = tonumber(G.BS.CoinRange) or 600
+G.BS.CoinScanEvery = tonumber(G.BS.CoinScanEvery) or 0.5
+-- ТЕЛЕПОРТ-ВЫСТРЕЛ ЧЕРЕЗ СТЕНЫ. На время выстрела персонаж окажется
+-- за спиной/над целью (для сервера), потом вернётся. Требует аимлока:
+-- камера должна смотреть на цель, иначе сервер может отклонить выстрел.
+G.BS.GhostShot     = G.BS.GhostShot or false
+G.BS.GhostHold     = tonumber(G.BS.GhostHold) or 0.03
 -- Сдвиг времени выстрела в ремоуте (аргумент №5) вперёд, чтобы
 -- сервер считал, что WEAPON_COOLDOWN уже прошёл.
 G.BS.ShotTimeHack = G.BS.ShotTimeHack == true
@@ -521,6 +533,120 @@ end
 local Remotes = findRemotes()
 local netConns = {}
 local dmgFmt = {}
+
+-- ============================================================
+--  МОНЕТЫ: авто-сбор через ремоут игры
+-- ============================================================
+local COIN = {
+    remote = nil, args = nil, argIdx = nil, argType = nil,
+    learned = false, lastScan = 0, seen = {},
+}
+G.BS.Coins = COIN
+
+function COIN.findFolder()
+    local f = workspace:FindFirstChild("CoinPickups")
+    if f then return f end
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("Folder") and d.Name == "CoinPickups" then return d end
+    end
+    return nil
+end
+
+function COIN.findRemote()
+    if COIN.remote and COIN.remote.Parent then return COIN.remote end
+    local found
+    local function check(inst)
+        if not found and (inst:IsA("RemoteEvent") or inst:IsA("UnreliableRemoteEvent")) then
+            local n = string.lower(inst.Name)
+            if string.find(n, "coin", 1, true) or string.find(n, "pickup", 1, true)
+               or string.find(n, "collect", 1, true) then
+                found = inst
+            end
+        end
+    end
+    if Remotes then
+        for _, r in ipairs(Remotes:GetChildren()) do check(r) end
+    end
+    if not found then
+        for _, d in ipairs(game:GetDescendants()) do
+            check(d)
+            if found then break end
+        end
+    end
+    COIN.remote = found
+    return found
+end
+
+function COIN.collectOne(coin)
+    if not coin or not coin.Parent then return false end
+    local remote = COIN.remote or COIN.findRemote()
+    if not remote then return false end
+    local args
+    if COIN.args and COIN.argIdx == 0 then
+        -- игра сама определяет монету (например, по касанию) —
+        -- просто повторяем вызов без аргументов
+        pcall(function() remote:FireServer() end)
+        return true
+    elseif COIN.args and COIN.argIdx and COIN.argIdx > 0 and COIN.argIdx <= COIN.args.n then
+        args = {}
+        for i = 1, COIN.args.n do
+            if i == COIN.argIdx then
+                if COIN.argType == "position" then args[i] = coin.Position
+                elseif COIN.argType == "name" then args[i] = coin.Name
+                else args[i] = coin end
+            else
+                args[i] = COIN.args[i]
+            end
+        end
+    else
+        args = { coin }
+    end
+    pcall(function() remote:FireServer(table.unpack(args, 1, #args)) end)
+    return true
+end
+
+function COIN.scan()
+    local folder = COIN.findFolder()
+    if not folder then return 0 end
+    local n = 0
+    for _, coin in ipairs(folder:GetDescendants()) do
+        if coin:IsA("Model") and coin.Name == "CoinPickup" then
+            local now = os.clock()
+            local last = COIN.seen[coin]
+            if not last or (now - last) >= 5 then
+                COIN.seen[coin] = now
+                if COIN.collectOne(coin) then n = n + 1 end
+            end
+        end
+    end
+    return n
+end
+
+function COIN.autoTick(now)
+    if G.BS.CoinAuto == false then return end
+    if now - COIN.lastScan < (tonumber(G.BS.CoinScanEvery) or 0.5) then return end
+    COIN.lastScan = now
+    pcall(COIN.scan)
+end
+
+function COIN.scanRemotes()
+    print("[BS COIN] папка CoinPickups: " .. tostring(COIN.findFolder() ~= nil))
+    print("[BS COIN] выученный ремоут: " .. tostring(COIN.remote and COIN.remote:GetFullName() or "нет"))
+    local remote = COIN.findRemote()
+    print("[BS COIN] авто-найденный ремоут: " .. tostring(remote and remote:GetFullName() or "нет"))
+    if COIN.args then
+        print("[BS COIN] аргументы: n=" .. tostring(COIN.args.n)
+            .. " coinArgIdx=" .. tostring(COIN.argIdx) .. " type=" .. tostring(COIN.argType))
+    end
+    local folder = COIN.findFolder()
+    if folder then
+        local cnt = 0
+        for _, c in ipairs(folder:GetDescendants()) do
+            if c:IsA("Model") and c.Name == "CoinPickup" then cnt = cnt + 1 end
+        end
+        print("[BS COIN] монет найдено: " .. cnt)
+    end
+end
 
 -- ПОИСК РОЛИ.
 -- Раньше проверялся только фиксированный список ИМЁН атрибутов
@@ -4502,6 +4628,26 @@ local function computeBulletPreShot()
         end
     end
 
+    -- ТЕЛЕПОРТ-ВЫСТРЕЛ: если между нами и целью есть ЛЮБАЯ стена,
+    -- ставим точку вылета за спиной/над целью. Для сервера персонаж на
+    -- этот момент тоже окажется там (в ncWrapper).
+    local ghostPos, ghostCFrame = nil, nil
+    if G.BS.GhostShot and best and srcPos then
+        local toT = aimPos - srcPos
+        local lenG = toT.Magnitude
+        if lenG > 1 then
+            local okG, hitG = pcall(function()
+                WALLRAY.FilterDescendantsInstances = { LP.Character, best.Parent }
+                return workspace:Raycast(srcPos, toT, WALLRAY)
+            end)
+            if okG and hitG and hitG.Distance < lenG - 1.2 then
+                local behind = aimPos + toT.Unit * 5
+                ghostPos = behind + Vector3.new(0, 3, 0)
+                ghostCFrame = CFrame.lookAt(ghostPos, aimPos)
+            end
+        end
+    end
+
     bulletPreShot = {
         part = best,     -- цель (Instance)
         pos  = aimPos,   -- куда целимся
@@ -4510,6 +4656,8 @@ local function computeBulletPreShot()
         dir  = dir.Unit, -- направление
         onScreen = true,  -- цель выбирается всегда (триггер удалён)
         wallPast = wallPast,        -- точка вылета ЗА стеной
+        ghostPos = ghostPos,        -- точка за спиной/над целью
+        ghostCFrame = ghostCFrame,  -- CFrame для временного телепорта
     }
 end
 
@@ -5000,10 +5148,26 @@ local function ncFireWeapon(...)
         bits[#bits + 1] = "направление #" .. tostring(dirIdx)
     end
 
+    -- 1.5) ТЕЛЕПОРТ-ВЫСТРЕЛ: точка вылета за спиной/над целью.
+    -- Направление пересчитываем от НОВОЙ точки, иначе пуля пойдёт
+    -- по старому вектору и не попадёт с заспинной позиции.
+    if pre.ghostPos and posIdx and dirIdx and G.BS.GhostShot then
+        out[posIdx] = pre.ghostPos
+        local gd = pre.pos - pre.ghostPos
+        local glen = gd.Magnitude
+        if glen > 0.001 then
+            local gbase = dirLen or glen
+            if gbase < glen then gbase = glen end
+            out[dirIdx] = gd.Unit * gbase
+            replaced = true
+            bits[#bits + 1] = "точка вылета за спиной #" .. tostring(posIdx)
+        end
+    end
+
     -- 2) ТОЧКА ВЫЛЕТА. Сервер разрешает увести её на SHOT_ORIGIN_SLACK
     --    (14 студов). Если стена ближе этого - ставим точку ЗА стеной,
     --    и пуля начинается по ту сторону стены.
-    if posIdx then
+    if posIdx and not (pre.ghostPos and G.BS.GhostShot) then
         if pre.wallPast then
             out[posIdx] = pre.wallPast
             replaced = true
@@ -5244,6 +5408,46 @@ end
 -- Сам хук. Хот-путь максимально дешёвый: без ":"-вызовов и без pcall.
 local function ncWrapper(self, ...)
     local method = getnamecallmethod()
+    -- МОНЕТЫ: учим ремоут и аргументы, когда игрок подбирает монету.
+    if G.BS.CoinLearn and method == "FireServer" and typeof(self) == "Instance"
+       and (self:IsA("RemoteEvent") or self:IsA("UnreliableRemoteEvent")) then
+        local rawArgs = table.pack(...)
+        pcall(function()
+            local args = rawArgs
+            local idx, atype = nil, nil
+            for i = 1, args.n do
+                local v = args[i]
+                if typeof(v) == "Instance"
+                   and (string.find(string.lower(v.Name), "coin", 1, true)
+                        or string.find(string.lower(v.Name), "pickup", 1, true)) then
+                    idx, atype = i, "instance"; break
+                elseif typeof(v) == "Vector3" then
+                    idx, atype = i, "position"; break
+                elseif typeof(v) == "string" then
+                    idx, atype = i, "name"; break
+                end
+            end
+            if not idx then
+                local n = string.lower(self.Name)
+                if string.find(n, "coin", 1, true) or string.find(n, "pickup", 1, true)
+                   or string.find(n, "collect", 1, true) then
+                    idx, atype = 0, "remote-name"
+                end
+            end
+            if idx then
+                COIN.remote = self
+                COIN.args = args
+                COIN.argIdx = idx
+                COIN.argType = atype
+                COIN.learned = true
+                G.BS.CoinLearn = false
+                print("[BS COIN] выучил ремоут: " .. self:GetFullName()
+                    .. " | аргументов=" .. tostring(args.n)
+                    .. " | coinArgIdx=" .. tostring(idx)
+                    .. " | тип=" .. tostring(atype))
+            end
+        end)
+    end
     -- ТАНЦЫ: ловим анимации, которые игра грузит сама (эмоуты).
     -- Animator:LoadAnimation(Animation) и Humanoid:PlayAnimation(Animation)
     -- вызываются, когда открывают колесо эмоутов или включают танец -
@@ -5273,6 +5477,27 @@ local function ncWrapper(self, ...)
             if G.BS.BulletSwap then
                 local out, n = ncFireWeapon(...)
                 if out then
+                    local pre = bulletPreShot
+                    if pre and pre.ghostCFrame and G.BS.GhostShot then
+                        local ch = LP and LP.Character
+                        local root = ch and ch:FindFirstChild("HumanoidRootPart")
+                        if root then
+                            local oldCFrame = root.CFrame
+                            pcall(function() root.CFrame = pre.ghostCFrame end)
+                            local _, resR = pcall(function()
+                                return NC.orig(self, table.unpack(out, 1, n))
+                            end)
+                            local hold = tonumber(G.BS.GhostHold) or 0.03
+                            if hold > 0 then
+                                task.delay(hold, function()
+                                    pcall(function() root.CFrame = oldCFrame end)
+                                end)
+                            else
+                                pcall(function() root.CFrame = oldCFrame end)
+                            end
+                            return resR
+                        end
+                    end
                     return NC.orig(self, table.unpack(out, 1, n))
                 end
             end
@@ -5786,7 +6011,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны v11.21",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.22",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -6142,6 +6367,30 @@ PL.CreateSlider({ Name = "Сила прыжка (множитель)", Flag = "B
     Range = {1, 10}, Increment = 0.1,
     CurrentValue = tonumber(G.BS.JumpPowerMul) or 1.5,
     Suffix = " x", Callback = function(v) G.BS.JumpPowerMul = v end })
+PL.CreateToggle({ Name = "Стрельба через стены (телепорт за спину)",
+    Flag = "BS_GhostShot",
+    CurrentValue = G.BS.GhostShot == true,
+    Callback = function(v) G.BS.GhostShot = v end })
+PL.CreateSlider({ Name = "Удержание телепорта (с)", Flag = "BS_GhostHold",
+    Range = {0, 0.2}, Increment = 0.01,
+    CurrentValue = tonumber(G.BS.GhostHold) or 0.03,
+    Suffix = " s", Callback = function(v) G.BS.GhostHold = v end })
+
+PL.CreateSection("Монеты")
+PL.CreateToggle({ Name = "Авто-сбор монет", Flag = "BS_CoinAuto",
+    CurrentValue = G.BS.CoinAuto ~= false,
+    Callback = function(v) G.BS.CoinAuto = v end })
+PL.CreateButton({ Name = "СОБРАТЬ МОНЕТЫ СЕЙЧАС", Callback = function()
+    pcall(function() G.BS.CollectCoins() end)
+    notify("Монеты — смотри [BS COIN] в консоли", 4)
+end })
+PL.CreateButton({ Name = "НАУЧИТЬ СБОР МОНЕТ", Callback = function()
+    pcall(function() G.BS.LearnCoin() end)
+end })
+PL.CreateButton({ Name = "СКАНИРОВАТЬ МОНЕТЫ (в консоль)", Callback = function()
+    pcall(function() G.BS.CoinScan() end)
+    notify("Монеты — смотри [BS COIN] в консоли", 4)
+end })
 
 PL.CreateSection("Танец")
 dance.toggle = PL.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
@@ -6364,7 +6613,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.21 остановлен")
+    print("[BS HUB] v11.22 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -6398,6 +6647,13 @@ task.spawn(function()
     hookDanceKey()
     pcall(speedState.hookJump)
     bindAimLockStep()
+    -- МОНЕТЫ: фоновая проверка и вызов ремоута игры.
+    task.spawn(function()
+        while not STOPPED do
+            pcall(function() G.BS.Coins.autoTick(os.clock()) end)
+            task.wait(0.5)
+        end
+    end)
     -- СКАНЕРЫ ОСТАВЛЕНЫ В КОНСОЛИ (кнопки в GUI убраны по просьбе):
     --   getgenv().BS.ScanAll()      -- общая структура игры
     --   getgenv().BS.DeepScan()    -- модули, ремоуты, танцы
@@ -6414,6 +6670,16 @@ task.spawn(function()
     G.BS.SetRole     = ROLES.set
     G.BS.RoleSummary = ROLES.summary
     G.BS.ResetRoles  = ROLES.reset
+    -- Монеты и стрельба через стены:
+    --   getgenv().BS.CollectCoins()   -- собрать все монеты сейчас
+    --   getgenv().BS.CoinScan()       -- структура монет и ремоутов
+    --   getgenv().BS.LearnCoin()      -- запомнить ремоут сбора монеты
+    G.BS.CollectCoins = COIN.scan
+    G.BS.CoinScan     = COIN.scanRemotes
+    G.BS.LearnCoin    = function()
+        G.BS.CoinLearn = true
+        notify("Подбери одну монету руками — скрипт запомнит ремоут", 5)
+    end
     -- значения из сохранённого состояния -> состояние движка.
     -- ВАЖНО: делаем это ДО полного скана танцев, иначе require модулей
     -- мог задержать/подвесить задачу, и танец/спин не восстановились бы.
@@ -6448,7 +6714,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.21 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.22 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
