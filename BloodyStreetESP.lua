@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.20
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.21
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -202,6 +202,10 @@ G.BS.SpinOnlyStill = nil   -- тумблер удалён: спин крутит
 G.BS.JumpBoostV2   = G.BS.JumpBoostV2 ~= false
 G.BS.JumpBoostMul  = tonumber(G.BS.JumpBoostMul) or 1.7
 G.BS.JumpBoostTime = tonumber(G.BS.JumpBoostTime) or 0.8
+-- СИЛА ПРЫЖКА (высота): отдельный множитель для JumpPower/JumpHeight.
+-- По умолчанию 1.5 x — прыжок сразу выше; ползунком до 10 x.
+G.BS.JumpPowerOn   = G.BS.JumpPowerOn ~= false
+G.BS.JumpPowerMul  = tonumber(G.BS.JumpPowerMul) or 1.5
 -- Сдвиг времени выстрела в ремоуте (аргумент №5) вперёд, чтобы
 -- сервер считал, что WEAPON_COOLDOWN уже прошёл.
 G.BS.ShotTimeHack = G.BS.ShotTimeHack == true
@@ -2962,14 +2966,18 @@ local function roleFromTool(plr)
 end
 
 -- ============================================================
---  УСКОРЕНИЕ В ПРЫЖКЕ
+--  УСКОРЕНИЕ И СИЛА ПРЫЖКА
 -- ============================================================
 -- Ускоритель по Левому Shift удалён по просьбе. Остался только
 -- рывок при каждом прыжке: WalkSpeed умножается на JumpBoostMul на
 -- JumpBoostTime секунд, плюс небольшой горизонтальный импульс по
 -- направлению движения - тогда ускорение видно сразу.
+-- Отдельно есть СИЛА ПРЫЖКА: множитель JumpPower/JumpHeight (высота),
+-- ползунком до 10 x. База берётся от естественного значения игры.
 local speedState = { base = nil, hum = nil, jumpHum = nil, jumpConn = nil,
-                     active = false, conn = nil }
+                     active = false, conn = nil,
+                     jumpBasePower = nil, jumpBaseHeight = nil,
+                     jumpApplied = false }
 
 function speedState.restore()
     local hum = speedState.hum
@@ -2978,6 +2986,61 @@ function speedState.restore()
     end
     speedState.active = false
     G.BS._jumpUntil = 0
+end
+
+-- Вернуть JumpPower/JumpHeight к естественным значениям игры.
+function speedState.restoreJump()
+    local hum = speedState.hum
+    if not hum or not hum.Parent then return end
+    if speedState.jumpBasePower and speedState.jumpBasePower >= 1 then
+        pcall(function() hum.JumpPower = speedState.jumpBasePower end)
+    end
+    if speedState.jumpBaseHeight and speedState.jumpBaseHeight >= 1 then
+        pcall(function() hum.JumpHeight = speedState.jumpBaseHeight end)
+    end
+    speedState.jumpApplied = false
+end
+
+-- Поднимать высоту прыжка до нужного множителя. Вызывается каждый
+-- физический шаг: игра может сбрасывать значения обратно.
+function speedState.jumpPowerTick(hum)
+    if not hum or not hum.Parent or hum.Health <= 0 then return end
+    local on = G.BS.JumpPowerOn ~= false
+    local mul = tonumber(G.BS.JumpPowerMul) or 1.5
+    if mul < 1 then mul = 1 elseif mul > 10 then mul = 10 end
+    if not on or mul <= 1.001 then
+        -- буст выключен: вернуть игру исходные значения и запомнить
+        -- естественную базу, чтобы множитель считался от неё.
+        if speedState.jumpApplied then
+            speedState.restoreJump()
+        end
+        local jp = tonumber(hum.JumpPower) or 0
+        local jh = tonumber(hum.JumpHeight) or 0
+        if jp >= 1 then speedState.jumpBasePower = jp end
+        if jh >= 1 then speedState.jumpBaseHeight = jh end
+        return
+    end
+    -- базу берём только когда буст ещё не применён: иначе через
+    -- несколько кадров множитель считался бы от уже поднятого значения.
+    if not speedState.jumpBasePower or speedState.jumpBasePower < 1 then
+        local jp = tonumber(hum.JumpPower) or 0
+        speedState.jumpBasePower = (jp >= 1) and jp or 50
+    end
+    if not speedState.jumpBaseHeight or speedState.jumpBaseHeight < 1 then
+        local jh = tonumber(hum.JumpHeight) or 0
+        speedState.jumpBaseHeight = (jh >= 1) and jh or 7.2
+    end
+    local bp = speedState.jumpBasePower
+    local bh = speedState.jumpBaseHeight
+    local wantP = bp * mul
+    local wantH = bh * mul
+    if math.abs((tonumber(hum.JumpPower) or 0) - wantP) > 0.01 then
+        pcall(function() hum.JumpPower = wantP end)
+    end
+    if math.abs((tonumber(hum.JumpHeight) or 0) - wantH) > 0.01 then
+        pcall(function() hum.JumpHeight = wantH end)
+    end
+    speedState.jumpApplied = true
 end
 
 function speedState.stop()
@@ -2991,7 +3054,10 @@ function speedState.stop()
     speedState.jumpConn = nil
     speedState.jumpHum = nil
     speedState.restore()
+    speedState.restoreJump()
     speedState.hum, speedState.base = nil, nil
+    speedState.jumpBasePower, speedState.jumpBaseHeight = nil, nil
+    speedState.jumpApplied = false
 end
 
 -- РЫВОК ПРИ ПРЫЖКЕ. Главная ошибка старой версии: base запоминался
@@ -3007,11 +3073,13 @@ function speedState.hookJump()
         if STOPPED then return end
         local hum = speedState.hum
         if not hum or not hum.Parent or hum.Health <= 0 then return end
+        -- высота прыжка — независимо от горизонтального разгона
+        speedState.jumpPowerTick(hum)
         local now = os.clock()
         if speedState.active and now < (G.BS._jumpUntil or 0) then
             local base = speedState.base or 16
             local mul = tonumber(G.BS.JumpBoostMul) or 1.7
-            if mul < 1.1 then mul = 1.1 elseif mul > 3 then mul = 3 end
+            if mul < 1.1 then mul = 1.1 elseif mul > 10 then mul = 10 end
             pcall(function() hum.WalkSpeed = base * mul end)
         elseif speedState.active then
             local base = speedState.base or 16
@@ -3033,11 +3101,23 @@ function speedState.hookJump()
             speedState.hum = hum
             speedState.active = false
             speedState.base = nil
+            speedState.jumpBasePower = nil
+            speedState.jumpBaseHeight = nil
+            speedState.jumpApplied = false
             G.BS._jumpUntil = 0
         end
         if not speedState.active then
             local ws0 = tonumber(hum.WalkSpeed) or 0
             if ws0 >= 1 then speedState.base = ws0 end
+        end
+        -- запоминаем естественную высоту прыжка игры
+        if not speedState.jumpBasePower or speedState.jumpBasePower < 1 then
+            local jp = tonumber(hum.JumpPower) or 0
+            speedState.jumpBasePower = (jp >= 1) and jp or 50
+        end
+        if not speedState.jumpBaseHeight or speedState.jumpBaseHeight < 1 then
+            local jh = tonumber(hum.JumpHeight) or 0
+            speedState.jumpBaseHeight = (jh >= 1) and jh or 7.2
         end
         -- не подключаем второй Jumping к тому же гуманоиду (двойной
         -- импульс, если CharacterAdded сработал повторно)
@@ -3058,9 +3138,9 @@ function speedState.hookJump()
                 speedState.base = base
             end
             local t = tonumber(G.BS.JumpBoostTime) or 0.8
-            if t < 0.2 then t = 0.2 elseif t > 3 then t = 3 end
+            if t < 0.2 then t = 0.2 elseif t > 5 then t = 5 end
             local mul = tonumber(G.BS.JumpBoostMul) or 1.7
-            if mul < 1.1 then mul = 1.1 elseif mul > 3 then mul = 3 end
+            if mul < 1.1 then mul = 1.1 elseif mul > 10 then mul = 10 end
             G.BS._jumpUntil = os.clock() + t
             speedState.active = true
             pcall(function() hum.WalkSpeed = base * mul end)
@@ -5706,7 +5786,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны v11.20",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны v11.21",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -6043,10 +6123,25 @@ PL.CreateToggle({ Name = "Ускорение в прыжке", Flag = "BS_JumpBo
         -- сейчас активен - возвращаем базу; иначе WalkSpeed не трогаем.
         if not v and speedState.active then pcall(speedState.restore) end
     end })
-PL.CreateSlider({ Name = "Множитель прыжка", Flag = "BS_JumpBoostMul",
-    Range = {1.1, 3}, Increment = 0.1,
+PL.CreateSlider({ Name = "Разгон в прыжке", Flag = "BS_JumpBoostMul",
+    Range = {1.1, 10}, Increment = 0.1,
     CurrentValue = tonumber(G.BS.JumpBoostMul) or 1.7,
     Suffix = " x", Callback = function(v) G.BS.JumpBoostMul = v end })
+PL.CreateSlider({ Name = "Длительность разгона", Flag = "BS_JumpBoostTime",
+    Range = {0.2, 5}, Increment = 0.1,
+    CurrentValue = tonumber(G.BS.JumpBoostTime) or 0.8,
+    Suffix = " s", Callback = function(v) G.BS.JumpBoostTime = v end })
+PL.CreateToggle({ Name = "Усиленная сила прыжка (высота)", Flag = "BS_JumpPowerOn",
+    CurrentValue = G.BS.JumpPowerOn ~= false,
+    Callback = function(v)
+        G.BS.JumpPowerOn = v
+        -- сразу вернуть естественную высоту, не дожидаясь следующего шага
+        if not v then pcall(speedState.restoreJump) end
+    end })
+PL.CreateSlider({ Name = "Сила прыжка (множитель)", Flag = "BS_JumpPowerMul",
+    Range = {1, 10}, Increment = 0.1,
+    CurrentValue = tonumber(G.BS.JumpPowerMul) or 1.5,
+    Suffix = " x", Callback = function(v) G.BS.JumpPowerMul = v end })
 
 PL.CreateSection("Танец")
 dance.toggle = PL.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
@@ -6269,7 +6364,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.20 остановлен")
+    print("[BS HUB] v11.21 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -6353,7 +6448,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.20 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.21 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
