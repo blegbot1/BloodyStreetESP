@@ -3626,6 +3626,9 @@ function SUPPLY.refill(opts)
     end
 
     local nearRange = tonumber(opts.nearRange or G.BS.AmmoRange) or 25
+    -- Кнопка/авто-телепорт должны реально оказаться у ящика, а не
+    -- жать E с 20 студов: для forceTP считаем «рядом» максимум 8.
+    if opts.forceTP then nearRange = math.min(nearRange, 8) end
     local mustTP = dist > nearRange
     local allowTP = opts.forceTP == true or G.BS.AmmoTeleport ~= false
     if mustTP and not allowTP then
