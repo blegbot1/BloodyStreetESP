@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.17
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.17.1
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -35,7 +35,7 @@
 
 local G = getgenv()
 G.BS = G.BS or {}
--- Ускоритель по Левому Shift удалён в v11.17. Флаг гасим явно:
+-- Ускоритель по Левому Shift удалён в v11.17.1. Флаг гасим явно:
 -- InputBegan-хэндлеры предыдущего запуска читают именно G.BS.SpeedKey,
 -- и без этого Shift продолжал бы разгонять персонажа после перезапуска.
 G.BS.SpeedKey = false
@@ -2710,6 +2710,7 @@ end
 
 function speedState.hookJump()
     local function bind(ch)
+        if STOPPED then return end
         local hum = ch and ch:WaitForChild("Humanoid", 10)
         if not hum then return end
         if speedState.hum ~= hum then
@@ -2717,7 +2718,7 @@ function speedState.hookJump()
             speedState.base = hum.WalkSpeed
         end
         hum.Jumping:Connect(function(active)
-            if not active or G.BS.JumpBoostV2 == false then return end
+            if STOPPED or not active or G.BS.JumpBoostV2 == false then return end
             if not hum.Parent or hum.Health <= 0 then return end
             local base = speedState.base or hum.WalkSpeed
             local t = tonumber(G.BS.JumpBoostTime) or 0.8
@@ -2741,7 +2742,7 @@ function speedState.hookJump()
             local seq = (G.BS._jumpSeq or 0) + 1
             G.BS._jumpSeq = seq
             task.delay(t, function()
-                if G.BS._jumpSeq ~= seq then return end
+                if STOPPED or G.BS._jumpSeq ~= seq then return end
                 G.BS._jumpUntil = 0
                 local h = speedState.hum
                 if h and h.Parent then speedState.applyWalk(h, base) end
@@ -4805,7 +4806,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.17",
+    LoadingSubtitle = "ESP + Aim + Танец v11.17.1",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -5248,7 +5249,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.17 остановлен")
+    print("[BS HUB] v11.17.1 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -5323,7 +5324,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.17 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.17.1 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
