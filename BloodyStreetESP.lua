@@ -3350,12 +3350,21 @@ local function supplyList()
     if now - SUPPLY.cratesAt < 1 then return SUPPLY.crates end
     SUPPLY.cratesAt = now
     local out, seen = {}, {}
+    local function hasPart(d)
+        local ok, all = pcall(function() return d:GetDescendants() end)
+        if not ok or type(all) ~= "table" then return false end
+        for _, x in ipairs(all) do
+            if x:IsA("BasePart") then return true end
+        end
+        return false
+    end
     local folder = workspace:FindFirstChild("SupplyCaches")
     if folder then
         local ok, kids = pcall(function() return folder:GetChildren() end)
         if ok and type(kids) == "table" then
             for _, d in ipairs(kids) do
-                if d:IsA("Model") and not seen[d] then
+                -- Не только Model: ящик может быть Tool/Folder-обёрткой.
+                if not seen[d] and hasPart(d) then
                     seen[d] = true
                     out[#out + 1] = d
                 end
@@ -3366,11 +3375,12 @@ local function supplyList()
         local ok, all = pcall(function() return workspace:GetDescendants() end)
         if ok and type(all) == "table" then
             for _, d in ipairs(all) do
-                if d:IsA("Model")
+                if (d:IsA("Model") or d:IsA("Tool") or d:IsA("Folder"))
                    and (d.Name == "SupplyCrate" or d.Name == "Supply Crate")
                    and not seen[d] then
                     local pn = d.Parent and d.Parent.Name or ""
-                    if pn ~= "SupplyCrate" and pn ~= "Supply Crate" then
+                    if pn ~= "SupplyCrate" and pn ~= "Supply Crate"
+                       and hasPart(d) then
                         seen[d] = true
                         out[#out + 1] = d
                     end
@@ -3503,6 +3513,28 @@ local function supplyTouch(hrp, part)
     end)
     if ok then task.wait(0.2) end
     return ok
+end
+
+-- Последний шанс: у игры может быть не ProximityPrompt, а свой
+-- обработчик клавиши E на BillboardGui "Status". Жмём E виртуально.
+local function supplyPressE()
+    local ok = pcall(function()
+        local vim = game:GetService("VirtualInputManager")
+        vim:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+        task.wait(0.9)
+        vim:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+    end)
+    if ok then return true end
+    local env = getgenv()
+    if env and type(env.keypress) == "function" then
+        pcall(env.keypress, 0x45)
+        task.wait(0.9)
+        if type(env.keyrelease) == "function" then
+            pcall(env.keyrelease, 0x45)
+        end
+        return true
+    end
+    return false
 end
 
 function SUPPLY.scan()
@@ -3651,6 +3683,13 @@ function SUPPLY.refill(opts)
                 if supplyTouch(hrp, any[i]) then touched = true end
             end
         end
+
+        -- Если ни промпт, ни касание не увеличили счётчик — жмём E.
+        task.wait(0.2)
+        local afterAction = G.BS.ReadAmmo()
+        local improved = type(afterAction) == "number"
+            and type(before) == "number" and afterAction > before
+        if not improved then supplyPressE() end
     end)
     task.wait(0.2)
     local after, maxAfter = G.BS.ReadAmmo()
