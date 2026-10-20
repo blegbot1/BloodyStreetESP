@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.13
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.14
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -180,7 +180,7 @@ G.BS.HitMarkLife  = tonumber(G.BS.HitMarkLife) or 0.25
 G.BS.EventsOn     = G.BS.EventsOn ~= false
 -- УСКОРЕНИЕ ПО КЛАВИШЕ: держишь Левый Shift - скорость выше.
 G.BS.SpeedKey = G.BS.SpeedKey ~= false
-G.BS.SpinSpeed = tonumber(G.BS.SpinSpeed) or 50   -- как в EliteHub
+G.BS.SpinSpeed = tonumber(G.BS.SpinSpeed) or 50
 G.BS.SpinOnlyStill = nil   -- тумблер удалён: спин крутит и на ходу
 G.BS.AimFireMode   = G.BS.AimFireMode ~= false  -- кнопка "держишь пушку"
 G.BS.SpeedMul = tonumber(G.BS.SpeedMul) or 2
@@ -224,6 +224,10 @@ G.BS.AimLead       = tonumber(G.BS.AimLead) or 0.08
 -- ПО УМОЛЧАНИЮ 1: плавный доворот давал «отставание» при ходьбе.
 G.BS.AimLock       = G.BS.AimLock ~= false
 G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 1
+-- ПОВ (поворот камеры). true  - камера доворачивается на цель
+--                         (иначе подмена патрона работает молча).
+-- false - камера остаётся твоей, но выстрел всё равно идёт в цель.
+G.BS.AimLockTurn   = G.BS.AimLockTurn ~= false
 -- Аимlock включается только когда это нужно, чтобы не дёргать камеру:
 --   FireOnly — только пока зажат огонь.
 -- Плюс в коде проверяется, что в руках именно ОРУЖИЕ.
@@ -296,7 +300,7 @@ G.BS.Hud = G.BS.Hud ~= false
 G.BS.DanceOn     = false
 G.BS.Spin        = false
 G.BS.Sway        = false
-G.BS.SpinSpeed   = tonumber(G.BS.SpinSpeed) or 360   -- градусов в секунду
+G.BS.SpinSpeed   = tonumber(G.BS.SpinSpeed) or 50   -- градусов в секунду
 G.BS.SwayAmp     = tonumber(G.BS.SwayAmp) or 20      -- градусов
 G.BS.DanceHotkey = G.BS.DanceHotkey ~= false        -- клавиша F7
 G.BS.DanceAutoScan = G.BS.DanceAutoScan ~= false
@@ -322,25 +326,23 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 30 then
-    G.BS.CfgV      = 30
-    -- аимлок работает ВСЕГДА, а не только пока держишь ЛКМ
-    -- (жалоба: "аймлок не работает, только когда я стреляю")
+if G.BS.CfgV ~= 31 then
+    G.BS.CfgV      = 31
+    -- АИМЛОК РАБОТАЕТ ВСЕГДА, а не только пока зажата ЛКМ
+    -- (жалоба: «аймлок не работает, только когда я стреляю»).
     G.BS.AimLockFireOnly = false
     G.BS.AimFireMode     = false
-    G.BS.SpinSpeed = 50        -- как в EliteHub
-    G.BS.AimFireMode = true
-    G.BS.SpeedKey = true
-    G.BS.SpeedMul = 2
-    -- аимлок: работает, пока держишь пушку (просили «пока держишь пушку»)
-    G.BS.AimLockFireOnly = true
-    G.BS.AimLock = true
+    G.BS.AimLockTurn     = true    -- ПОВ: камера доворачивается на цель
+    G.BS.AimLock   = true
     G.BS.BulletSwap = true
     G.BS.AimLockSpeed = 1      -- мгновенный доворот (иначе отстаёт на ходу)
     G.BS.LockHold      = 0.6
     G.BS.LockHoldOnFire = true
     G.BS.SyncTarget    = true
     G.BS.AimLockListTarget = false
+    G.BS.SpinSpeed = 50        -- оборотов/с по формуле спина
+    G.BS.SpeedKey = true
+    G.BS.SpeedMul = 2
     G.BS.DanceOn   = false
     G.BS.Spin      = false
     G.BS.Sway      = false
@@ -350,6 +352,7 @@ if G.BS.CfgV ~= 30 then
     G.BS.NoiseLife  = 2.2
     G.BS.ShowSpecialRole = true
     G.BS.Hud        = true
+    G.BS.QuickPanel = true     -- быстрая панель под HUD
     G.BS.AimChain  = true
     G.BS.AimFreePart = true
     G.BS.NoCooldown = true
@@ -360,9 +363,7 @@ if G.BS.CfgV ~= 30 then
     G.BS.TargetMark = true
     G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
     G.BS.AimLead   = 0.08
-    G.BS.AimLock   = true
     -- SHOT_ANGLE_SLACK_DEG = 3: взгляд и патрон должны совпадать
-    G.BS.AimLockFireOnly = true
     G.BS.AimLockNoWall = true
     G.BS.MeleeAim  = true
     G.BS.WallPenetrate = true
@@ -1694,12 +1695,17 @@ local DANCE_BY_NAME  = {}   -- label -> id (для выпадающего спи
 local dance = {
     on = false,             -- танец включён
     label = "", id = nil,    -- выбранная анимация
+    emote = nil,             -- имя эмоута для EmotePlay ("emote_dance")
+    emoteAt = 0,             -- когда последний раз посылали EmotePlay
+    entry = {},              -- label -> запись (анимация или эмоут)
     track = nil, anim = nil, animator = nil, lowered = {},
     spin = false, sway = false,
-    spinSpeed = 360, swayAmp = 20, swaySpeed = 2.4,
+    spinSpeed = 50, swayAmp = 20, swaySpeed = 2.4,
     yaw = 0, prevYaw = 0, autoRotSaved = nil, arHum = nil,
     hotkey = "F7", scanAt = 0,
 }
+dance.byLabel = dance.entry
+
 
 local CORE_P = (Enum.AnimationPriority and Enum.AnimationPriority.Core
     and Enum.AnimationPriority.Core.Value) or 127
@@ -1728,21 +1734,42 @@ local function addDance(label, id)
     if DANCE_BY_LABEL[key] then return false end
     DANCE_BY_LABEL[key] = true
     if not DANCE_BY_NAME[label] then DANCE_BY_NAME[label] = s end
-    DANCES[#DANCES + 1] = { label = label, id = s }
+    local e = { label = label, id = s }
+    DANCES[#DANCES + 1] = e
+    if not dance.entry[label] then dance.entry[label] = e end
     return true
 end
+
+-- ЭМОУТЫ ПО ИМЕНИ. Игра играет танец не анимацией напрямую, а ремоутом:
+--   EmotePlay:FireServer("emote_dance")
+-- Поэтому имя эмоута - полноценный «танец»: его можно выбрать и играть
+-- без всяких ID. Это и есть основной путь, если анимации не находятся.
+dance.addEmote = function(name)
+    name = tostring(name or "")
+    if name == "" then return false end
+    if dance.entry[name] then return false end
+    local e = { label = name, emote = name }
+    dance.entry[name] = e
+    DANCES[#DANCES + 1] = e
+    return true
+end
+
+-- Гарантированный танец: имя известно из лога игры (EmotePlay).
+dance.addEmote("emote_dance")
 
 -- ПОДПИСИ ТАНЦЕВ. В игре почти все анимации названы одинаково
 -- ("Animation"), поэтому в списке было 8 одинаковых строк и непонятно,
 -- что выбирать. Добавляем короткий хвост ID - тогда каждая строка
--- уникальна и видно, что за анимация.
+-- уникальна и видно, что за анимация. Эмоуты подписаны по имени.
 dance.labels = function()
     local opts = {}
-    opts[0] = nil
     for i = 1, #DANCES do
         local d = DANCES[i]
-        local tail = string.sub(d.id, -5)
-        opts[i] = d.label .. " …" .. tail
+        if d.emote then
+            opts[i] = "эмоут " .. d.label
+        else
+            opts[i] = d.label .. " …" .. string.sub(d.id, -5)
+        end
     end
     return opts
 end
@@ -1763,7 +1790,42 @@ dance.next = function(step)
     end
     addEvent("танец #" .. dance.idx .. "/" .. #DANCES .. ": " .. d.label)
     print("[BS DANCE] выбран танец #" .. dance.idx .. ": " .. d.label
-        .. " (" .. d.id .. ")")
+        .. " (" .. tostring(d.id or d.emote) .. ")")
+end
+
+-- ИГРАЕМ ЭМОУТ ШТАТНЫМ РЕМОУТОМ ИГРЫ.
+-- EmotePlay:FireServer("emote_dance") - ровно то, что делает игра, когда
+-- ты выбираешь танец в колесе эмоутов. Никаких ID и Animator не нужно.
+dance.fireEmote = function(name)
+    local rem = NC.emote
+    if not rem then
+        pcall(function()
+            local bs = game:GetService("ReplicatedStorage")
+                :FindFirstChild("BloodyStreet")
+            local rs = bs and bs:FindFirstChild("Remotes")
+            rem = rs and rs:FindFirstChild("EmotePlay")
+            NC.emote = rem
+        end)
+    end
+    if not rem then
+        if dance.reportedEmote ~= "__noremote" then
+            dance.reportedEmote = "__noremote"
+            addEvent("эмоут: ремоут EmotePlay не найден")
+        end
+        return false
+    end
+    local ok = pcall(function() rem:FireServer(name) end)
+    -- В ленту пишем только при смене эмоута, иначе повтор каждые 2.5 с
+    -- забивал бы события.
+    if dance.reportedEmote ~= tostring(name) then
+        dance.reportedEmote = tostring(name)
+        if ok then
+            addEvent("танец игры: " .. tostring(name))
+        else
+            addEvent("эмоут: FireServer не прошёл")
+        end
+    end
+    return ok
 end
 
 -- ЛОВИМ АНИМАЦИИ, КОТОРЫЕ ИГРА ГРУЗИТ САМА. Когда открывают колесо
@@ -1893,6 +1955,15 @@ local function scanEmoteTable(t, depth, prefix)
                     local nm = string.gsub(tostring(k), "^%a+_", "")
                     if nm == "" or nm == tostring(k) then nm = tostring(k) end
                     addDance(nm, v)
+                elseif not looksBad and dance.addEmote then
+                    -- В слотах бывает не ID, а ИМЯ эмоута: "emote_dance".
+                    -- Это тоже рабочий танец - игра играет его ремоутом.
+                    local vl = string.lower(v)
+                    if string.find(vl, "emote", 1, true)
+                       or string.find(vl, "dance", 1, true)
+                       or string.find(vl, "pose", 1, true) then
+                        pcall(dance.addEmote, tostring(v))
+                    end
                 end
             elseif type(v) == "table" then
                 scanEmoteTable(v, depth + 1, prefix .. "." .. tostring(k))
@@ -1948,10 +2019,12 @@ local function captureEmoteArgs(...)
                 if string.find(low, "emote", 1, true)
                    or string.find(low, "dance", 1, true)
                    or string.find(low, "pose", 1, true)
-                   or string.find(low, "wave", 1, true) then
-                    -- имя запомнили: ID подхватится из LoadAnimation,
-                    -- когда игра загрузит эту анимацию
+                   or string.find(low, "wave", 1, true)
+                   or string.find(low, "sit", 1, true) then
+                    -- ИМЯ ЭМОУТА - самостоятельный танец: игра играет его
+                    -- именно так (EmotePlay:FireServer("emote_dance")).
                     emoteNames[tostring(a)] = true
+                    if dance.addEmote then pcall(dance.addEmote, tostring(a)) end
                 end
             end
         elseif t == "table" then
@@ -2017,6 +2090,7 @@ local function stopDance(restore)
     end
     dance.track, dance.anim = nil, nil
     dance.yaw, dance.prevYaw = 0, 0
+    dance.emoteAt = 0
     -- AutoRotate возвращаем тому гуманоиду, которого трогали (после
     -- респавна это уже другой персонаж)
     if restore and dance.autoRotSaved ~= nil and dance.arHum then
@@ -2027,6 +2101,13 @@ end
 
 local function startDance(silent)
     stopDance(true)
+    -- ЭМОУТ: играем штатным ремоутом игры. Работает даже если ни одной
+    -- анимации не нашлось - имя эмоута есть всегда.
+    if dance.emote then
+        dance.emoteAt = os.clock()
+        pcall(dance.fireEmote, dance.emote)
+        return true
+    end
     if not (dance.id and dance.label ~= "") then
         -- ассет не выбран - работают только спин/покачивание
         return true
@@ -2095,15 +2176,24 @@ end
 local function pickDance(id, label)
     -- Принимаем и ID, и название: с кнопки «следующий» приходит пара,
     -- из выпадающего списка - только название.
-    dance.id = id or DANCE_BY_NAME[tostring(label or "")]
-    dance.label = tostring(label or dance.label or "")
+    local key = tostring(label or "")
+    local e = dance.entry[key]
+    dance.label = key ~= "" and key or tostring(dance.label or "")
+    if id == nil and e then
+        -- выбрали запись из списка: у неё может быть ID или имя эмоута
+        dance.id    = e.id
+        dance.emote = e.emote
+    else
+        dance.id    = id or DANCE_BY_NAME[key]
+        dance.emote = nil
+    end
     if dance.on then startDance(true) end
 end
 dance.pick = pickDance
 
 -- КАЖДЫЙ КАДР: ассетный трек сам играет, а спин/покачивание крутим
 -- сами через PivotTo (дельта угла, чтобы не сбивать направление).
--- СПИН БОТ (как в EliteHub 14.0). Отличия от прежней версии, из-за
+-- СПИН БОТ. Отличия от прежней версии, из-за
 -- которых спин не работал «по-настоящему»:
 --   * крутим HumanoidRootPart.CFrame напрямую (не PivotTo по модели):
 --     у корня физика и сетевое владение, остальные части следуют за ним
@@ -2112,7 +2202,7 @@ dance.pick = pickDance
 --     уходит на сервер с Heartbeat-шага, поэтому поворот не дёргается;
 --   * AutoRotate = false на время вращения, иначе гуманоид каждый
 --     кадр доворачивает персонажа по вектору движения и спин не виден;
---   * скорость по формуле EliteHub: speed * dt * 3 (по умолчанию 50).
+--   * скорость по формуле: speed * dt * 3 (по умолчанию 50).
 -- Всё сложено в одну таблицу SPIN: главный блок скрипта упирается в
 -- лимит локальных переменных Lua (200).
 local SPIN = { conn = nil, prevAuto = nil }
@@ -2158,7 +2248,7 @@ function SPIN.start()
             SPIN.applyAuto(ch)
             -- зажимаем скорость: сохранённые настройки Rayfield могли
             -- остаться от старой версии (там было 360, а формула
-            -- EliteHub умножает ещё на 3 - персонан крутился бы рывками)
+            -- умножает скорость ещё на 3 - персонаж крутился бы рывками)
             local spd = tonumber(G.BS.SpinSpeed) or 50
             if spd < 5 then spd = 5 end
             if spd > 200 then spd = 200 end
@@ -2184,6 +2274,12 @@ end
 -- включено из консоли) крутим дельтой угла через PivotTo.
 local function danceTick(dt, now)
     if not dance.on then return end
+    -- ЭМОУТ ПОВТОРЯЕМ: игра отменяет танец, как только персонаж пошёл.
+    -- Посылаем EmotePlay заново каждые 2.5 с - тогда танец идёт на ходу.
+    if dance.emote and now - (dance.emoteAt or 0) > 2.5 then
+        dance.emoteAt = now
+        pcall(dance.fireEmote, dance.emote)
+    end
     if not (dance.spin or dance.sway) then return end
     local ch = LP and LP.Character
     if not ch or not ch.Parent then return end
@@ -3024,7 +3120,10 @@ local function buildList(cam, myRoot)
 end
 
 local function computeBulletPreShot()
-    if not G.BS.BulletSwap then bulletPreShot = nil return end
+    -- Считаем цель, если нужна ХОТЬ ОДНА функция: подмена патрона ИЛИ
+    -- аимлок. Раньше аимлок зависел от клиент-аима и молчал, если тот
+    -- выключен (жалоба: «аим не целится»).
+    if not (G.BS.BulletSwap or G.BS.AimLock) then bulletPreShot = nil return end
     -- ОБЕЗОРУЖЕН (модуль Disarm, атрибут DisarmedUntil): стрелять
     -- всё равно нечем, цель не выбираем.
     pcall(function()
@@ -3260,15 +3359,25 @@ local function refreshGunFlag(now)
         if tool:FindFirstChild("Muzzle") then res = true return end
         if tool:GetAttribute("Variant") then res = true return end
         local n = string.lower(tool.Name)
-        if string.find(n, "gun", 1, true) then res = true return end
+        if string.find(n, "gun", 1, true)
+           or string.find(n, "shot", 1, true)
+           or string.find(n, "sniper", 1, true)
+           or string.find(n, "pistol", 1, true)
+           or string.find(n, "revolver", 1, true)
+           or string.find(n, "rifle", 1, true)
+           or string.find(n, "musket", 1, true) then res = true return end
     end)
     gunInHand = res
     return res
 end
 
 local function aimLockTick(dt, now)
+    if not G.BS.AimLock then dropLock() return end
+    -- цель считаем сами: аимлок больше не зависит от клиент-аима,
+    -- иначе при выключенной подмене патрона камера вообще не велась.
+    if not bulletPreShot then pcall(computeBulletPreShot) end
     local pre = bulletPreShot
-    if not (G.BS.AimLock and pre and pre.pos) then dropLock() return end
+    if not (pre and pre.pos) then dropLock() return end
     if not refreshGunFlag(now) then dropLock() return end
     if G.BS.AimLockFireOnly then
         local okP, down = pcall(function()
@@ -3292,6 +3401,10 @@ local function aimLockTick(dt, now)
     resolveLock(cam, now)
     if LOCK_TARGET and LOCK_TARGET.Parent then tgt = LOCK_TARGET end
     if not (tgt and tgt.Parent) then dropLock() return end
+
+    -- ПОВ: поворот камеры можно выключить - тогда подмена патрона
+    -- работает молча, а камера остаётся твоей.
+    if G.BS.AimLockTurn == false then return end
 
     local cf = cam.CFrame
     local pos = cf.Position
@@ -3345,18 +3458,17 @@ local function aimLockTick(dt, now)
     cam.CFrame = cf:Lerp(target, k)
 end
 
--- АИМЛОК ВСТРАИВАЕМ В КАДР КАМЕРЫ. Roblox пересчитывает CFrame камеры
--- в своём BindToRenderStep с приоритетом Enum.RenderPriority.Camera,
--- а обычные коннекты RenderStepped выполняются РАНЬШЕ (Default).
--- Из-за этого наш доворот каждый кадр затирался игрой - отсюда и жалобы
--- «аймлок не работает», и «тянет назад». Поэтому вешаем свой шаг с
--- приоритетом Camera + 1: тогда камера уже обновилась, и мы правим
--- её последними.
+-- АИМЛОК ВСТРАИВАЕМ В КАДР ПОСЛЕДНИМ. Roblox пересчитывает CFrame
+-- камеры в своём BindToRenderStep с приоритетом Camera (200), но игра
+-- может вешать и свои шаги. Поэтому цепляемся почти в самом конце
+-- кадра (Last - 1), чтобы наш доворот никто не затирал.
 local AIM_STEP_BOUND = false
 local function bindAimLockStep()
     if AIM_STEP_BOUND then return end
-    local prio = 201
-    pcall(function() prio = Enum.RenderPriority.Camera.Value + 1 end)
+    local prio = 1999
+    pcall(function()
+        prio = Enum.RenderPriority.Last.Value - 1
+    end)
     local ok = pcall(function()
         RunService:BindToRenderStep("BS_AimLock", prio, function(dt)
             if STOPPED then return end
@@ -4161,8 +4273,9 @@ local conn = RunService.RenderStepped:Connect(function()
         pcall(pumpHealth)
     end
 
-    -- цель для подмены патрона
-    if G.BS.BulletSwap then
+    -- цель для подмены патрона и для аимлока (аимлок сам по себе тоже
+    -- должен считать цель - он больше не зависит от клиент-аима)
+    if G.BS.BulletSwap or G.BS.AimLock then
         pcall(computeBulletPreShot)
     elseif bulletPreShot then
         bulletPreShot = nil
@@ -4327,7 +4440,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.13",
+    LoadingSubtitle = "ESP + Aim + Танец v11.14",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -4556,13 +4669,16 @@ local function setBulletSwap(v)
 end
 
 AI.CreateSection("Тумблеры аима")
+-- ВАЖНО: у этих тумблеров НЕТ Flag. Rayfield при запуске восстанавливает
+-- сохранённые значения и перебивал ими дефолты (из-за этого аимлок мог
+-- остаться выключенным, а режим «только на ЛКМ» - включённым).
 AI.CreateToggle({
-    Name = "Клиент айм (патрон в цель)", Flag = "BS_BulletSwap",
+    Name = "Клиент айм (патрон в цель)",
     CurrentValue = G.BS.BulletSwap,
     Callback = function(v) pcall(setBulletSwap, v) end,
 })
 AI.CreateToggle({
-    Name = "Аимлок (камера целится)", Flag = "BS_AimLock",
+    Name = "Аимлок (камера целится)",
     CurrentValue = G.BS.AimLock,
     Callback = function(v)
         G.BS.AimLock = v
@@ -4570,7 +4686,12 @@ AI.CreateToggle({
     end,
 })
 AI.CreateToggle({
-    Name = "Аим пока держишь пушку", Flag = "BS_AimFireMode",
+    Name = "ПОВ: камера доворачивается",
+    CurrentValue = G.BS.AimLockTurn ~= false,
+    Callback = function(v) G.BS.AimLockTurn = v end,
+})
+AI.CreateToggle({
+    Name = "Аим пока держишь пушку",
     CurrentValue = G.BS.AimFireMode,
     Callback = function(v)
         G.BS.AimFireMode = v
@@ -4661,12 +4782,117 @@ danceDD = DN.CreateDropdown({ Name = "Какой танец (список)", Fla
     end })
 DN.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
     Range = {10, 200}, Increment = 5, CurrentValue = G.BS.SpinSpeed,
-    Suffix = " (как в EliteHub)", Callback = function(v)
+    Suffix = " °/с", Callback = function(v)
         G.BS.SpinSpeed = v
         dance.spinSpeed = v
     end })
 -- Тумблер "Спин только стоя" удалён по просьбе: спин крутит и на ходу,
 -- и стоя (движение не мешает - модель просто вращается вокруг корня).
+-- ============================================================
+--  БЫСТРАЯ ПАНЕЛЬ В ИГРЕ (GUI под HUD)
+-- ============================================================
+-- Компактные кнопки-переключатели прямо на экране: не нужно каждый раз
+-- открывать меню Rayfield. Зелёные - включено, тёмные - выключено.
+local qpItems = {}
+local qpFrame = nil
+
+local function buildQuickPanel()
+    if G.BS.QuickPanel == false then return end
+    pcall(ensureHud)
+    if not hudGui then return end
+    local old = hudGui:FindFirstChild("BS_QuickPanel")
+    if old then pcall(function() old:Destroy() end) end
+
+    qpFrame = Instance.new("Frame")
+    qpFrame.Name                 = "BS_QuickPanel"
+    qpFrame.BackgroundColor3     = Color3.fromRGB(15, 15, 18)
+    qpFrame.BackgroundTransparency = 0.35
+    qpFrame.BorderSizePixel      = 0
+    qpFrame.Position             = UDim2.new(0, 10, 0, 32)
+    qpFrame.Size                 = UDim2.fromOffset(456, 28)
+    qpFrame.Parent               = hudGui
+
+    local lay = Instance.new("UIListLayout")
+    lay.FillDirection     = Enum.FillDirection.Horizontal
+    lay.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    lay.VerticalAlignment = Enum.VerticalAlignment.Center
+    lay.Padding           = UDim.new(0, 4)
+    lay.SortOrder         = Enum.SortOrder.LayoutOrder
+    lay.Parent            = qpFrame
+
+    local defs = {
+        { "АИМ",      68, function() return G.BS.BulletSwap == true end,
+          function(v) pcall(setBulletSwap, v) end },
+        { "АИМЛОК",   68, function() return G.BS.AimLock == true end,
+          function(v)
+              G.BS.AimLock = v
+              if v then bindAimLockStep() end
+          end },
+        { "ПОВ",      58, function() return G.BS.AimLockTurn ~= false end,
+          function(v) G.BS.AimLockTurn = v end },
+        { "ТАНЕЦ",    68, function() return dance.on == true end,
+          function(v) pcall(setDance, v) end },
+        { "СПИН",     62, function() return dance.spin == true end,
+          function(v) pcall(SPIN.set, v) end },
+        { "ТАНЕЦ →",  78, nil, function() pcall(dance.next, 1) end },
+        { "МЕНЮ",     62, nil, function()
+              pcall(function() Window:Toggle() end)
+          end },
+    }
+
+    for i = 1, #defs do
+        local d = defs[i]
+        local b = Instance.new("TextButton")
+        b.Name               = "BS_Qp" .. i
+        b.LayoutOrder        = i
+        b.Size               = UDim2.fromOffset(d[2], 24)
+        b.BackgroundColor3   = Color3.fromRGB(35, 35, 42)
+        b.BorderSizePixel    = 0
+        b.TextColor3         = Color3.fromRGB(225, 225, 235)
+        b.Font               = Enum.Font.Code
+        b.TextSize           = 12
+        b.Text               = d[1]
+        b.AutoButtonColor    = false
+        b.Parent             = qpFrame
+        b.MouseButton1Click:Connect(function()
+            local now = true
+            if d[3] then
+                local okOn, on = pcall(d[3])
+                now = not (okOn and on)
+            end
+            pcall(d[4], now)
+        end)
+        qpItems[#qpItems + 1] = { btn = b, get = d[3] }
+    end
+
+    -- обновляем подсветку кнопок (в т.ч. когда переключили из меню)
+    local acc = 0
+    local connQp
+    connQp = RunService.Heartbeat:Connect(function(dt)
+        if STOPPED or not qpFrame or not qpFrame.Parent then
+            pcall(function() connQp:Disconnect() end)
+            return
+        end
+        acc = acc + (dt or 0)
+        if acc < 0.25 then return end
+        acc = 0
+        for i = 1, #qpItems do
+            local it = qpItems[i]
+            if it.get then
+                local on = false
+                pcall(function() on = it.get() end)
+                if on then
+                    it.btn.BackgroundColor3 = Color3.fromRGB(28, 125, 58)
+                else
+                    it.btn.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+                end
+            end
+        end
+    end)
+end
+
+buildQuickPanel()
+
 refreshDanceDropdown()
 end   -- конец buildGui
 
@@ -4743,7 +4969,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.13 остановлен")
+    print("[BS HUB] v11.14 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -4801,8 +5027,14 @@ task.spawn(function()
     -- значения из сохранённого конфига Rayfield -> состояние движка
     dance.spin      = G.BS.Spin == true
     dance.sway      = G.BS.Sway == true
-    dance.spinSpeed = tonumber(G.BS.SpinSpeed) or 360
+    dance.spinSpeed = tonumber(G.BS.SpinSpeed) or 50
     dance.swayAmp   = tonumber(G.BS.SwayAmp) or 20
+    -- если танец ещё не выбирали - берём первый из списка
+    -- (первым всегда идёт эмоут emote_dance, он работает в любой игре)
+    if dance.label == "" and #DANCES > 0 then
+        local d = DANCES[1]
+        dance.id, dance.emote, dance.label = d.id, d.emote, d.label
+    end
     if G.BS.DanceOn then
         -- персонаж мог ещё не появиться - ждём и возобновляем
         task.spawn(function()
@@ -4812,7 +5044,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.13 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.14 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
