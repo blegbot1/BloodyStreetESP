@@ -1,6 +1,6 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ТАНЕЦ  v11.18
---  GUI на Rayfield. Вкладки: ESP / AIM.
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.19
+--  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
 --  ролям (вампир / хантер / неизвестный), сканер игры.
@@ -1817,7 +1817,8 @@ end
 --
 -- Плюс два СВОИХ режима, которым не нужен ни один ассет и которые
 -- работают ВСЕГДА: «Спин» (оборот на 360) и «Покачивание».
--- Они крутят модель через PivotTo и не мешают ходьбе.
+-- Спин крутит HRP в отдельном Heartbeat-коннекте (SPIN), анимация
+-- и поворот больше не дублируются в danceTick.
 --
 -- Спин работает и ПОВЕРХ ассетного танца (можно включить оба).
 
@@ -1834,7 +1835,7 @@ local dance = {
     track = nil, anim = nil, animator = nil, lowered = {},
     spin = false, sway = false,
     spinSpeed = 50, swayAmp = 20, swaySpeed = 2.4,
-    yaw = 0, prevYaw = 0, autoRotSaved = nil, arHum = nil,
+    yaw = 0, prevYaw = 0,
     hotkey = "F7", scanAt = 0,
 }
 dance.byLabel = dance.entry
@@ -1889,6 +1890,53 @@ end
 
 -- Гарантированный танец: имя известно из лога игры (EmotePlay).
 dance.addEmote("emote_dance")
+
+-- КЛАССИЧЕСКИЕ ТАНЦЫ ROBLOX. Они публичные и грузятся в любой игре,
+-- поэтому список не будет пустым, даже если игра не отдала свои
+-- анимации. emote_dance остаётся ПЕРВЫМ (он и так добавлен выше),
+-- классика идёт после него.
+addDance("Dance (классика)", "507770677")
+addDance("Dance2 (классика)", "507770818")
+addDance("Dance3 (классика)", "507771019")
+-- Из лога игрока: EmotePlay("emote_dance") играет 507771019. Сразу
+-- связываем имя с ID, чтобы танец шёл локальной петлёй с первого кадра,
+-- не дожидаясь перехвата LoadAnimation. Если игра пришлёт другой ID,
+-- captureId/captureAnimArg обновят связку.
+dance.emoteId["emote_dance"] = "507771019"
+
+-- ФИЛЬТР «ПОХОЖЕ НА ТАНЕЦ». В игре сотни Animation-объектов (походка,
+-- оружие, катсцены), и раньше в список попадало всё подряд: в логе было
+-- 11-15 «танцев», многие ID 19004... не запускались. Берём только те,
+-- у кого в имени/пути есть танец/эмоут/поза, и отсекаем боевые и
+-- двигательные анимации по имени самого объекта.
+dance.danceWords = {
+    "dance", "emote", "pose", "wave", "salute", "applaud",
+    "celebrate", "taunt", "groove", "boogie", "party", "disco",
+    "floss", "dab", "rumba", "samba", "ballet", "cheer",
+}
+dance.badWords = {
+    "idle", "walk", "run", "jump", "fall", "climb", "swim", "land",
+    "sprint", "crouch", "death", "dead", "seated", "sit", "freefall",
+    "weapon", "gun", "rifle", "pistol", "shotgun", "reload", "aim",
+    "equip", "unequip", "hit", "hurt", "block", "stun", "downed",
+    "carry", "carried", "spawn", "tool", "slash", "swing", "punch",
+    "kick", "throw", "shoot", "fire", "melee",
+}
+dance.looksLike = function(name, context)
+    local nm = string.lower(tostring(name or ""))
+    if MOVE_TRACKS[nm] then return false end
+    for _, w in ipairs(dance.badWords) do
+        if string.find(nm, w, 1, true) then return false end
+    end
+    local s = nm
+    if context and context ~= "" then
+        s = s .. " " .. string.lower(tostring(context))
+    end
+    for _, w in ipairs(dance.danceWords) do
+        if string.find(s, w, 1, true) then return true end
+    end
+    return false
+end
 
 -- СВЯЗКА «ИМЯ ЭМОУТА -> ID АНИМАЦИИ».
 -- EmoteSetSlots обычно приходит таблицей вида {name="emote_dance",
@@ -1961,32 +2009,8 @@ dance.labels = function()
     return opts
 end
 
--- Кнопка «следующий танец»: работает всегда, даже если выпадающий
--- список в этой версии Rayfield не создался (ошибка GUI).
-dance.next = function(step)
-    dance.idx = dance.idx or 0
-    if #DANCES == 0 then
-        addEvent("танцы не найдены: открой колесо эмоутов в игре")
-        return
-    end
-    dance.idx = (dance.idx + (step or 1)) % #DANCES + 1
-    local d = DANCES[dance.idx]
-    -- СРАЗУ ВКЛЮЧАЕМ: нажал «следующий танец» - он и заиграл.
-    dance.on = true
-    G.BS.DanceOn = true
-    -- синхронизируем тумблер «Танцевать», иначе в меню он остаётся
-    -- выключенным, хотя танец уже играет
-    if dance.toggle then
-        pcall(function() dance.toggle:Set(true) end)
-    end
-    if dance.pick then pcall(dance.pick, d.id, d.label) end
-    if danceDD then
-        pcall(function() danceDD:SetValue(dance.labels()[dance.idx]) end)
-    end
-    addEvent("танец #" .. dance.idx .. "/" .. #DANCES .. ": " .. d.label)
-    print("[BS DANCE] выбран танец #" .. dance.idx .. ": " .. d.label
-        .. " (" .. tostring(d.id or d.emote) .. ")")
-end
+-- Выбор танца теперь только через выпадающий список во вкладке ИГРОК.
+-- Кнопки «следующий/предыдущий» удалены в v11.19.
 
 -- ИГРАЕМ ЭМОУТ ШТАТНЫМ РЕМОУТОМ ИГРЫ.
 -- EmotePlay:FireServer("emote_dance") - ровно то, что делает игра, когда
@@ -2036,20 +2060,30 @@ end
 local function captureAnimArg(a)
     if typeof(a) ~= "Instance" then return end
     if a.ClassName ~= "Animation" then return end
+    -- Наш собственный LoadAnimation (локальная петля танца) не считаем
+    -- эмоутом игры: иначе pendingEmote связывался с ним и трек
+    -- перезапускался через task.defer.
+    if dance.selfLoad then return end
     local id = a.AnimationId
     if type(id) ~= "string" or id == "" then return end
     local nm = tostring(a.Name or "?")
     if MOVE_TRACKS[string.lower(nm)] then return end   -- ходьба - не танец
-    addDance(nm, id)
     -- СВЯЗКА С ЭМОУТОМ: если только что послали EmotePlay, следующая
     -- загруженная анимация - его ID. Запоминаем и сразу включаем петлю.
+    -- В список её отдельной строкой НЕ добавляем: у эмоута уже есть
+    -- запись по имени, а "Animation …xxxxx" только засорял dropdown.
     local pn = dance.pendingEmote
     if pn and os.clock() - (dance.pendingAt or 0) < 1.5 then
+        local known = dance.emoteId[pn]
         dance.emoteId[pn] = id
         dance.pendingEmote = nil
         print("[BS DANCE] эмоут " .. tostring(pn) .. " -> " .. id
             .. " (хук LoadAnimation)")
-        if dance.on and dance.emote == pn and dance.playId then
+        -- Если этот ID уже играет (например, классический Dance3 из
+        -- заготовки), НЕ перезапускаем трек: иначе на первом запуске
+        -- танца был бы рывок через кадр.
+        if known ~= id and dance.on and dance.emote == pn
+           and dance.playId then
             -- не грузим анимацию внутри __namecall: откладываем на кадр
             task.defer(function()
                 if dance.on and dance.emote == pn then
@@ -2057,7 +2091,11 @@ local function captureAnimArg(a)
                 end
             end)
         end
+        return
     end
+    -- Без связи с эмоутом берём только явно танцевальные анимации.
+    local parentName = a.Parent and a.Parent.Name or ""
+    if dance.looksLike(nm, parentName) then addDance(nm, id) end
 end
 dance.captureAnimArg = captureAnimArg
 
@@ -2075,7 +2113,18 @@ local function scanAnimInstances(out)
                 for _, d in ipairs(root:GetDescendants()) do
                     if d.ClassName == "Animation" and d.AnimationId
                        and d.AnimationId ~= "" then
-                        if addDance(d.Name, d.AnimationId) then
+                        -- Контекст: имя объекта + 3 родителя. Часто сама
+                        -- анимация называется "Animation", а папка -
+                        -- "Dances"/"Emotes"; по пути её и находим.
+                        local ctx = tostring(d.Name or "")
+                        local p = d.Parent
+                        for _ = 1, 3 do
+                            if not p or p == root then break end
+                            ctx = ctx .. " " .. tostring(p.Name or "")
+                            p = p.Parent
+                        end
+                        if dance.looksLike(d.Name, ctx)
+                           and addDance(d.Name, d.AnimationId) then
                             out[#out + 1] = d.Name .. "  (" .. d.AnimationId .. ")"
                         end
                     end
@@ -2117,22 +2166,10 @@ local function scanModuleIds(out)
                         -- список попадают ROLE_IMAGE, иконки, звуки:
                         -- в модулях игры полно rbxassetid://, но почти
                         -- все они - картинки.
-                        local low = string.lower(tostring(k))
-                        local bad = string.find(low, "image", 1, true)
-                            or string.find(low, "icon", 1, true)
-                            or string.find(low, "sound", 1, true)
-                            or string.find(low, "sfx", 1, true)
-                            or string.find(low, "logo", 1, true)
-                            or string.find(low, "background", 1, true)
-                            or string.find(low, "shader", 1, true)
-                        local good = string.find(low, "anim", 1, true)
-                            or string.find(low, "emote", 1, true)
-                            or string.find(low, "dance", 1, true)
-                            or string.find(low, "pose", 1, true)
-                            or string.find(low, "wave", 1, true)
-                            or string.find(low, "salute", 1, true)
-                            or string.find(low, "applaud", 1, true)
-                        if not bad and good and normAnimId(v)
+                        -- Берём только танцевальные ключи. Раньше здесь
+                        -- было общее "anim", и в список попадали походка,
+                        -- оружие и катсцены (ID 19004... не запускались).
+                        if dance.looksLike(k, m.Name) and normAnimId(v)
                            and addDance(tostring(k) .. " @ " .. m.Name, v) then
                             out[#out + 1] = tostring(k) .. " @ " .. m.Name .. "  (" .. v .. ")"
                             seen = seen + 1
@@ -2201,14 +2238,20 @@ local function scanPlayingAnims(out, all)
     for _, t in ipairs(tracks) do
         local a = t.Animation
         if a and a.AnimationId and a.AnimationId ~= "" then
-            local nm = string.lower(tostring(t.Name or ""))
-            if not MOVE_TRACKS[nm] then
-                if addDance(tostring(t.Name or a.Name or "анимация"), a.AnimationId) then
+            local trackName = tostring(t.Name or a.Name or "анимация")
+            local nm = string.lower(trackName)
+            -- Только танец/эмоут/поза, а не любая Action-анимация
+            -- (оружие, удар, катсцена). Свой трек пропускаем всегда:
+            -- он уже есть в списке под выбранным названием.
+            if not MOVE_TRACKS[nm]
+               and (dance.track == t
+                    or dance.looksLike(trackName, tostring(a.Name or ""))) then
+                if addDance(trackName, a.AnimationId) then
                     out[#out + 1] = string.format("%s  (%s, приоритет %s)",
-                        tostring(t.Name or a.Name), a.AnimationId, tostring(t.Priority))
+                        trackName, a.AnimationId, tostring(t.Priority))
                     if all then
                         print("[BS DANCE] поймали анимацию игры: "
-                            .. tostring(t.Name) .. " -> " .. tostring(a.AnimationId))
+                            .. trackName .. " -> " .. tostring(a.AnimationId))
                     end
                 end
             end
@@ -2269,26 +2312,31 @@ end
 -- КНОПКА «НАЙТИ ТАНЦЫ В ИГРЕ» + автозапуск при старте.
 local function scanDances(silent)
     local out = {}
+    local before = #DANCES
     scanAnimInstances(out)
     scanModuleIds(out)
     scanEmoteSlots(out)
     scanPlayingAnims(out, true)
+    local added = #DANCES - before
     -- печатаем только имена (ID - в конце), чтобы не забить консоль
-    if #out == 0 then
-        print("[BS DANCE] в папках анимаций-танцев не найдено.")
+    if added == 0 then
+        print("[BS DANCE] новых танцев не найдено (в списке уже "
+            .. #DANCES .. ": emote_dance + классика).")
         print("[BS DANCE] Открой колесо эмоутов в игре (клавиша эмоутов) "
             .. "и включи любой танец - ID подхватится сам через хук "
             .. "LoadAnimation/PlayAnimation и EmotePlay.")
         addEvent("танцы: открой колесо эмоутов в игре - подхватятся сами")
     else
-        print("[BS DANCE] найдено танцев: " .. #out)
+        print("[BS DANCE] найдено новых: " .. added
+            .. " | всего в списке: " .. #DANCES)
         for i = 1, math.min(#out, 30) do
             print("   " .. i .. ") " .. tostring(out[i]))
         end
         if #out > 30 then print("   ... и ещё " .. (#out - 30)) end
     end
     if not silent then
-        notify("Танцы", "Найдено: " .. #out .. ". Обнови список в GUI", 3)
+        notify("Танцы", "Найдено новых: " .. added
+            .. ". Всего: " .. #DANCES .. ". Список обновлён", 3)
     end
     return out
 end
@@ -2306,7 +2354,7 @@ local function restoreLowered()
     dance.lowered = {}
 end
 
-local function stopDance(restore)
+local function stopDance()
     restoreLowered()
     if dance.track then
         local tr = dance.track
@@ -2318,12 +2366,13 @@ local function stopDance(restore)
     end
     dance.yaw, dance.prevYaw = 0, 0
     dance.emoteAt = 0
-    -- AutoRotate возвращаем тому гуманоиду, которого трогали (после
-    -- респавна это уже другой персонаж)
-    if restore and dance.autoRotSaved ~= nil and dance.arHum then
-        pcall(function() dance.arHum.AutoRotate = dance.autoRotSaved end)
-    end
-    dance.autoRotSaved, dance.arHum = nil, nil
+    dance.lowerAt = 0
+    dance.playTryAt = 0
+    -- старая ловушка эмоута не должна сработать на анимацию другого танца
+    dance.pendingEmote = nil
+    -- AutoRotate здесь НЕ трогаем: им владеет SPIN (спин и поворот под
+    -- аимлок). Раньше stopDance возвращал сохранённое false, и после
+    -- смены танца персонаж застывал лицом в одну сторону.
 end
 
 -- ЗАПУСК АНИМАЦИИ ПО ID (и для обычных танцев, и для эмоутов).
@@ -2348,7 +2397,12 @@ dance.playId = function(id, silent)
     dance.animator = animator
     local anim = Instance.new("Animation")
     anim.AnimationId = "rbxassetid://" .. id
+    -- Свой LoadAnimation не должен попадать в ловушку pendingEmote:
+    -- иначе хук решал, что это игра загрузила эмоут, и перезапускал
+    -- наш же трек через task.defer (танец дёргался через кадр).
+    dance.selfLoad = true
     local ok, tr = pcall(function() return animator:LoadAnimation(anim) end)
+    dance.selfLoad = false
     if not ok or not tr then
         if not silent then
             print("[BS DANCE] LoadAnimation не удался: " .. tostring(tr))
@@ -2403,7 +2457,10 @@ dance.captureId = function(name)
         if not dance.on or dance.emote ~= name then return end
         pcall(function()
             for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
-                if not before[t] and t.Animation and t.Animation.AnimationId ~= "" then
+                -- Свой локальный трек не считаем эмоутом игры: иначе
+                -- через 0.35 с он «находился» и перезапускался.
+                if not before[t] and t ~= dance.track
+                   and t.Animation and t.Animation.AnimationId ~= "" then
                     -- отсекаем походку: она ниже Action и часто грузится
                     -- как раз в момент, когда персонаж пошёл
                     local anm = string.lower(tostring(t.Animation.Name or ""))
@@ -2412,10 +2469,13 @@ dance.captureId = function(name)
                        and prio >= Enum.AnimationPriority.Action.Value then
                         local id = normAnimId(t.Animation.AnimationId)
                         if id then
+                            local known = dance.emoteId[name]
                             dance.emoteId[name] = id
                             print("[BS DANCE] эмоут " .. tostring(name)
                                 .. " -> " .. id .. " (локальная петля)")
-                            pcall(dance.playId, id, true)
+                            if known ~= id then
+                                pcall(dance.playId, id, true)
+                            end
                         end
                         return
                     end
@@ -2426,7 +2486,7 @@ dance.captureId = function(name)
 end
 
 local function startDance(silent)
-    stopDance(true)
+    stopDance()
     -- ЭМОУТ: играем штатным ремоутом игры. Работает даже если ни одной
     -- анимации не нашлось - имя эмоута есть всегда.
     if dance.emote then
@@ -2448,12 +2508,15 @@ local function startDance(silent)
     local tr = dance.track
     -- ассет может не принадлежать игре - тогда трек молча не пойдёт
     task.delay(0.7, function()
+        -- captureId/captureAnimArg могли заменить трек своим (эмоут
+        -- перехватил ID). Это НЕ ошибка: старый tr уже остановлен.
+        if dance.track ~= tr then return end
         local playing = false
-        pcall(function() playing = (dance.track == tr) and tr.IsPlaying end)
+        pcall(function() playing = tr and tr.IsPlaying end)
         if tr and not playing then
             print("[BS DANCE] анимация «" .. tostring(dance.label) .. "» НЕ "
                 .. "запустилась: скорее всего ассет не принадлежит этой игре. "
-                .. "Возьми любой из списка «Спин»/«Покачивание» или свой ID.")
+                .. "Выбери другой танец в списке.")
         end
     end)
     return true
@@ -2466,13 +2529,13 @@ local function setDance(on, silent)
         dance.yaw, dance.prevYaw = 0, 0
         startDance(silent)
     else
-        stopDance(true)
+        stopDance()
     end
 end
 
 local function pickDance(id, label)
-    -- Принимаем и ID, и название: с кнопки «следующий» приходит пара,
-    -- из выпадающего списка - только название.
+    -- Принимаем и ID, и название: из dropdown приходит пара (id, label),
+    -- из консоли можно передать только название.
     local key = tostring(label or "")
     local e = dance.entry[key]
     dance.label = key ~= "" and key or tostring(dance.label or "")
@@ -2504,69 +2567,181 @@ G.BS.DanceName = function()
     return "выкл (" .. nm .. ")"
 end
 
--- КАЖДЫЙ КАДР: ассетный трек сам играет, а спин/покачивание крутим
--- сами через PivotTo (дельта угла, чтобы не сбивать направление).
--- СПИН БОТ. Отличия от прежней версии, из-за
--- которых спин не работал «по-настоящему»:
---   * крутим HumanoidRootPart.CFrame напрямую (не PivotTo по модели):
---     у корня физика и сетевое владение, остальные части следуют за ним
---     сами через Weld;
---   * крутим в RunService.Heartbeat, а не в RenderStepped - движение
---     уходит на сервер с Heartbeat-шага, поэтому поворот не дёргается;
---   * AutoRotate = false на время вращения, иначе гуманоид каждый
---     кадр доворачивает персонажа по вектору движения и спин не виден;
---   * скорость по формуле: speed * dt * 3 (по умолчанию 50).
+-- СПИН + ПОВОРОТ ПОД АИМЛОК. Раньше спин крутил HRP в Heartbeat, а
+-- danceTick В ТО ЖЕ ВРЕМЯ крутил всю модель через PivotTo. Два поворота
+-- за кадр давали рывки и «телепорт» на ходу. Теперь владелец поворота
+-- один — SPIN:
+--   * спин крутит HumanoidRootPart.CFrame напрямую (не PivotTo);
+--   * при аимлоке персонаж доворачивается по камере (SPIN.face), чтобы
+--     идти вперёд туда, куда смотрит камера, а не в старую сторону;
+--   * AutoRotate выключается на время любого из этих поворотов и
+--     возвращается, когда не осталось владельцев. Раньше stopDance
+--     возвращал сохранённое false — персонаж застывал лицом в одну
+--     сторону после смены танца.
 -- Всё сложено в одну таблицу SPIN: главный блок скрипта упирается в
 -- лимит локальных переменных Lua (200).
-local SPIN = { conn = nil, prevAuto = nil }
+local SPIN = { conn = nil, owners = {}, hum = nil, savedAuto = nil }
 
-function SPIN.applyAuto(ch)
-    if not ch then return end
-    local hum = ch:FindFirstChildOfClass("Humanoid")
-    if hum then
-        if SPIN.prevAuto == nil then SPIN.prevAuto = hum.AutoRotate end
+-- Вернуть AutoRotate. false могло остаться от старой версии (danceTick
+-- выключал его и не возвращал) или от ragdoll. В обычном состоянии
+-- персонаж обязан доворачиваться по движению, поэтому false лечим на true.
+function SPIN.restoreAuto(hum, saved)
+    if not (hum and hum.Parent) then return end
+    local st, ok = nil, false
+    pcall(function()
+        st = hum:GetState()
+        ok = true
+    end)
+    if saved == false and ok
+       and st ~= Enum.HumanoidStateType.Physics
+       and st ~= Enum.HumanoidStateType.Seated then
+        saved = true
+    end
+    if saved ~= nil then
+        pcall(function() hum.AutoRotate = saved end)
+    end
+end
+
+-- Захватить AutoRotate (owner = "spin" или "face").
+function SPIN.hold(owner, hum)
+    if not hum then return end
+    if SPIN.hum and SPIN.hum ~= hum then
+        -- респавн: старому гуманоиду возвращаем его настройку
+        local old, saved = SPIN.hum, SPIN.savedAuto
+        SPIN.restoreAuto(old, saved)
+        SPIN.hum, SPIN.savedAuto = nil, nil
+        SPIN.owners = {}
+    end
+    if not SPIN.hum then
+        SPIN.hum = hum
+        SPIN.savedAuto = hum.AutoRotate
+    end
+    if owner then SPIN.owners[owner] = true end
+    if hum.AutoRotate then
         pcall(function() hum.AutoRotate = false end)
     end
 end
 
-function SPIN.restoreAuto()
+-- Отпустить владельца. AutoRotate вернётся только когда владельцев нет.
+function SPIN.release(owner)
+    if owner then SPIN.owners[owner] = nil end
+    if next(SPIN.owners) then return end
+    local hum, saved = SPIN.hum, SPIN.savedAuto
+    SPIN.restoreAuto(hum, saved)
+    SPIN.hum, SPIN.savedAuto = nil, nil
+end
+
+function SPIN.releaseAll()
+    SPIN.owners = {}
+    local hum, saved = SPIN.hum, SPIN.savedAuto
+    SPIN.restoreAuto(hum, saved)
+    SPIN.hum, SPIN.savedAuto = nil, nil
+end
+
+-- ПОВОРОТ ПО КАМЕРЕ. Вызывается из aimLockTick, когда камера уже
+-- довернулась на цель. Крутим только yaw и сохраняем позицию/наклон,
+-- поэтому это не телепорт и не мешает ходьбе.
+function SPIN.face(look, dt)
+    if not look then return end
+    -- Спин — главный: пока он включён, аимлок не должен перебивать yaw.
+    if SPIN.owners.spin then
+        pcall(SPIN.release, "face")
+        return
+    end
     local ch = LP and LP.Character
     local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-    if hum and SPIN.prevAuto ~= nil then
-        pcall(function() hum.AutoRotate = SPIN.prevAuto end)
+    local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+    if not (hum and hrp and hum.Health > 0) then
+        pcall(SPIN.release, "face")
+        return
     end
-    SPIN.prevAuto = nil
+    -- В машине/на лежачем/в физике персонажа не доворачиваем: там
+    -- CFrame root-а управляет игра, и наш поворот только дёргал бы модель.
+    if hum.SeatPart then
+        pcall(SPIN.release, "face")
+        return
+    end
+    local st, stOk = nil, false
+    pcall(function()
+        st = hum:GetState()
+        stOk = true
+    end)
+    if stOk and st == Enum.HumanoidStateType.Physics then
+        pcall(SPIN.release, "face")
+        return
+    end
+    local flat = Vector3.new(look.X, 0, look.Z)
+    if flat.Magnitude < 0.01 then
+        -- смотрим строго вниз/вверх: yaw не определён, отпускаем владение,
+        -- иначе AutoRotate остался бы false и персонаж снова застыл бы
+        pcall(SPIN.release, "face")
+        return
+    end
+    flat = flat.Unit
+    local cur = hrp.CFrame.LookVector
+    local curFlat = Vector3.new(cur.X, 0, cur.Z)
+    if curFlat.Magnitude < 0.01 then
+        curFlat = Vector3.new(0, 0, -1)
+    else
+        curFlat = curFlat.Unit
+    end
+    local desiredYaw = math.atan2(-flat.X, -flat.Z)
+    local curYaw = math.atan2(-curFlat.X, -curFlat.Z)
+    local diff = (desiredYaw - curYaw + math.pi) % (2 * math.pi) - math.pi
+    if math.abs(diff) < 0.003 then
+        SPIN.hold("face", hum)
+        return
+    end
+    -- Ограничение скорости: на лаге dt большой, и без него персонаж
+    -- проворачивался бы рывком (снова «телепорт»).
+    local maxStep = math.rad(1200) * math.max(dt or 0.016, 0.001)
+    if diff > maxStep then diff = maxStep
+    elseif diff < -maxStep then diff = -maxStep end
+    SPIN.hold("face", hum)
+    local pos = hrp.Position
+    pcall(function()
+        hrp.CFrame = CFrame.new(pos)
+            * CFrame.Angles(0, diff, 0) * (hrp.CFrame - pos)
+    end)
 end
 
 function SPIN.stop()
     if SPIN.conn then pcall(function() SPIN.conn:Disconnect() end) end
     SPIN.conn = nil
-    SPIN.restoreAuto()
+    pcall(SPIN.release, "spin")
 end
 
 function SPIN.start()
     if SPIN.conn then return end
-    SPIN.prevAuto = nil
-    SPIN.applyAuto(LP and LP.Character)
     SPIN.conn = RunService.Heartbeat:Connect(function(dt)
-        if STOPPED or not G.BS.Spin then return end
+        if STOPPED then return end
+        if not G.BS.Spin then
+            pcall(SPIN.release, "spin")
+            return
+        end
         pcall(function()
             local ch = LP and LP.Character
             if not ch then return end
             local hrp = ch:FindFirstChild("HumanoidRootPart")
-            if not hrp or not hrp.Parent then return end
             local hum = ch:FindFirstChildOfClass("Humanoid")
+            if not hrp or not hrp.Parent then return end
             if hum and hum.Health <= 0 then return end
             -- спин крутит и на ходу, и стоя (движение не мешает)
-            SPIN.applyAuto(ch)
+            SPIN.hold("spin", hum)
             -- зажимаем скорость: сохранённые настройки Rayfield могли
             -- остаться от старой версии (там было 360, а формула
             -- умножает скорость ещё на 3 - персонаж крутился бы рывками)
             local spd = tonumber(G.BS.SpinSpeed) or 50
-            if spd < 5 then spd = 5 end
-            if spd > 200 then spd = 200 end
-            local delta = spd * dt * 3
-            hrp.CFrame = hrp.CFrame * CFrame.Angles(0, math.rad(delta), 0)
+            if spd < 5 then spd = 5 elseif spd > 200 then spd = 200 end
+            -- ограничиваем шаг: при просадке FPS dt=0.2 дал бы рывок
+            local step = math.min(math.max(dt or 0.016, 0.001), 0.05)
+            local delta = spd * step * 3
+            -- Крутим вокруг МИРОВОЙ Y, сохраняя позицию и наклон HRP:
+            -- локальный Y при наклоне модели давал бы вихляние.
+            local pos = hrp.Position
+            hrp.CFrame = CFrame.new(pos)
+                * CFrame.Angles(0, math.rad(delta), 0)
+                * (hrp.CFrame - pos)
         end)
     end)
 end
@@ -2583,9 +2758,10 @@ function SPIN.set(on)
     end
 end
 
--- КАЖДЫЙ КАДР: ассетный трек сам играет, а покачивание (если вдруг
--- включено из консоли) крутим дельтой угла через PivotTo.
-local function danceTick(dt, now)
+-- КАЖДЫЙ КАДР: только поддержка анимации. Поворот (спин и доворот под
+-- аимлок) живёт в SPIN — второго PivotTo здесь больше нет, иначе модель
+-- крутилась дважды за кадр и на ходу казалось, что персонаж телепортит.
+local function danceTick(_, now)
     if not dance.on then return end
     -- ЭМОУТ. Если знаем ID анимации - играем локальную петлю, которую
     -- ходьба НЕ сбрасывает. Раньше эмоут перезапускался каждые 2.5 с,
@@ -2626,42 +2802,10 @@ local function danceTick(dt, now)
             end)
         end
     end
-    if not (dance.spin or dance.sway) then return end
-    local ch = LP and LP.Character
-    if not ch or not ch.Parent then return end
-    local hum = ch:FindFirstChildOfClass("Humanoid")
-    if hum and hum.Health <= 0 then return end
-    if hum then
-        -- без AutoRotate = false гуманоид каждый кадр доворачивает
-        -- персонажа по вектору движения и спин не виден
-        if dance.autoRotSaved == nil or dance.arHum ~= hum then
-            if dance.arHum and dance.autoRotSaved ~= nil
-               and dance.arHum.Parent then
-                pcall(function() dance.arHum.AutoRotate = dance.autoRotSaved end)
-            end
-            dance.autoRotSaved = hum.AutoRotate
-            dance.arHum = hum
-        end
-        pcall(function() hum.AutoRotate = false end)
-    end
-    local yaw
-    if dance.sway and not dance.spin then
-        yaw = math.rad(dance.swayAmp) * math.sin(now * dance.swaySpeed)
-    elseif dance.spin and dance.sway then
-        yaw = dance.yaw + math.rad(dance.swayAmp) * math.sin(now * dance.swaySpeed)
-    elseif dance.spin then
-        yaw = dance.yaw + dance.spinSpeed * dt
-    else
-        return
-    end
-    local d = yaw - dance.prevYaw
-    dance.prevYaw = yaw
-    if math.abs(d) < 0.000001 then return end
-    pcall(function()
-        local piv = ch:GetPivot()
-        ch:PivotTo(CFrame.new(piv.Position)
-            * CFrame.Angles(0, d, 0) * piv.Rotation)
-    end)
+    -- Поворот (спин и доворот под аимлок) делает SPIN в Heartbeat.
+    -- Здесь НЕЛЬЗЯ трогать PivotTo или AutoRotate: иначе получается
+    -- второй поворот за кадр, персонаж дёргается/«телепортит» при ходьбе,
+    -- а после смены танца застывает лицом в одну сторону.
 end
 
 -- КЛАВИША (по умолчанию F7) - включает/выключает танец, чтобы не
@@ -2720,56 +2864,115 @@ end
 -- рывок при каждом прыжке: WalkSpeed умножается на JumpBoostMul на
 -- JumpBoostTime секунд, плюс небольшой горизонтальный импульс по
 -- направлению движения - тогда ускорение видно сразу.
-local speedState = { base = nil, hum = nil }
+local speedState = { base = nil, hum = nil, jumpHum = nil, jumpConn = nil,
+                     active = false, conn = nil }
 
-function speedState.applyWalk(hum, base)
-    if not hum or not hum.Parent then return end
-    local m = 1
-    if os.clock() < (G.BS._jumpUntil or 0) then
-        m = tonumber(G.BS.JumpBoostMul) or 1.7
+function speedState.restore()
+    local hum = speedState.hum
+    if hum and hum.Parent and speedState.base then
+        pcall(function() hum.WalkSpeed = speedState.base end)
     end
-    pcall(function() hum.WalkSpeed = base * m end)
+    speedState.active = false
+    G.BS._jumpUntil = 0
 end
 
+function speedState.stop()
+    if speedState.conn then
+        pcall(function() speedState.conn:Disconnect() end)
+    end
+    speedState.conn = nil
+    if speedState.jumpConn then
+        pcall(function() speedState.jumpConn:Disconnect() end)
+    end
+    speedState.jumpConn = nil
+    speedState.jumpHum = nil
+    speedState.restore()
+    speedState.hum, speedState.base = nil, nil
+end
+
+-- РЫВОК ПРИ ПРЫЖКЕ. Главная ошибка старой версии: base запоминался
+-- один раз при появлении персонажа, когда WalkSpeed ещё 0. Теперь base
+-- берётся в момент прыжка (последнее нормальное значение), а множитель
+-- принудительно держится каждый физический шаг — игра не успевает
+-- сбросить WalkSpeed обратно.
 function speedState.hookJump()
+    if speedState.conn then
+        pcall(function() speedState.conn:Disconnect() end)
+    end
+    speedState.conn = RunService.Stepped:Connect(function()
+        if STOPPED then return end
+        local hum = speedState.hum
+        if not hum or not hum.Parent or hum.Health <= 0 then return end
+        local now = os.clock()
+        if speedState.active and now < (G.BS._jumpUntil or 0) then
+            local base = speedState.base or 16
+            local mul = tonumber(G.BS.JumpBoostMul) or 1.7
+            if mul < 1.1 then mul = 1.1 elseif mul > 3 then mul = 3 end
+            pcall(function() hum.WalkSpeed = base * mul end)
+        elseif speedState.active then
+            local base = speedState.base or 16
+            pcall(function() hum.WalkSpeed = base end)
+            speedState.active = false
+            G.BS._jumpUntil = 0
+        else
+            -- пока рывка нет — запоминаем актуальную базовую скорость
+            local ws = tonumber(hum.WalkSpeed) or 0
+            if ws >= 1 then speedState.base = ws end
+        end
+    end)
+
     local function bind(ch)
         if STOPPED then return end
         local hum = ch and ch:WaitForChild("Humanoid", 10)
         if not hum then return end
         if speedState.hum ~= hum then
             speedState.hum = hum
-            speedState.base = hum.WalkSpeed
+            speedState.active = false
+            speedState.base = nil
+            G.BS._jumpUntil = 0
         end
-        hum.Jumping:Connect(function(active)
+        if not speedState.active then
+            local ws0 = tonumber(hum.WalkSpeed) or 0
+            if ws0 >= 1 then speedState.base = ws0 end
+        end
+        -- не подключаем второй Jumping к тому же гуманоиду (двойной
+        -- импульс, если CharacterAdded сработал повторно)
+        if speedState.jumpHum == hum then return end
+        if speedState.jumpConn then
+            pcall(function() speedState.jumpConn:Disconnect() end)
+            speedState.jumpConn = nil
+        end
+        speedState.jumpHum = hum
+        speedState.jumpConn = hum.Jumping:Connect(function(active)
             if STOPPED or not active or G.BS.JumpBoostV2 == false then return end
+            if speedState.hum ~= hum then return end
             if not hum.Parent or hum.Health <= 0 then return end
-            local base = speedState.base or hum.WalkSpeed
+            local base = speedState.base
+            if not base or base < 1 then
+                base = tonumber(hum.WalkSpeed) or 16
+                if base < 1 then base = 16 end
+                speedState.base = base
+            end
             local t = tonumber(G.BS.JumpBoostTime) or 0.8
             if t < 0.2 then t = 0.2 elseif t > 3 then t = 3 end
+            local mul = tonumber(G.BS.JumpBoostMul) or 1.7
+            if mul < 1.1 then mul = 1.1 elseif mul > 3 then mul = 3 end
             G.BS._jumpUntil = os.clock() + t
-            speedState.applyWalk(hum, base)
-            -- горизонтальный импульс по направлению бега
+            speedState.active = true
+            pcall(function() hum.WalkSpeed = base * mul end)
+            -- горизонтальный импульс по направлению бега: одного
+            -- WalkSpeed мало, персонаж разгоняется плавно
             local hrp = ch:FindFirstChild("HumanoidRootPart")
             local md = hum.MoveDirection
             if hrp and md.Magnitude > 0.05 then
-                local mul = tonumber(G.BS.JumpBoostMul) or 1.7
-                local imp = math.max(0, (mul - 1) * 10)
+                local dir = md.Unit
+                local imp = base * (mul - 1) * 1.2
                 local v = hrp.AssemblyLinearVelocity
                 pcall(function()
                     hrp.AssemblyLinearVelocity = Vector3.new(
-                        v.X + md.X * imp, v.Y, v.Z + md.Z * imp)
+                        v.X + dir.X * imp, v.Y, v.Z + dir.Z * imp)
                 end)
             end
-            -- снимаем рывок ровно один раз (повторный прыжок отменяет
-            -- старый таймер через sequence)
-            local seq = (G.BS._jumpSeq or 0) + 1
-            G.BS._jumpSeq = seq
-            task.delay(t, function()
-                if STOPPED or G.BS._jumpSeq ~= seq then return end
-                G.BS._jumpUntil = 0
-                local h = speedState.hum
-                if h and h.Parent then speedState.applyWalk(h, base) end
-            end)
         end)
     end
     if LP.Character then bind(LP.Character) end
@@ -3811,16 +4014,31 @@ local function refreshGunFlag(now)
 end
 
 local function aimLockTick(dt, now)
-    if not G.BS.AimLock then dropLock() return end
+    if not G.BS.AimLock then
+        dropLock()
+        pcall(SPIN.release, "face")
+        return
+    end
     -- цель считаем сами: аимлок больше не зависит от клиент-аима,
     -- иначе при выключенной подмене патрона камера вообще не велась.
     if not bulletPreShot then pcall(computeBulletPreShot) end
     local pre = bulletPreShot
-    if not (pre and pre.pos) then dropLock() return end
-    if not refreshGunFlag(now) then dropLock() return end
+    if not (pre and pre.pos) then
+        dropLock()
+        pcall(SPIN.release, "face")
+        return
+    end
+    if not refreshGunFlag(now) then
+        dropLock()
+        pcall(SPIN.release, "face")
+        return
+    end
 
     local cam = workspace.CurrentCamera
-    if not cam then return end
+    if not cam then
+        pcall(SPIN.release, "face")
+        return
+    end
     -- ЦЕЛЬ АИМЛОКА. По умолчанию - реальная точка удара (pre.pos):
     -- она уже с опережением и с учётом свободной части тела.
     -- Если включена «только цель из списка», берём именно её часть -
@@ -3835,17 +4053,27 @@ local function aimLockTick(dt, now)
     -- LOCK_TARGET не подменяет tgt здесь: computeBulletPreShot уже отдал
     -- удерживаемой цели приоритет, и pre.pos/pre.part — это она же.
     -- Иначе камера могла смотреть в pre.pos, а проверка стены — в другого.
-    if not (tgt and tgt.Parent) then dropLock() return end
+    if not (tgt and tgt.Parent) then
+        dropLock()
+        pcall(SPIN.release, "face")
+        return
+    end
 
     -- ПОВ: поворот камеры можно выключить - тогда подмена патрона
     -- работает молча, а камера остаётся твоей.
-    if G.BS.AimLockTurn == false then return end
+    if G.BS.AimLockTurn == false then
+        pcall(SPIN.release, "face")
+        return
+    end
 
     local cf = cam.CFrame
     local pos = cf.Position
     local look = pre.pos
     local toT = look - pos
-    if toT.Magnitude < 0.5 then return end
+    if toT.Magnitude < 0.5 then
+        pcall(SPIN.release, "face")
+        return
+    end
 
     -- НЕ ДОВОДИМ КАМЕРУ СКВОЗЬ СТЕНЫ (по просьбе): если между нами и
     -- целью стена - взгляд остаётся твоим.
@@ -3856,7 +4084,10 @@ local function aimLockTick(dt, now)
             local hit = workspace:Raycast(pos, toT, AIMLOCKRAY)
             if hit and hit.Distance < toT.Magnitude - 1.2 then blocked = true end
         end)
-        if blocked then return end
+        if blocked then
+            pcall(SPIN.release, "face")
+            return
+        end
     end
 
     local target = CFrame.lookAt(pos, look, cf.UpVector)
@@ -3881,16 +4112,25 @@ local function aimLockTick(dt, now)
         if frac < 0.02 then frac = 0.02 end
         if frac > 1 then frac = 1 end
     end
-    if frac <= 0 then return end
+    if frac <= 0 then
+        pcall(SPIN.release, "face")
+        return
+    end
     if frac >= 1 then
         cam.CFrame = target
+        -- Камера уже смотрит на цель. Доворачиваем и ПЕРСОНАЖА, иначе
+        -- при ходьбе вперёд он продолжает идти в старую сторону, хотя
+        -- камера повернулась. Позиция и наклон HRP сохраняются.
+        pcall(SPIN.face, target.LookVector, dt)
         return
     end
     -- Плавный режим: сглаживание по ВРЕМЕНИ, а не по кадрам, чтобы
     -- скорость не зависела от FPS.
     local k = 1 - math.exp(-frac / math.max(dt or 0.016, 0.001))
     if k > 1 then k = 1 end
-    cam.CFrame = cf:Lerp(target, k)
+    local newCF = cf:Lerp(target, k)
+    cam.CFrame = newCF
+    pcall(SPIN.face, newCF.LookVector, dt)
 end
 
 -- АИМЛОК ВСТРАИВАЕМ В КАДР ПОСЛЕДНИМ. Roblox пересчитывает CFrame
@@ -3907,7 +4147,10 @@ local function bindAimLockStep()
     local ok = pcall(function()
         RunService:BindToRenderStep("BS_AimLock", prio, function(dt)
             if STOPPED then return end
-            pcall(aimLockTick, dt or 0.016, os.clock())
+            local ok = pcall(aimLockTick, dt or 0.016, os.clock())
+            -- если кадр аимлока упал, не оставляем AutoRotate зажатым:
+            -- иначе персонаж застынет лицом в одну сторону до перезапуска
+            if not ok then pcall(SPIN.release, "face") end
         end)
     end)
     if ok then AIM_STEP_BOUND = true end
@@ -4892,13 +5135,13 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Танец v11.18",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок v11.19",
     ConfigurationSaving = { Enabled = true },
 })
 
 local TAB  = Window:CreateTab("ESP", 4483362458)
 local AIMT = Window:CreateTab("AIM", 1101060692)
-local DNC  = Window:CreateTab("ТАНЕЦ", 1183774348)
+local PLRT = Window:CreateTab("ИГРОК", 1183774348)
 
 -- ЗАЩИТА СОЗДАНИЯ ЭЛЕМЕНТОВ: один упавший Create* не должен
 -- ронять всю вкладку. UI_ERR объявлена выше (в блоке состояния),
@@ -4932,7 +5175,7 @@ end
 
 local TB = mkTab(TAB,  "ESP")
 local AI = mkTab(AIMT, "AIM")
-local DN = mkTab(DNC,  "ТАНЕЦ")
+local PL = mkTab(PLRT, "ИГРОК")
 
 -- Кнопок-выключателей больше нет: везде обычные тумблеры Rayfield.
 
@@ -5104,14 +5347,7 @@ end })
 
 -- ======================= ПРЫЖОК =======================
 -- Ускоритель по Shift удалён: остался только рывок в прыжке.
-TB.CreateSection("Прыжок")
-TB.CreateToggle({ Name = "Ускорение в прыжке", Flag = "BS_JumpBoostV2",
-    CurrentValue = G.BS.JumpBoostV2 ~= false,
-    Callback = function(v) G.BS.JumpBoostV2 = v end })
-TB.CreateSlider({ Name = "Множитель прыжка", Flag = "BS_JumpBoostMul",
-    Range = {1.1, 3}, Increment = 0.1,
-    CurrentValue = tonumber(G.BS.JumpBoostMul) or 1.7,
-    Suffix = " x", Callback = function(v) G.BS.JumpBoostMul = v end })
+-- В v11.19 блок перенесён во вкладку ИГРОК (вместе с танцем/спином).
 
 -- ======================= AIM =======================
 -- ДВЕ КНОПКИ (по просьбе): «Клиент айм» и «Аимлок».
@@ -5185,45 +5421,122 @@ AI.CreateToggle({ Name = "Показывать круг аима",
 -- probeWeapon остались в файле.
 
 -- ============================================================
---  ТАНЕЦ: ДВЕ КНОПКИ (по просьбе)
+--  ИГРОК: ПРЫЖОК + ТАНЕЦ/СПИН
 -- ============================================================
--- Раньше тут была целая простыня: тумблеры, слайдеры, поле для ID,
--- кнопка поиска, F7 и отдельный «спринт». Теперь ровно две кнопки:
---   ТАНЦЕВАТЬ - включает/выключает найденную анимацию игры;
---   СПИН      - крутит модель на месте (спин-стрейф), можно вместе
---               с танцем. Ассеты не нужны, работает всегда.
--- Танцы ищутся САМИ при запуске (Animation-объекты игры + require
--- модулей + то, что игра играет сама) и сразу попадают в список.
-local DANCE_PLACEHOLDER = { "ищу танцы в игре…" }
-refreshDanceDropdown = function()
+-- В v11.19 отдельная вкладка ТАНЕЦ удалена: прыжок и танец теперь
+-- в одной вкладке ИГРОК. Список танцев - выпадающий (не кнопки
+-- «следующий/предыдущий»).
+PL.CreateSection("Прыжок")
+PL.CreateToggle({ Name = "Ускорение в прыжке", Flag = "BS_JumpBoostV2",
+    CurrentValue = G.BS.JumpBoostV2 ~= false,
+    Callback = function(v)
+        G.BS.JumpBoostV2 = v
+        -- НЕ disconnect: иначе после выключения и повторного включения
+        -- рывок больше не заработает до перезапуска скрипта. Если рывок
+        -- сейчас активен - возвращаем базу; иначе WalkSpeed не трогаем.
+        if not v and speedState.active then pcall(speedState.restore) end
+    end })
+PL.CreateSlider({ Name = "Множитель прыжка", Flag = "BS_JumpBoostMul",
+    Range = {1.1, 3}, Increment = 0.1,
+    CurrentValue = tonumber(G.BS.JumpBoostMul) or 1.7,
+    Suffix = " x", Callback = function(v) G.BS.JumpBoostMul = v end })
+
+PL.CreateSection("Танец")
+dance.toggle = PL.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
+    CurrentValue = dance.on == true,
+    Callback = function(v) pcall(setDance, v) end })
+PL.CreateToggle({ Name = "Спин (крутишься)", Flag = "BS_Spin",
+    CurrentValue = dance.spin == true,
+    Callback = function(v) pcall(SPIN.set, v) end })
+
+-- Список для Rayfield: подписи уникальны (у обычных танцев в конце ID).
+-- Если хвосты ID совпали, добавляем #2/#3: Rayfield создаёт Frame с
+-- именем опции, и одинаковые имена ломали выбор.
+local function danceOptionList()
     local opts = dance.labels()
-    if #opts == 0 then opts = DANCE_PLACEHOLDER end
+    if #opts == 0 then opts = { "танец не найден" } end
+    local seen = {}
+    for i = 1, #opts do
+        local base = opts[i]
+        local n = 1
+        while seen[opts[i]] do
+            n = n + 1
+            opts[i] = base .. " #" .. n
+        end
+        seen[opts[i]] = true
+    end
+    return opts
+end
+
+-- Текущая подпись для CurrentOption. Rayfield ждёт ТАБЛИЦУ, а не строку
+-- (из-за строки в старом коде dropdown и не создавался).
+local function currentDanceLabel()
+    local opts = danceOptionList()
+    for i = 1, #DANCES do
+        local d = DANCES[i]
+        if (d.id and dance.id == d.id)
+           or (d.emote and dance.emote == d.emote) then
+            return opts[i] or opts[1]
+        end
+    end
+    return opts[1]
+end
+
+refreshDanceDropdown = function()
     if not danceDD then return end
-    -- В сборке Rayfield игрока SetOptions/AddOptions недоступны
-    -- (ошибок GUI=2), поэтому выбор делают кнопки «следующий/предыдущий
-    -- танец», а список - только удобство.
+    local opts = danceOptionList()
+    -- Актуальный Rayfield: метод Refresh. Старые SetOptions/AddOptions
+    -- оставлены запасным вариантом для кастомных сборок.
+    if pcall(function() danceDD:Refresh(opts) end) then return end
     if pcall(function() danceDD:SetOptions(opts) end) then return end
     pcall(function() danceDD:AddOptions(opts) end)
 end
 
-DN.CreateSection("Тумблеры танца")
-dance.toggle = DN.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
-    CurrentValue = dance.on == true,
-    Callback = function(v) pcall(setDance, v) end })
-DN.CreateToggle({ Name = "Спин (крутишься)", Flag = "BS_Spin",
-    CurrentValue = dance.spin == true,
-    Callback = function(v) pcall(SPIN.set, v) end })
-DN.CreateButton({ Name = "СЛЕДУЮЩИЙ ТАНЕЦ", Callback = function()
-    pcall(dance.next, 1)
-end })
-DN.CreateButton({ Name = "Предыдущий танец", Callback = function()
-    pcall(dance.next, -1)
-end })
+danceDD = PL.CreateDropdown({
+    Name = "Какой танец",
+    Flag = "BS_DancePick2",
+    Options = danceOptionList(),
+    CurrentOption = { currentDanceLabel() },
+    MultipleOptions = false,
+    Callback = function(selected)
+        -- Rayfield отдаёт CurrentOption-таблицу. Старые сборки могли
+        -- отдавать строку - поддерживаем оба варианта.
+        local picked = selected
+        if type(picked) == "table" then picked = picked[1] end
+        if type(picked) ~= "string" then return end
+        local opts = danceOptionList()
+        for i = 1, #opts do
+            if opts[i] == picked then
+                local d = DANCES[i]
+                if d then
+                    -- Сначала меняем выбор, НЕ запуская его (dance.on=false),
+                    -- потом синхронизируем тумблер: иначе toggle:Set(true)
+                    -- успевал запустить СТАРЫЙ танец, и новый стартовал
+                    -- вторым запуском - был лишний рывок анимации.
+                    local wasOn = dance.on
+                    dance.on = false
+                    pcall(pickDance, d.id, d.label)
+                    dance.on = true
+                    G.BS.DanceOn = true
+                    if dance.toggle then
+                        if wasOn then
+                            pcall(startDance, true)
+                        else
+                            pcall(function() dance.toggle:Set(true) end)
+                        end
+                    else
+                        pcall(startDance, true)
+                    end
+                end
+                return
+            end
+        end
+        -- запасной путь: вдруг пришла подпись из dance.entry
+        pcall(pickDance, nil, picked)
+    end,
+})
 
--- Выпадающий список УБРАН: в сборке Rayfield игрока он не создаётся
--- (в поле навсегда остаётся «ищу танцы в игре…»). Выбор - кнопками,
--- название текущего танца видно в HUD и в ленте событий.
-DN.CreateButton({ Name = "СПИСОК ТАНЦЕВ (в консоль)", Callback = function()
+PL.CreateButton({ Name = "СПИСОК ТАНЦЕВ (в консоль)", Callback = function()
     pcall(function()
         print("[BS DANCE] всего танцев: " .. #DANCES)
         for i = 1, #DANCES do
@@ -5234,7 +5547,7 @@ DN.CreateButton({ Name = "СПИСОК ТАНЦЕВ (в консоль)", Callba
     end)
     addEvent("список танцев выведен в консоль")
 end })
-DN.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
+PL.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
     Range = {10, 200}, Increment = 5, CurrentValue = G.BS.SpinSpeed,
     Suffix = " °/с", Callback = function(v)
         G.BS.SpinSpeed = v
@@ -5245,6 +5558,35 @@ DN.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
 refreshDanceDropdown()
 end   -- конец buildGui
 
+-- БЫСТРЫЙ ПРЕДСКАН ТАНЦЕВ ДО GUI: dropdown создаётся сразу с
+-- реальными вариантами, а не с пустым списком. Полный scanDances
+-- (с require модулей) запускается позже в task, чтобы тяжёлый require
+-- не задерживал открытие меню. Если скан упадёт - останутся
+-- emote_dance и классические ID, они добавлены выше.
+pcall(function()
+    local out = {}
+    scanAnimInstances(out)
+    scanEmoteSlots(out)
+    scanPlayingAnims(out, false)
+end)
+-- ЛЕЧИМ AutoRotate ОТ СТАРОЙ ВЕРСИИ. v11.18 могла оставить false на
+-- текущем персонаже; тогда он не поворачивается даже без спина/аимлока.
+-- Новый SPIN сохранит уже правильное значение true.
+pcall(function()
+    local ch = LP and LP.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health > 0 and not hum.SeatPart then
+        local st, ok = nil, false
+        pcall(function()
+            st = hum:GetState()
+            ok = true
+        end)
+        if not ok or (st ~= Enum.HumanoidStateType.Physics
+           and st ~= Enum.HumanoidStateType.Seated) then
+            hum.AutoRotate = true
+        end
+    end
+end)
 buildGui()
 
 -- ============================================================
@@ -5278,18 +5620,12 @@ G.BS_Stop = function()
     for i = 1, #hitLines do pcall(function() hitLines[i]:Remove() end) end
     hitLines = {}
     EVENTS = {}
-    -- танец: снимаем свой трек, возвращаем походку и AutoRotate
-    pcall(stopDance, true)
+    -- танец: снимаем свой трек; AutoRotate вернёт SPIN.releaseAll
+    pcall(stopDance)
     pcall(SPIN.stop)
+    pcall(SPIN.releaseAll)
     -- вернуть скорость, если скрипт сняли в момент прыжкового рывка
-    pcall(function()
-        local hum = speedState.hum
-        if hum and hum.Parent and speedState.base then
-            hum.WalkSpeed = speedState.base
-        end
-        speedState.hum, speedState.base = nil, nil
-        G.BS._jumpUntil = 0
-    end)
+    pcall(speedState.stop)
     pcall(function() RunService:UnbindFromRenderStep("BS_AimLock") end)
     AIM_STEP_BOUND = false
     if connDanceKey then pcall(function() connDanceKey:Disconnect() end) end
@@ -5326,7 +5662,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.18 остановлен")
+    print("[BS HUB] v11.19 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -5376,16 +5712,16 @@ task.spawn(function()
     G.BS.SetRole     = ROLES.set
     G.BS.RoleSummary = ROLES.summary
     G.BS.ResetRoles  = ROLES.reset
-    if G.BS.DanceAutoScan then
-        task.wait(1)
-        pcall(scanDances, true)
-        pcall(refreshDanceDropdown)
-    end
-    -- значения из сохранённого конфига Rayfield -> состояние движка
+    -- значения из сохранённого состояния -> состояние движка.
+    -- ВАЖНО: делаем это ДО полного скана танцев, иначе require модулей
+    -- мог задержать/подвесить задачу, и танец/спин не восстановились бы.
     dance.spin      = G.BS.Spin == true
     dance.sway      = G.BS.Sway == true
     dance.spinSpeed = tonumber(G.BS.SpinSpeed) or 50
     dance.swayAmp   = tonumber(G.BS.SwayAmp) or 20
+    -- если спин был включён в сохранённом конфиге, поднимаем коннект
+    -- (тумблер Rayfield мог не вызвать Callback при восстановлении)
+    if G.BS.Spin then pcall(SPIN.set, true) end
     -- если танец ещё не выбирали - берём первый из списка
     -- (первым всегда идёт эмоут emote_dance, он работает в любой игре)
     if dance.label == "" and #DANCES > 0 then
@@ -5399,9 +5735,18 @@ task.spawn(function()
             pcall(setDance, true)
         end)
     end
+    -- Полный скан (require модулей) - отдельной задачей: даже если
+    -- какой-то модуль залипнет, GUI и танец уже работают.
+    if G.BS.DanceAutoScan then
+        task.spawn(function()
+            task.wait(1)
+            pcall(scanDances, true)
+            pcall(refreshDanceDropdown)
+        end)
+    end
 end)
 
-print("[BS HUB] v11.18 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.19 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
