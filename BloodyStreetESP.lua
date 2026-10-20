@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.15.3
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.16
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -184,6 +184,10 @@ G.BS.SpinSpeed = tonumber(G.BS.SpinSpeed) or 50
 G.BS.SpinOnlyStill = nil   -- тумблер удалён: спин крутит и на ходу
 G.BS.AimFireMode   = G.BS.AimFireMode ~= false  -- кнопка "держишь пушку"
 G.BS.SpeedMul = tonumber(G.BS.SpeedMul) or 2
+-- УСКОРЕНИЕ В ПРЫЖКЕ: при каждом прыжке кратковременный рывок.
+G.BS.JumpBoost     = G.BS.JumpBoost ~= false
+G.BS.JumpBoostMul  = tonumber(G.BS.JumpBoostMul) or 1.7
+G.BS.JumpBoostTime = tonumber(G.BS.JumpBoostTime) or 0.8
 -- Сдвиг времени выстрела в ремоуте (аргумент №5) вперёд, чтобы
 -- сервер считал, что WEAPON_COOLDOWN уже прошёл.
 G.BS.ShotTimeHack = G.BS.ShotTimeHack == true
@@ -1795,6 +1799,7 @@ local dance = {
     on = false,             -- танец включён
     label = "", id = nil,    -- выбранная анимация
     emote = nil,             -- имя эмоута для EmotePlay ("emote_dance")
+    emoteId = {},            -- имя эмоута -> ID анимации (для локальной петли)
     emoteAt = 0,             -- когда последний раз посылали EmotePlay
     entry = {},              -- label -> запись (анимация или эмоут)
     track = nil, anim = nil, animator = nil, lowered = {},
@@ -1855,6 +1860,60 @@ end
 
 -- Гарантированный танец: имя известно из лога игры (EmotePlay).
 dance.addEmote("emote_dance")
+
+-- СВЯЗКА «ИМЯ ЭМОУТА -> ID АНИМАЦИИ».
+-- EmoteSetSlots обычно приходит таблицей вида {name="emote_dance",
+-- animation="rbxassetid://..."} или {emote_dance = "rbxassetid://..."}.
+-- Без этой связи эмоут можно только перезапускать ремоутом, и при ходьбе
+-- игра его сбрасывает. С ID мы играем анимацию локально петлёй на
+-- высоком приоритете - она не прерывается движением.
+dance.pairIds = function(t, depth)
+    if type(t) ~= "table" or depth > 4 then return end
+    local names, ids = {}, {}
+    pcall(function()
+        for k, v in pairs(t) do
+            if type(v) == "string" then
+                local s = normAnimId(v)
+                if s then
+                    ids[#ids + 1] = s
+                    local kl = string.lower(tostring(k))
+                    if string.find(kl, "emote", 1, true)
+                       or string.find(kl, "dance", 1, true)
+                       or string.find(kl, "anim", 1, true) then
+                        dance.emoteId[tostring(k)] = s
+                    end
+                else
+                    local vl = string.lower(v)
+                    if string.find(vl, "emote", 1, true)
+                       or string.find(vl, "dance", 1, true)
+                       or string.find(vl, "pose", 1, true)
+                       or string.find(vl, "wave", 1, true)
+                       or string.find(vl, "sit", 1, true) then
+                        names[#names + 1] = v
+                    end
+                end
+            elseif type(v) == "table" and depth < 4 then
+                dance.pairIds(v, depth + 1)
+            end
+        end
+        -- одна пара в таблице - почти наверняка имя и его анимация
+        if #names == 1 and #ids == 1 then
+            dance.emoteId[names[1]] = ids[1]
+        end
+    end)
+end
+
+-- Поиск ID по имени эмоута (регистр не важен).
+dance.findId = function(name)
+    local n = tostring(name or "")
+    if n == "" then return nil end
+    if dance.emoteId[n] then return dance.emoteId[n] end
+    local ln = string.lower(n)
+    for k, v in pairs(dance.emoteId) do
+        if string.lower(tostring(k)) == ln then return v end
+    end
+    return DANCE_BY_NAME[n]
+end
 
 -- ПОДПИСИ ТАНЦЕВ. В игре почти все анимации названы одинаково
 -- ("Animation"), поэтому в списке было 8 одинаковых строк и непонятно,
@@ -1921,9 +1980,14 @@ dance.fireEmote = function(name)
         end
         return false
     end
+    -- ЛОВУШКА ДЛЯ ID: следующая анимация, которую загрузит игра после
+    -- EmotePlay, — это анимация эмоута. Хук LoadAnimation свяжет её с
+    -- именем и включит локальную петлю (см. captureAnimArg).
+    dance.pendingEmote = tostring(name)
+    dance.pendingAt = os.clock()
     local ok = pcall(function() rem:FireServer(name) end)
-    -- В ленту пишем только при смене эмоута, иначе повтор каждые 2.5 с
-    -- забивал бы события.
+    -- В ленту пишем только при смене эмоута, иначе повтор забивал бы
+    -- события при каждом перезапуске.
     if dance.reportedEmote ~= tostring(name) then
         dance.reportedEmote = tostring(name)
         if ok then
@@ -1948,6 +2012,23 @@ local function captureAnimArg(a)
     local nm = tostring(a.Name or "?")
     if MOVE_TRACKS[string.lower(nm)] then return end   -- ходьба - не танец
     addDance(nm, id)
+    -- СВЯЗКА С ЭМОУТОМ: если только что послали EmotePlay, следующая
+    -- загруженная анимация - его ID. Запоминаем и сразу включаем петлю.
+    local pn = dance.pendingEmote
+    if pn and os.clock() - (dance.pendingAt or 0) < 1.5 then
+        dance.emoteId[pn] = id
+        dance.pendingEmote = nil
+        print("[BS DANCE] эмоут " .. tostring(pn) .. " -> " .. id
+            .. " (хук LoadAnimation)")
+        if dance.on and dance.emote == pn and dance.playId then
+            -- не грузим анимацию внутри __namecall: откладываем на кадр
+            task.defer(function()
+                if dance.on and dance.emote == pn then
+                    pcall(dance.playId, id, true)
+                end
+            end)
+        end
+    end
 end
 dance.captureAnimArg = captureAnimArg
 
@@ -2135,6 +2216,7 @@ local function captureEmoteArgs(...)
                 end
             end
         elseif t == "table" then
+            pcall(dance.pairIds, a, 0)
             pcall(scanEmoteTable, a, 1, "emoteplay")
         end
     end
@@ -2146,6 +2228,8 @@ dance.captureEmoteArgs = captureEmoteArgs
 local function scanEmoteSlots(out)
     for i = 1, #emoteTables do
         local before = #DANCES
+        -- сначала связываем имена эмоутов с ID анимаций
+        pcall(dance.pairIds, emoteTables[i], 0)
         pcall(scanEmoteTable, emoteTables[i], 0, "slots")
         if #DANCES > before then
             out[#out + 1] = "из EmoteSetSlots: +" .. (#DANCES - before) .. " анимаций"
@@ -2183,7 +2267,12 @@ end
 -- СТАРТ/СТОП ТАНЦА
 local function restoreLowered()
     for _, t in ipairs(dance.lowered) do
-        pcall(function() t.Priority = t.__bsOldPrio end)
+        pcall(function()
+            if t.__bsOldPrio ~= nil then
+                t.Priority = t.__bsOldPrio
+                t.__bsOldPrio = nil
+            end
+        end)
     end
     dance.lowered = {}
 end
@@ -2192,10 +2281,12 @@ local function stopDance(restore)
     restoreLowered()
     if dance.track then
         local tr = dance.track
+        -- сначала забываем трек, иначе его Stopped-событие решит, что
+        -- танец оборвался случайно, и запустит его заново
+        dance.track, dance.anim = nil, nil
         pcall(function() tr:Stop(0.15) end)
         pcall(function() tr:Destroy() end)
     end
-    dance.track, dance.anim = nil, nil
     dance.yaw, dance.prevYaw = 0, 0
     dance.emoteAt = 0
     -- AutoRotate возвращаем тому гуманоиду, которого трогали (после
@@ -2206,48 +2297,42 @@ local function stopDance(restore)
     dance.autoRotSaved, dance.arHum = nil, nil
 end
 
-local function startDance(silent)
-    stopDance(true)
-    -- ЭМОУТ: играем штатным ремоутом игры. Работает даже если ни одной
-    -- анимации не нашлось - имя эмоута есть всегда.
-    if dance.emote then
-        dance.emoteAt = os.clock()
-        pcall(dance.fireEmote, dance.emote)
-        return true
-    end
-    if not (dance.id and dance.label ~= "") then
-        -- ассет не выбран - работают только спин/покачивание
-        return true
-    end
+-- ЗАПУСК АНИМАЦИИ ПО ID (и для обычных танцев, и для эмоутов).
+-- Локальная петля на Action4: ходьба её не отменяет, в отличие от
+-- штатного эмоута, который игра сбрасывает при движении.
+dance.playId = function(id, silent)
+    id = normAnimId(tostring(id))
+    if not id then return false end
     local ch = LP and LP.Character
-    if not ch then
-        if not silent then notify("Танец", "Нет персонажа") end
-        return false
-    end
+    if not ch then return false end
     local hum = ch:FindFirstChildOfClass("Humanoid")
-    if not hum then return false end
+    if not hum or hum.Health <= 0 then return false end
     local animator = hum:FindFirstChildOfClass("Animator")
-    if not animator then
-        if not silent then notify("Танец", "У персонажа нет Animator") end
-        return false
+    if not animator then return false end
+    if dance.track then
+        local old = dance.track
+        dance.track, dance.anim = nil, nil
+        pcall(function() old:Stop(0.15) end)
+        pcall(function() old:Destroy() end)
     end
-    if hum.Health <= 0 then return false end
+    restoreLowered()
     dance.animator = animator
     local anim = Instance.new("Animation")
-    anim.AnimationId = "rbxassetid://" .. dance.id
+    anim.AnimationId = "rbxassetid://" .. id
     local ok, tr = pcall(function() return animator:LoadAnimation(anim) end)
     if not ok or not tr then
-        print("[BS DANCE] LoadAnimation не удался: " .. tostring(tr))
+        if not silent then
+            print("[BS DANCE] LoadAnimation не удался: " .. tostring(tr))
+        end
         return false
     end
     tr.Looped  = true
     tr.Priority = Enum.AnimationPriority.Action4
-    -- ПОХОДКА МОЖЕТ БЫТЬ НА Core (127) - это выше Action4, и тогда
-    -- она перебьёт танец. Опускаем такие треки до Action2 и потом
-    -- возвращаем обратно при остановке танца.
+    -- Походка игры может быть на Core (127) - она выше Action4 и
+    -- перебила бы танец. Опускаем такие треки до Action2.
     pcall(function()
         for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
-            if t ~= tr and t.Priority.Value >= CORE_P then
+            if t ~= tr and t.Priority.Value >= CORE_P and t.__bsOldPrio == nil then
                 t.__bsOldPrio = t.Priority
                 t.Priority = Enum.AnimationPriority.Action2
                 dance.lowered[#dance.lowered + 1] = t
@@ -2256,11 +2341,87 @@ local function startDance(silent)
     end)
     pcall(function() tr:Play(0.25) end)
     dance.track, dance.anim = tr, anim
+    -- Если игра всё-таки остановит трек (некоторые эмоут-скрипты глушат
+    -- все анимации при движении), поднимаем его через 0.1 с. Остановку
+    -- по нашей команде отсекаем по dance.track == tr.
+    pcall(function()
+        tr.Stopped:Connect(function()
+            if dance.track ~= tr or not dance.on then return end
+            task.delay(0.1, function()
+                if dance.track ~= tr or not dance.on then return end
+                local eid = dance.findId(dance.emote)
+                if eid then pcall(dance.playId, eid, true) end
+            end)
+        end)
+    end)
+    return true
+end
+
+-- ПЕРЕХВАТ ID ЭМОУТА. Игра после EmotePlay сама грузит анимацию;
+-- запоминаем её ID, чтобы дальше играть локальной петлёй (на ходу).
+dance.captureId = function(name)
+    local ch = LP and LP.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    local animator = hum and hum:FindFirstChildOfClass("Animator")
+    if not animator then return end
+    local before = {}
+    pcall(function()
+        for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
+            before[t] = true
+        end
+    end)
+    task.delay(0.35, function()
+        if not dance.on or dance.emote ~= name then return end
+        pcall(function()
+            for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
+                if not before[t] and t.Animation and t.Animation.AnimationId ~= "" then
+                    -- отсекаем походку: она ниже Action и часто грузится
+                    -- как раз в момент, когда персонаж пошёл
+                    local anm = string.lower(tostring(t.Animation.Name or ""))
+                    local prio = (t.Priority and t.Priority.Value) or 0
+                    if not MOVE_TRACKS[anm]
+                       and prio >= Enum.AnimationPriority.Action.Value then
+                        local id = normAnimId(t.Animation.AnimationId)
+                        if id then
+                            dance.emoteId[name] = id
+                            print("[BS DANCE] эмоут " .. tostring(name)
+                                .. " -> " .. id .. " (локальная петля)")
+                            pcall(dance.playId, id, true)
+                        end
+                        return
+                    end
+                end
+            end
+        end)
+    end)
+end
+
+local function startDance(silent)
+    stopDance(true)
+    -- ЭМОУТ: играем штатным ремоутом игры. Работает даже если ни одной
+    -- анимации не нашлось - имя эмоута есть всегда.
+    if dance.emote then
+        dance.emoteAt = os.clock()
+        local eid = dance.findId(dance.emote)
+        -- ставим ловушку ДО FireServer: новый трек = анимация эмоута
+        pcall(dance.captureId, dance.emote)
+        pcall(dance.fireEmote, dance.emote)
+        -- если ID уже известен - сразу дублируем локальной петлёй
+        if eid then pcall(dance.playId, eid, true) end
+        return true
+    end
+    if not (dance.id and dance.label ~= "") then
+        -- ассет не выбран - работают только спин/покачивание
+        return true
+    end
+    local ok = dance.playId(dance.id, silent)
+    if not ok then return false end
+    local tr = dance.track
     -- ассет может не принадлежать игре - тогда трек молча не пойдёт
     task.delay(0.7, function()
         local playing = false
         pcall(function() playing = (dance.track == tr) and tr.IsPlaying end)
-        if not playing then
+        if tr and not playing then
             print("[BS DANCE] анимация «" .. tostring(dance.label) .. "» НЕ "
                 .. "запустилась: скорее всего ассет не принадлежит этой игре. "
                 .. "Возьми любой из списка «Спин»/«Покачивание» или свой ID.")
@@ -2397,11 +2558,44 @@ end
 -- включено из консоли) крутим дельтой угла через PivotTo.
 local function danceTick(dt, now)
     if not dance.on then return end
-    -- ЭМОУТ ПОВТОРЯЕМ: игра отменяет танец, как только персонаж пошёл.
-    -- Посылаем EmotePlay заново каждые 2.5 с - тогда танец идёт на ходу.
-    if dance.emote and now - (dance.emoteAt or 0) > 2.5 then
-        dance.emoteAt = now
-        pcall(dance.fireEmote, dance.emote)
+    -- ЭМОУТ. Если знаем ID анимации - играем локальную петлю, которую
+    -- ходьба НЕ сбрасывает. Раньше эмоут перезапускался каждые 2.5 с,
+    -- из-за чего танец дёргался и «отваливался» на ходу.
+    if dance.emote then
+        local eid = dance.findId(dance.emote)
+        if eid then
+            local playing = false
+            pcall(function() playing = dance.track and dance.track.IsPlaying end)
+            if not playing and now - (dance.playTryAt or 0) > 1 then
+                dance.playTryAt = now
+                pcall(dance.playId, eid, true)
+            end
+        elseif now - (dance.emoteAt or 0) > 1.2 then
+            -- ID ещё не поймали: повторяем эмоут, пока captureId не
+            -- подхватит анимацию (обычно с первого раза)
+            dance.emoteAt = now
+            pcall(dance.fireEmote, dance.emote)
+        end
+    end
+    -- раз в секунду: если игра пересоздала походку на Core - опускаем,
+    -- иначе она перебьёт танец на ходу
+    if dance.track and now - (dance.lowerAt or 0) > 1 then
+        dance.lowerAt = now
+        local lch = LP and LP.Character
+        local lhum = lch and lch:FindFirstChildOfClass("Humanoid")
+        local lanim = lhum and lhum:FindFirstChildOfClass("Animator")
+        if lanim then
+            pcall(function()
+                for _, t in ipairs(lanim:GetPlayingAnimationTracks()) do
+                    if t ~= dance.track and t.Priority.Value >= CORE_P
+                       and t.__bsOldPrio == nil then
+                        t.__bsOldPrio = t.Priority
+                        t.Priority = Enum.AnimationPriority.Action2
+                        dance.lowered[#dance.lowered + 1] = t
+                    end
+                end
+            end)
+        end
     end
     if not (dance.spin or dance.sway) then return end
     local ch = LP and LP.Character
@@ -2545,6 +2739,67 @@ local function hookSpeedKey()
         task.wait(0.3)
         if speedState.on then pcall(applySpeed, tonumber(G.BS.SpeedMul) or 2) end
     end)
+end
+
+-- ============================================================
+--  УСКОРЕНИЕ В ПРЫЖКЕ
+-- ============================================================
+-- По просьбе: при каждом прыжке персонаж получает рывок.
+-- WalkSpeed умножается на JumpBoostMul на JumpBoostTime секунд, плюс
+-- небольшой горизонтальный импульс по направлению движения - тогда
+-- ускорение видно сразу, а не только в цифре WalkSpeed.
+function speedState.applyWalk(hum, base)
+    if not hum or not hum.Parent then return end
+    local m = 1
+    if speedState.on then m = tonumber(G.BS.SpeedMul) or 2 end
+    if os.clock() < (G.BS._jumpUntil or 0) then
+        m = m * (tonumber(G.BS.JumpBoostMul) or 1.7)
+    end
+    pcall(function() hum.WalkSpeed = base * m end)
+end
+
+function speedState.hookJump()
+    local function bind(ch)
+        local hum = ch and ch:WaitForChild("Humanoid", 10)
+        if not hum then return end
+        if speedState.hum ~= hum then
+            speedState.hum = hum
+            speedState.base = hum.WalkSpeed
+        end
+        hum.Jumping:Connect(function(active)
+            if not active or G.BS.JumpBoost == false then return end
+            if not hum.Parent or hum.Health <= 0 then return end
+            local base = speedState.base or hum.WalkSpeed
+            local t = tonumber(G.BS.JumpBoostTime) or 0.8
+            if t < 0.2 then t = 0.2 elseif t > 3 then t = 3 end
+            G.BS._jumpUntil = os.clock() + t
+            speedState.applyWalk(hum, base)
+            -- горизонтальный импульс по направлению бега
+            local hrp = ch:FindFirstChild("HumanoidRootPart")
+            local md = hum.MoveDirection
+            if hrp and md.Magnitude > 0.05 then
+                local mul = tonumber(G.BS.JumpBoostMul) or 1.7
+                local imp = math.max(0, (mul - 1) * 10)
+                local v = hrp.AssemblyLinearVelocity
+                pcall(function()
+                    hrp.AssemblyLinearVelocity = Vector3.new(
+                        v.X + md.X * imp, v.Y, v.Z + md.Z * imp)
+                end)
+            end
+            -- снимаем рывок ровно один раз (повторный прыжок отменяет
+            -- старый таймер через sequence)
+            local seq = (G.BS._jumpSeq or 0) + 1
+            G.BS._jumpSeq = seq
+            task.delay(t, function()
+                if G.BS._jumpSeq ~= seq then return end
+                G.BS._jumpUntil = 0
+                local h = speedState.hum
+                if h and h.Parent then speedState.applyWalk(h, base) end
+            end)
+        end)
+    end
+    if LP.Character then bind(LP.Character) end
+    LP.CharacterAdded:Connect(bind)
 end
 
 -- ============================================================
@@ -4600,7 +4855,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.15.3",
+    LoadingSubtitle = "ESP + Aim + Танец v11.16",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -4825,6 +5080,14 @@ TB.CreateSlider({ Name = "Множитель скорости", Flag = "BS_Speed
         G.BS.SpeedMul = v
         if speedState.on then pcall(applySpeed, v) end
     end })
+-- УСКОРЕНИЕ В ПРЫЖКЕ (по просьбе): каждый прыжок даёт рывок.
+TB.CreateToggle({ Name = "Ускорение в прыжке", Flag = "BS_JumpBoost",
+    CurrentValue = G.BS.JumpBoost ~= false,
+    Callback = function(v) G.BS.JumpBoost = v end })
+TB.CreateSlider({ Name = "Множитель прыжка", Flag = "BS_JumpBoostMul",
+    Range = {1.1, 3}, Increment = 0.1,
+    CurrentValue = tonumber(G.BS.JumpBoostMul) or 1.7,
+    Suffix = " x", Callback = function(v) G.BS.JumpBoostMul = v end })
 
 -- ======================= AIM =======================
 -- ДВЕ КНОПКИ (по просьбе): «Клиент айм» и «Аимлок».
@@ -5040,7 +5303,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.15.3 остановлен")
+    print("[BS HUB] v11.16 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -5073,6 +5336,7 @@ task.spawn(function()
     -- включается галочкой или клавишей F7.
     hookDanceKey()
     pcall(hookSpeedKey)
+    pcall(speedState.hookJump)
     bindAimLockStep()
     -- СКАНЕРЫ ОСТАВЛЕНЫ В КОНСОЛИ (кнопки в GUI убраны по просьбе):
     --   getgenv().BS.ScanAll()      -- общая структура игры
@@ -5115,7 +5379,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.15.3 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.16 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
