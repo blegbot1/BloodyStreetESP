@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.15
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.15.1
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -229,7 +229,7 @@ G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 1
 -- ПОВ (поворот камеры). true  - камера доворачивается на цель
 --                         (иначе подмена патрона работает молча).
 -- false - камера остаётся твоей, но выстрел всё равно идёт в цель.
-G.BS.AimLockTurn   = G.BS.AimLockTurn ~= false
+G.BS.AimLockTurn   = true   -- камера доворачивается (тумблер убран)
 -- Аимlock включается только когда это нужно, чтобы не дёргать камеру:
 --   FireOnly — только пока зажат огонь.
 -- Плюс в коде проверяется, что в руках именно ОРУЖИЕ.
@@ -4540,7 +4540,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.15",
+    LoadingSubtitle = "ESP + Aim + Танец v11.15.1",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -4785,11 +4785,10 @@ AI.CreateToggle({
         if v then bindAimLockStep() end
     end,
 })
-AI.CreateToggle({
-    Name = "Камера доворачивается (аимлок)",
-    CurrentValue = G.BS.AimLockTurn ~= false,
-    Callback = function(v) G.BS.AimLockTurn = v end,
-})
+-- Тумблер «камера доворачивается» УДАЛЁН по просьбе: аимлок всегда
+-- доводит камеру (G.BS.AimLockTurn = true). Если понадобится тихий аим
+-- без поворота камеры - из консоли:
+--   getgenv().BS.AimLockTurn = false
 AI.CreateToggle({
     Name = "Аим пока держишь пушку",
     CurrentValue = G.BS.AimFireMode,
@@ -4968,7 +4967,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.15 остановлен")
+    print("[BS HUB] v11.15.1 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -5043,7 +5042,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.15 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.15.1 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
