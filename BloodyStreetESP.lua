@@ -1,6 +1,11 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.19
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.20
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК.
+--
+--  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
+--  Кнопка ищет ближайший SupplyCrate, пробует ProximityPrompt,
+--  ClickDetector и Touched, при необходимости телепортируется к ящику
+--  и возвращает на место. Есть авто-пополнение рядом с ящиком.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
 --  ролям (вампир / хантер / неизвестный), сканер игры.
@@ -1614,6 +1619,106 @@ local function ensureHud()
     return true
 end
 
+-- ============================================================
+--  ПАТРОНЫ: ЧТЕНИЕ СЧЁТЧИКА
+-- ============================================================
+-- В этой игре патроны не всегда лежат в Tool: у оружия может не быть
+-- атрибутов Charges/Ammo, а счётчик рисуется в PlayerGui ("18/18").
+-- Поэтому смотрим три источника по порядку: атрибуты Tool, значения
+-- внутри Tool, затем TextLabel в PlayerGui (самый нижний на экране).
+-- Возвращаем текущий/максимальный заряд и источник. Функция лежит в
+-- G.BS, а не в локальной переменной: в главном блоке уже лимит 200
+-- локальных, и лишняя переменная ломала запуск (luac: too many locals).
+G.BS.ReadAmmo = (function()
+    local ATTRS = {
+        { "Charges", "MaxCharges" },
+        { "Ammo", "MaxAmmo" },
+        { "CurrentAmmo", "MaxAmmo" },
+        { "AmmoCount", "MaxAmmo" },
+        { "Magazine", "MaxMagazine" },
+        { "Clip", "ClipSize" },
+        { "Patron", "MaxPatron" },
+    }
+    -- Кэш найденного HUD-лейбла: PlayerGui у Rayfield большой, и
+    -- сканировать его целиком 5 раз в секунду слишком дорого.
+    local cachedLabel, cachedAt = nil, 0
+    return function()
+        local ch = LP and LP.Character
+        local tool = ch and ch:FindFirstChildOfClass("Tool")
+        if tool then
+            for i = 1, #ATTRS do
+                local pair = ATTRS[i]
+                local okA, cur = pcall(function() return tool:GetAttribute(pair[1]) end)
+                if okA and type(cur) == "number" then
+                    local okB, mx = pcall(function() return tool:GetAttribute(pair[2]) end)
+                    return cur, (okB and type(mx) == "number") and mx or nil,
+                        "tool." .. pair[1]
+                end
+            end
+            local okD, kids = pcall(function() return tool:GetDescendants() end)
+            if okD and type(kids) == "table" then
+                for _, d in ipairs(kids) do
+                    if d:IsA("NumberValue") or d:IsA("IntValue") then
+                        local n = string.lower(tostring(d.Name))
+                        if string.find(n, "ammo", 1, true)
+                           or string.find(n, "charge", 1, true)
+                           or string.find(n, "patron", 1, true)
+                           or string.find(n, "clip", 1, true) then
+                            return d.Value, nil, "tool." .. d.Name
+                        end
+                    end
+                end
+            end
+        end
+        local now = os.clock()
+        if cachedLabel and cachedLabel.Parent and cachedLabel.Visible
+           and now - cachedAt < 3 then
+            local a, b = string.match(tostring(cachedLabel.Text or ""),
+                "^%s*(%d+)%s*/%s*(%d+)%s*$")
+            if a and b then
+                return tonumber(a), tonumber(b),
+                    "HUD " .. tostring(cachedLabel.Name)
+            end
+        end
+        local pg = LP and (LP:FindFirstChildOfClass("PlayerGui")
+            or LP:FindFirstChild("PlayerGui"))
+        if pg then
+            local vpY = 0
+            pcall(function()
+                vpY = workspace.CurrentCamera.ViewportSize.Y
+            end)
+            local bestY, bestCur, bestMax, bestName, bestLabel =
+                -1, nil, nil, nil, nil
+            local okG, all = pcall(function() return pg:GetDescendants() end)
+            if okG and type(all) == "table" then
+                for _, d in ipairs(all) do
+                    if d.Parent and (d:IsA("TextLabel") or d:IsA("TextButton"))
+                       and d.Visible then
+                        local a, b = string.match(tostring(d.Text or ""),
+                            "^%s*(%d+)%s*/%s*(%d+)%s*$")
+                        if a and b then
+                            local y = -1
+                            pcall(function() y = d.AbsolutePosition.Y end)
+                            -- только нижняя часть экрана: там HUD патронов,
+                            -- а не счётчики игроков/раунда сверху.
+                            if y >= vpY * 0.55 and y > bestY then
+                                bestY, bestCur, bestMax, bestName, bestLabel =
+                                    y, tonumber(a), tonumber(b), d.Name, d
+                            end
+                        end
+                    end
+                end
+            end
+            if bestCur then
+                cachedLabel, cachedAt = bestLabel, now
+                return bestCur, bestMax, "HUD " .. tostring(bestName)
+            end
+        end
+        cachedLabel = nil
+        return nil, nil, nil
+    end
+end)()
+
 local function updateHud(now)
     if not G.BS.Hud then
         if hudLabel then hudLabel.Visible = false end
@@ -1635,13 +1740,12 @@ local function updateHud(now)
     local ch = LP and LP.Character
     local tool = ch and ch:FindFirstChildOfClass("Tool")
     local myRoot = ch and ch:FindFirstChild("HumanoidRootPart")
+    local chargeCur, chargeMax = G.BS.ReadAmmo()
     local charges = "?"
-    if tool then
-        local cv = tool:GetAttribute("Charges")
-        local mx = tool:GetAttribute("MaxCharges")
-        if type(cv) == "number" then
-            charges = tostring(math.floor(cv))
-            if type(mx) == "number" then charges = charges .. "/" .. tostring(math.floor(mx)) end
+    if type(chargeCur) == "number" then
+        charges = tostring(math.floor(chargeCur + 0.5))
+        if type(chargeMax) == "number" then
+            charges = charges .. "/" .. tostring(math.floor(chargeMax + 0.5))
         end
     end
     local pre = bulletPreShot
@@ -1656,7 +1760,7 @@ local function updateHud(now)
     local dn = "?"
     if G.BS.DanceName then pcall(function() dn = G.BS.DanceName() end) end
     local line = string.format(
-        "[BS] роль: %s | фаза: %s | заряды: %s | оружие: %s\nцель: %s | танец: %s",
+        "[BS] роль: %s | фаза: %s | патроны: %s | оружие: %s\nцель: %s | танец: %s",
         me, tostring(G.BS.RoundPhase or "?"), charges,
         tool and tool.Name or "нет", tgt, dn)
     hudLabel.Text = line
@@ -3213,6 +3317,428 @@ local function clearWeaponCooldown(quiet)
             pcall(function() tool:SetAttribute(k, 0) end)
         end
     end
+end
+
+-- ============================================================
+--  ПАТРОНЫ: ПОПОЛНЕНИЕ ИЗ SUPPLY CACHES
+-- ============================================================
+-- В Workspace.SupplyCaches лежат модели SupplyCrate. Внутри — Ammo Box
+-- и Main. Игра может требовать ProximityPrompt, ClickDetector или
+-- обычное Touched. Поэтому пробуем все способы, а если не вышло —
+-- печатаем структуру ящика в консоль ([BS AMMO]).
+G.BS.AmmoAuto     = G.BS.AmmoAuto ~= false
+G.BS.AmmoTeleport = G.BS.AmmoTeleport ~= false
+G.BS.AmmoAutoTP   = G.BS.AmmoAutoTP == true
+G.BS.AmmoRange    = tonumber(G.BS.AmmoRange) or 25
+G.BS.AmmoSearch   = tonumber(G.BS.AmmoSearch) or 600
+G.BS.AmmoEvery    = tonumber(G.BS.AmmoEvery) or 4
+
+-- Весь модуль в do-блоке: его локальные не расходуют лимит 200
+-- локальных переменных главного блока (иначе luac падает).
+do
+local SUPPLY = {
+    busy = false,
+    lastAuto = 0,
+    crates = {},
+    -- -1e9, а не 0: os.clock() в начале процесса может быть < 1,
+    -- и первый вызов вернул бы пустой кэш (тест это поймал).
+    cratesAt = -1e9,
+}
+
+local function supplyList()
+    local now = os.clock()
+    if now - SUPPLY.cratesAt < 1 then return SUPPLY.crates end
+    SUPPLY.cratesAt = now
+    local out, seen = {}, {}
+    local folder = workspace:FindFirstChild("SupplyCaches")
+    if folder then
+        local ok, kids = pcall(function() return folder:GetChildren() end)
+        if ok and type(kids) == "table" then
+            for _, d in ipairs(kids) do
+                if d:IsA("Model") and not seen[d] then
+                    seen[d] = true
+                    out[#out + 1] = d
+                end
+            end
+        end
+    end
+    if #out == 0 then
+        local ok, all = pcall(function() return workspace:GetDescendants() end)
+        if ok and type(all) == "table" then
+            for _, d in ipairs(all) do
+                if d:IsA("Model")
+                   and (d.Name == "SupplyCrate" or d.Name == "Supply Crate")
+                   and not seen[d] then
+                    local pn = d.Parent and d.Parent.Name or ""
+                    if pn ~= "SupplyCrate" and pn ~= "Supply Crate" then
+                        seen[d] = true
+                        out[#out + 1] = d
+                    end
+                end
+            end
+        end
+    end
+    SUPPLY.crates = out
+    return out
+end
+
+local function supplyPos(crate)
+    local ok, cf = pcall(function() return crate:GetPivot() end)
+    if ok and cf then return cf.Position end
+    local okA, all = pcall(function() return crate:GetDescendants() end)
+    if okA and type(all) == "table" then
+        for _, d in ipairs(all) do
+            if d:IsA("BasePart") then return d.Position end
+        end
+    end
+    return nil
+end
+
+local function supplyParts(crate)
+    local ammo, any = {}, {}
+    local ok, all = pcall(function() return crate:GetDescendants() end)
+    if not (ok and type(all) == "table") then return ammo, any end
+    for _, d in ipairs(all) do
+        if d:IsA("BasePart") then
+            any[#any + 1] = d
+            local n = string.lower(tostring(d.Name))
+            if string.find(n, "ammo", 1, true)
+               or string.find(n, "patron", 1, true) then
+                ammo[#ammo + 1] = d
+            end
+        end
+    end
+    return ammo, any
+end
+
+local function supplyPrompts(crate)
+    local prompts, clicks = {}, {}
+    local ok, all = pcall(function() return crate:GetDescendants() end)
+    if not (ok and type(all) == "table") then return prompts, clicks end
+    for _, d in ipairs(all) do
+        if d:IsA("ProximityPrompt") then
+            prompts[#prompts + 1] = d
+        elseif d:IsA("ClickDetector") then
+            clicks[#clicks + 1] = d
+        end
+    end
+    return prompts, clicks
+end
+
+local function supplyEmpty(crate)
+    -- Если на ящике висит "Empty"/"Пусто", не тратим на него заход:
+    -- иначе ближайший пустой ящик перекрывал бы полный дальше.
+    local ok, all = pcall(function() return crate:GetDescendants() end)
+    if not ok or type(all) ~= "table" then return false end
+    for _, d in ipairs(all) do
+        if d:IsA("TextLabel") then
+            local t = string.lower(tostring(d.Text or ""))
+            if string.find(t, "empty", 1, true)
+               or string.find(t, "пуст", 1, true) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function supplyNearest(maxDist)
+    local ch = LP and LP.Character
+    local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil, nil end
+    if not maxDist or maxDist <= 0 then maxDist = math.huge end
+    local best, bestD
+    for _, c in ipairs(supplyList()) do
+        if not supplyEmpty(c) then
+            local p = supplyPos(c)
+            if p then
+                local d = (p - hrp.Position).Magnitude
+                if d <= maxDist and (not bestD or d < bestD) then
+                    best, bestD = c, d
+                end
+            end
+        end
+    end
+    return best, bestD
+end
+
+local function supplyFirePrompt(p)
+    if not (p and p.Parent and p.Enabled) then return false end
+    local env = getgenv()
+    local fn = env and env.fireproximityprompt
+    if type(fn) == "function" then
+        local ok = pcall(fn, p)
+        if not ok then ok = pcall(fn, p, 0) end
+        if ok then return true end
+    end
+    if type(p.InputHoldBegin) == "function" then
+        local hold = tonumber(p.HoldDuration) or 0
+        local ok = pcall(function()
+            p:InputHoldBegin()
+            task.delay(math.max(0.05, hold + 0.1), function()
+                pcall(function() p:InputHoldEnd() end)
+            end)
+        end)
+        if ok then return true end
+    end
+    return false
+end
+
+local function supplyFireClick(c)
+    if not (c and c.Parent) then return false end
+    local env = getgenv()
+    local fn = env and env.fireclickdetector
+    if type(fn) == "function" then
+        return pcall(fn, c)
+    end
+    return false
+end
+
+local function supplyTouch(hrp, part)
+    if not (hrp and hrp.Parent and part and part.Parent) then return false end
+    if part.CanTouch == false then return false end
+    local ok = pcall(function()
+        local lift = math.max(1.8, part.Size.Y * 0.5 + 1.6)
+        hrp.CFrame = part.CFrame * CFrame.new(0, lift, 0)
+    end)
+    if ok then task.wait(0.2) end
+    return ok
+end
+
+function SUPPLY.scan()
+    local crates = supplyList()
+    local ch = LP and LP.Character
+    local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+    print("[BS AMMO] ящиков SupplyCrate: " .. #crates)
+    for i, c in ipairs(crates) do
+        local p = supplyPos(c)
+        local dist = -1
+        if p and hrp then dist = (p - hrp.Position).Magnitude end
+        print(string.format("[BS AMMO] %d) %s | dist=%.1f", i,
+            c:GetFullName(), dist))
+        local ammo, any = supplyParts(c)
+        print(string.format("   частей: %d, ammo: %d", #any, #ammo))
+        for _, part in ipairs(ammo) do
+            print(string.format("   PART %s [%s] CanTouch=%s size=(%.1f,%.1f,%.1f)",
+                part.Name, part.ClassName, tostring(part.CanTouch),
+                part.Size.X, part.Size.Y, part.Size.Z))
+        end
+        local prompts, clicks = supplyPrompts(c)
+        for _, pr in ipairs(prompts) do
+            print(string.format("   PROMPT %s | Action=%s | Object=%s | Hold=%.2f | MaxDist=%.1f | Enabled=%s",
+                pr:GetFullName(), tostring(pr.ActionText), tostring(pr.ObjectText),
+                tonumber(pr.HoldDuration) or 0,
+                tonumber(pr.MaxActivationDistance) or 0, tostring(pr.Enabled)))
+        end
+        for _, cl in ipairs(clicks) do
+            print(string.format("   CLICK %s | MaxDist=%.1f",
+                cl:GetFullName(), tonumber(cl.MaxActivationDistance) or 0))
+        end
+        -- Текст на ящике ("Supply", "Empty", "Hold E") — видно, что
+        -- игра вообще предлагает и не кончился ли запас.
+        for _, d in ipairs(c:GetDescendants()) do
+            if d:IsA("BillboardGui") then
+                print("   GUI " .. d:GetFullName())
+                for _, t in ipairs(d:GetDescendants()) do
+                    if t:IsA("TextLabel") and t.Text ~= "" then
+                        print("     TEXT " .. tostring(t.Name) .. "=" .. tostring(t.Text))
+                    end
+                end
+            end
+        end
+        local okA, attrs = pcall(function() return c:GetAttributes() end)
+        if okA and type(attrs) == "table" then
+            local n = 0
+            for k, v in pairs(attrs) do
+                n = n + 1
+                print("   ATTR " .. tostring(k) .. "=" .. tostring(v))
+            end
+            if n == 0 then print("   ATTR (нет)") end
+        end
+    end
+    local cur, max, src = G.BS.ReadAmmo()
+    print(string.format("[BS AMMO] сейчас: %s/%s (%s)",
+        tostring(cur), tostring(max), tostring(src)))
+end
+
+function SUPPLY.refill(opts)
+    opts = opts or {}
+    if SUPPLY.busy then return false end
+    local ch = LP and LP.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+    if not (hrp and hum and hum.Health > 0) then
+        if not opts.silent then notify("патроны: персонаж не найден", 3) end
+        return false
+    end
+    if hum.Sit or hum.SeatPart then
+        if not opts.silent then notify("патроны: сначала встань", 3) end
+        return false
+    end
+
+    local before, maxBefore = G.BS.ReadAmmo()
+    if type(before) == "number" and type(maxBefore) == "number"
+       and maxBefore > 0 and before >= maxBefore then
+        if not opts.silent then
+            notify("патроны уже полные: " .. before .. "/" .. maxBefore, 3)
+        end
+        return false
+    end
+
+    local crate, dist = supplyNearest(opts.search or G.BS.AmmoSearch)
+    if not crate then
+        if not opts.silent then
+            notify("ящики с патронами не найдены (SupplyCaches)", 4)
+        end
+        return false
+    end
+
+    local nearRange = tonumber(opts.nearRange or G.BS.AmmoRange) or 25
+    local mustTP = dist > nearRange
+    local allowTP = opts.forceTP == true or G.BS.AmmoTeleport ~= false
+    if mustTP and not allowTP then
+        if not opts.silent then
+            notify("ближайший ящик " .. math.floor(dist + 0.5)
+                .. " st — подойди ближе или включи телепорт", 4)
+        end
+        return false
+    end
+
+    SUPPLY.busy = true
+    local oldCF = hrp.CFrame
+    local touched = false
+    local prompts, clicks
+    local holdMax = 0
+    local okRun = pcall(function()
+        if mustTP then
+            local ammo, any = supplyParts(crate)
+            local part = ammo[1] or any[1]
+            local p = supplyPos(crate)
+            if part then
+                local lift = math.max(2.2, part.Size.Y * 0.5 + 1.8)
+                hrp.CFrame = part.CFrame * CFrame.new(0, lift, 0)
+            elseif p then
+                hrp.CFrame = CFrame.new(p + Vector3.new(0, 5, 0))
+            end
+            task.wait(0.35)
+        end
+
+        prompts, clicks = supplyPrompts(crate)
+        local acted = false
+        for _, pr in ipairs(prompts) do
+            holdMax = math.max(holdMax, tonumber(pr.HoldDuration) or 0)
+            if supplyFirePrompt(pr) then acted = true end
+        end
+        for _, cl in ipairs(clicks) do
+            if supplyFireClick(cl) then acted = true end
+        end
+        if acted then
+            task.wait(math.max(0.4, math.min(holdMax, 3) + 0.25))
+        end
+
+        local mid = G.BS.ReadAmmo()
+        local needTouch = (not acted) or before == nil
+            or (type(mid) == "number" and type(before) == "number"
+                and mid <= before)
+        -- Авто-режим не дёргает персонажа, если счётчик патронов не
+        -- читается: иначе Touch-фолбэк телепортировал бы его каждые 4 с.
+        if opts.noTouch then needTouch = false end
+        if needTouch then
+            -- Трогаем ВСЕ части ящика, а не только Ammo Box: сервер
+            -- может слушать Touched на Main или на деревянной основе.
+            local _, any = supplyParts(crate)
+            for i = 1, math.min(#any, 8) do
+                if supplyTouch(hrp, any[i]) then touched = true end
+            end
+        end
+    end)
+    task.wait(0.2)
+    local after, maxAfter = G.BS.ReadAmmo()
+    -- После Touched возвращаемся на место. Если это был телепорт к
+    -- ящику и «вернуться» выключено — остаёмся у ящика.
+    if hrp.Parent and (not mustTP or G.BS.AmmoReturn ~= false) then
+        pcall(function() hrp.CFrame = oldCF end)
+    end
+    SUPPLY.busy = false
+
+    if not opts.silent then
+        if not okRun then
+            notify("патроны: ошибка взаимодействия — [BS AMMO] в консоли", 5)
+        elseif type(before) == "number" and type(after) == "number"
+           and after > before then
+            notify("патроны: " .. before .. " -> " .. after, 3)
+        elseif type(after) == "number" and type(maxAfter) == "number"
+           and after >= maxAfter then
+            notify("патроны полные: " .. after .. "/" .. maxAfter, 3)
+        elseif touched or (prompts and #prompts > 0)
+           or (clicks and #clicks > 0) then
+            notify("ящик обработан; если патроны не пополнились — [BS AMMO] в консоли", 5)
+        else
+            notify("в ящике нет зон взаимодействия — [BS AMMO] в консоли", 5)
+        end
+    end
+    return okRun
+end
+
+function SUPPLY.autoTick(now)
+    if not G.BS.AmmoAuto or SUPPLY.busy then return end
+    local every = tonumber(G.BS.AmmoEvery) or 4
+    if now - SUPPLY.lastAuto < every then return end
+    local ch = LP and LP.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+    if not (hrp and hum and hum.Health > 0) then return end
+    if hum.Sit or hum.SeatPart then return end
+    -- Не трогаем персонажа, пока открыто меню Roblox (иначе авто-
+    -- пополнение телепортирует его за спиной открытого меню).
+    local menuOpen = false
+    pcall(function()
+        local uis = game:GetService("UserInputService")
+        if uis and uis.ModalEnabled then menuOpen = true end
+    end)
+    pcall(function()
+        local gs = game:GetService("GuiService")
+        if gs and gs.MenuIsOpen then menuOpen = true end
+    end)
+    if menuOpen then return end
+
+    local cur, max = G.BS.ReadAmmo()
+    local known = type(cur) == "number" and type(max) == "number" and max > 0
+    if known and cur >= max then
+        return
+    end
+    local near = supplyNearest(tonumber(G.BS.AmmoRange) or 25)
+    if near then
+        SUPPLY.lastAuto = now
+        task.spawn(function()
+            pcall(SUPPLY.refill, {
+                nearRange = G.BS.AmmoRange, silent = true, forceTP = false,
+                -- если счётчик не читается, не трогаем персонажа
+                noTouch = not known,
+            })
+        end)
+        return
+    end
+    if G.BS.AmmoAutoTP and type(cur) == "number" and type(max) == "number"
+       and max > 0 and cur <= math.max(1, math.floor(max * 0.25)) then
+        local far = supplyNearest(tonumber(G.BS.AmmoSearch) or 600)
+        if far then
+            SUPPLY.lastAuto = now
+            task.spawn(function()
+                pcall(SUPPLY.refill, { forceTP = true, silent = true })
+            end)
+        end
+    end
+end
+
+G.BS.RefillAmmo = function()
+    return SUPPLY.refill({ forceTP = true })
+end
+G.BS.ScanSupply = function()
+    return SUPPLY.scan()
+end
+-- Доступ для GUI и кадра: G.BS.Supply.refill / .scan / .autoTick
+G.BS.Supply = SUPPLY
 end
 
 -- ============================================================
@@ -4997,6 +5523,9 @@ local conn = RunService.RenderStepped:Connect(function()
     -- танец на ходьбе + покачивание (спин крутит отдельный Heartbeat-коннект)
     pcall(danceTick, dt, now)
 
+    -- авто-патроны: рядом с SupplyCrate (телепорт только если включён)
+    pcall(function() G.BS.Supply.autoTick(now) end)
+
     -- раз в 4 с ловим анимации, которые игра играет на персонаже:
     -- если станцевать штатным эмоутом, его ID попадёт в список
     if G.BS.DanceAutoScan and now - dance.scanAt > 4 then
@@ -5135,7 +5664,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок v11.19",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны v11.20",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -5426,6 +5955,42 @@ AI.CreateToggle({ Name = "Показывать круг аима",
 -- В v11.19 отдельная вкладка ТАНЕЦ удалена: прыжок и танец теперь
 -- в одной вкладке ИГРОК. Список танцев - выпадающий (не кнопки
 -- «следующий/предыдущий»).
+PL.CreateSection("Патроны")
+PL.CreateButton({
+    Name = "ПОПОЛНИТЬ ПАТРОНЫ (ближайший ящик)",
+    Callback = function()
+        pcall(function() G.BS.Supply.refill({ forceTP = true }) end)
+    end,
+})
+PL.CreateToggle({
+    Name = "Авто-пополнение рядом с ящиком",
+    Flag = "BS_AmmoAuto",
+    CurrentValue = G.BS.AmmoAuto,
+    Callback = function(v) G.BS.AmmoAuto = v end,
+})
+PL.CreateToggle({
+    Name = "Авто-телепорт к ящику (риск)",
+    Flag = "BS_AmmoAutoTP",
+    CurrentValue = G.BS.AmmoAutoTP,
+    Callback = function(v) G.BS.AmmoAutoTP = v end,
+})
+PL.CreateSlider({
+    Name = "Радиус авто-пополнения",
+    Flag = "BS_AmmoRange",
+    Range = { 5, 200 },
+    Increment = 5,
+    CurrentValue = tonumber(G.BS.AmmoRange) or 25,
+    Suffix = " st",
+    Callback = function(v) G.BS.AmmoRange = v end,
+})
+PL.CreateButton({
+    Name = "СКАНИРОВАТЬ ЯЩИКИ (в консоль)",
+    Callback = function()
+        pcall(function() G.BS.Supply.scan() end)
+        notify("Ящики — смотри [BS AMMO] в консоли", 4)
+    end,
+})
+
 PL.CreateSection("Прыжок")
 PL.CreateToggle({ Name = "Ускорение в прыжке", Flag = "BS_JumpBoostV2",
     CurrentValue = G.BS.JumpBoostV2 ~= false,
@@ -5662,7 +6227,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.19 остановлен")
+    print("[BS HUB] v11.20 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -5746,12 +6311,13 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.19 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.20 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
     .. " | лома: " .. tostring(G.BS.MeleeAim)
     .. " | без кулдауна: " .. tostring(G.BS.NoCooldown)
+    .. " | патроны: авто=" .. tostring(G.BS.AmmoAuto)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
 -- Ошибки создания элементов печатаем одной строкой: по прошлому логу
