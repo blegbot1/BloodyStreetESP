@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.17.1
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ТАНЕЦ  v11.18
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -9,10 +9,12 @@
 --
 --  КЛИЕНТ АИМ (вкладка AIM): ПОДМЕНА ПАТРОНА. Remotes.FireWeapon
 --  перехватывается через глобальный __namecall, и аргументы
---  выстрела подменяются на вектор к цели. Камера НЕ крутится —
---  стреляешь ты сам, патрон уходит в цель.
---  ПРОСТРЕЛ: по умолчанию ВКЛ — стены не мешают.
---  Аимбота с доводкой камеры НЕТ (удалён по просьбе).
+--  выстрела подменяются на вектор к цели.
+--  АИМЛОК: камера сама ведётся на цель, пока в руках оружие и цель
+--  внутри круга (ПОВ). Работает ВСЕГДА, а не только пока зажат огонь;
+--  целиться начинает, как только игрок появился впереди в круге.
+--  ПРОСТРЕЛ: по умолчанию ВКЛ — стены не мешают патрону; камера
+--  сквозь стены не ведётся (AimLockNoWall).
 --
 --  КАК ЧИТАЕТСЯ РОЛЬ (сервер атрибут -> 100% с первого кадра):
 --  У КАЖДОГО игрока есть атрибут player.Role (None / Vampire /
@@ -189,7 +191,6 @@ G.BS.HitMarkLife  = tonumber(G.BS.HitMarkLife) or 0.25
 G.BS.EventsOn     = G.BS.EventsOn ~= false
 G.BS.SpinSpeed = tonumber(G.BS.SpinSpeed) or 50
 G.BS.SpinOnlyStill = nil   -- тумблер удалён: спин крутит и на ходу
-G.BS.AimFireMode   = G.BS.AimFireMode ~= false  -- кнопка "держишь пушку"
 -- УСКОРЕНИЕ В ПРЫЖКЕ: при каждом прыжке кратковременный рывок.
 -- Ускоритель по Shift удалён по просьбе. V2 - чтобы старые хэндлеры
 -- (они читают JumpBoost) не срабатывали вместе с новым.
@@ -215,7 +216,15 @@ G.BS.ScanOnStart = G.BS.ScanOnStart or false
 G.BS.AimLockColor  = safeColor(G.BS.AimLockColor,  Color3.fromRGB(255, 50, 50))
 G.BS.AimMarkColor  = safeColor(G.BS.AimMarkColor,  Color3.fromRGB(255, 200, 0))
 -- Радиус захвата в пикселях. 600 = без ограничения.
-G.BS.AimFOV        = tonumber(G.BS.AimFOV) or 160
+G.BS.AimFOV        = tonumber(G.BS.AimFOV) or 300
+-- v11.18: старый дефолт 160 px был слишком узким — цель впереди, но чуть
+-- в стороне от прицела, не захватывалась. Расширяем один раз до 300.
+if G.BS.AimFOVDefault ~= 2 then
+    G.BS.AimFOVDefault = 2
+    if G.BS.AimFOV == nil or G.BS.AimFOV == 160 then
+        G.BS.AimFOV = 300
+    end
+end
 G.BS.AimFOVShow    = G.BS.AimFOVShow ~= false
 G.BS.AimFOVColor   = safeColor(G.BS.AimFOVColor, Color3.fromRGB(255, 255, 255))
 -- ОТКУДА СЧИТЫВАЕТСЯ НАПРАВЛЕНИЕ ВЫСТРЕЛА:
@@ -242,14 +251,21 @@ G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 1
 --                         (иначе подмена патрона работает молча).
 -- false - камера остаётся твоей, но выстрел всё равно идёт в цель.
 G.BS.AimLockTurn   = true   -- камера доворачивается (тумблер убран)
--- Аимlock включается только когда это нужно, чтобы не дёргать камеру:
---   FireOnly — только пока зажат огонь.
--- Плюс в коде проверяется, что в руках именно ОРУЖИЕ.
-G.BS.AimLockFireOnly = G.BS.AimLockFireOnly == true
--- УДЕРЖАНИЕ ЦЕЛИ, секунды. Пока идёт это время (и тем более пока
--- зажат огонь), аимлок ведёт ту же цель, даже если она отошла из
--- под прицела. Раньше цель каждый кадр выбиралась заново, и стоило
--- чуть дёрнуть камеру - захват слетал.
+-- Аимлок работает ВСЕГДА, пока в руках оружие и цель в круге.
+-- Режим «только пока зажат огонь» удалён в v11.18: именно из-за него
+-- камера велась только во время стрельбы. Флаг принудительно false.
+G.BS.AimLockFireOnly = false
+-- v11.18: один раз включаем аимлок после обновления, чтобы он точно
+-- работал без стрельбы. Если выключить тумблером — при следующем
+-- запуске останется выключенным (это осознанный выбор пользователя).
+if G.BS.AimAlwaysV ~= 18 then
+    G.BS.AimAlwaysV = 18
+    G.BS.AimLock = true
+    G.BS.AimFireMode = nil  -- старый флаг удалённого тумблера
+end
+-- УДЕРЖАНИЕ ЦЕЛИ, секунды. Пока идёт это время, аимлок ведёт ту же
+-- цель, даже если она чуть сместилась. ЛКМ влияет ТОЛЬКО на удержание
+-- выбора цели, а не на сам аимлок: камера ведётся всегда (v11.18).
 G.BS.LockHold       = tonumber(G.BS.LockHold) or 0.6
 G.BS.LockHoldOnFire = G.BS.LockHoldOnFire ~= false
 -- Единый список целей: маркер ESP, аимлок и подмена патрона всегда
@@ -345,7 +361,6 @@ if G.BS.CfgV ~= 32 then
     -- АИМЛОК РАБОТАЕТ ВСЕГДА, а не только пока зажата ЛКМ
     -- (жалоба: «аймлок не работает, только когда я стреляю»).
     G.BS.AimLockFireOnly = false
-    G.BS.AimFireMode     = false
     G.BS.AimLockTurn     = true    -- ПОВ: камера доворачивается на цель
     G.BS.AimLock   = true
     G.BS.BulletSwap = true
@@ -364,7 +379,7 @@ if G.BS.CfgV ~= 32 then
     G.BS.NoiseLife  = 2.2
     G.BS.ShowSpecialRole = true
     G.BS.Hud        = true
-    G.BS.AimFOV     = 160      -- круг аима (ПОВ), px
+    G.BS.AimFOV     = 300      -- круг аима (ПОВ), px
     G.BS.AimFOVShow = true
     G.BS.AimChain  = true
     G.BS.AimFreePart = true
@@ -430,6 +445,11 @@ local bulletPreShot = nil -- {part, dir} — вычисляется каждый
 -- Когда список один на всех, они не могут разойтись по целям.
 local bulletList       = {}       -- [{part, char, player, dist, screen}]
 local bulletListTarget = nil      -- выбранный Part (BOS)
+-- УДЕРЖАНИЕ ЦЕЛИ АИМЛОКОМ. Объявлено здесь (а не рядом с aimLockTick),
+-- чтобы computeBulletPreShot ниже мог отдать приоритет уже захваченной
+-- цели. Иначе камера/патрон/маркер могли разъехаться по разным игрокам.
+local LOCK_TARGET = nil           -- Part (BOS)
+local LOCK_LAST_S, LOCK_UNTIL = nil, 0
 
 -- ХИТМАРКЕР И ЛЕНТА СОБЫТИЙ. Определения ниже (после hitMarkAt нужно
 -- поймать урон из обработчика ремоутов, который объявлен раньше), здесь
@@ -1022,7 +1042,7 @@ local function drawFOV()
     G.BS._fovNext = tick + 0.05
     local on = (G.BS.AimFOVShow ~= false)
         and (G.BS.AimLock ~= false or G.BS.BulletSwap ~= false)
-    local r = tonumber(G.BS.AimFOV) or 160
+    local r = tonumber(G.BS.AimFOV) or 300
     -- 600+ = без ограничения: границы нет, кольцо не рисуем (иначе оно
     -- показывало бы ложный предел, хотя цель выбирается по всему экрану).
     if not on or r >= 600 then
@@ -1143,7 +1163,10 @@ local function isEnemy(plr)
         if e.role == "vampire" then return false end
         return true
     elseif t == "Противники по роли" then
-        if e.role and me ~= "?" and e.role ~= me then return true end
+        -- Своя роль ещё не известна (начало раунда / Mystery): не
+        -- отсекаем всех подряд, иначе аимлок молчит, хотя игрок впереди.
+        if me == "?" then return true end
+        if e.role and e.role ~= me then return true end
         return e.role == nil
     end
     return true
@@ -1200,7 +1223,7 @@ local function pickTarget(cam)
     -- Теперь 600 px = без ограничения, любое меньшее значение = реальный круг.
     local vp  = cam.ViewportSize
     local ccx, ccy = vp.X * 0.5, vp.Y * 0.5
-    local fov = tonumber(G.BS.AimFOV) or 160
+    local fov = tonumber(G.BS.AimFOV) or 300
     if fov < 0 then fov = 0 end
     local unlimited = fov >= 600
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -3500,19 +3523,37 @@ local function computeBulletPreShot()
     -- ПОВ: КРУГ АИМА. Цель берём только внутри круга (G.BS.AimFOV):
     -- игрок вошёл в круг - аимлок/выстрел работают, вышел - не трогаем.
     -- 600 и больше = без ограничения (весь экран).
-    local FOV = tonumber(G.BS.AimFOV) or 160
+    local FOV = tonumber(G.BS.AimFOV) or 300
     local UNLIM = FOV >= 600
     buildList(cam, myRoot)
 
     local best, bestChar
-    for _, it in ipairs(bulletList) do
-        -- it.screen - РАССТОЯНИЕ в пикселях (sqrt в buildList), поэтому
-        -- сравниваем с FOV, а не с FOV*FOV. Раньше тут был квадрат:
-        -- при 160 px цель ловилась в радиусе 25 600 px, то есть круг
-        -- рисовался, но ни на что не влиял.
-        if UNLIM or it.screen <= FOV then
-            best, bestChar = it.part, it.char
-            break
+    -- 1) УДЕРЖАНИЕ ЦЕЛИ. Если аимлок уже ведёт цель, и она всё ещё
+    -- впереди и внутри круга — держим её, даже если другая стала чуть
+    -- ближе к центру. Так камера, патрон и маркер не разъезжаются.
+    if G.BS.AimLock and LOCK_TARGET and LOCK_TARGET.Parent then
+        for _, it in ipairs(bulletList) do
+            if it.part == LOCK_TARGET
+               and it.screen < 1e8
+               and (UNLIM or it.screen <= FOV) then
+                best, bestChar = it.part, it.char
+                break
+            end
+        end
+    end
+    -- 2) Иначе — первая цель по близости к центру круга.
+    if not best then
+        for _, it in ipairs(bulletList) do
+            -- it.screen - РАССТОЯНИЕ в пикселях (sqrt в buildList), поэтому
+            -- сравниваем с FOV, а не с FOV*FOV. Раньше тут был квадрат:
+            -- при 160 px цель ловилась в радиусе 25 600 px, то есть круг
+            -- рисовался, но ни на что не влиял.
+            -- it.screen = 1e9 у целей ЗА камерой; даже при «без ограничения»
+            -- их не берём: аимлок должен целиться только вперёд.
+            if it.screen < 1e8 and (UNLIM or it.screen <= FOV) then
+                best, bestChar = it.part, it.char
+                break
+            end
         end
     end
     bulletListTarget = best
@@ -3633,24 +3674,20 @@ end
 -- меняется только направление взгляда.
 --
 -- ЧТОБЫ НЕ БЕСИЛО. Доворот включается только когда реально нужно:
---   1) в руках ОРУЖИЕ (Attachment Muzzle или атрибут Variant) —
---      взял дубинку/анализатор, аимлок выключен, камера твоя;
---   2) цель именно ПОД ПРИЦЕЛОМ, а не просто ближайшая сзади;
---   3) по желанию — только пока зажат огонь;
+--   1) в руках ОРУЖИЕ (Muzzle/Variant/атрибуты/название; если предмет
+--      неизвестен — считаем оружием, но аптечку/сканер отсекаем);
+--   2) цель именно ПОД ПРИЦЕЛОМ (внутри круга), а не сзади;
+--   3) аимлок работает ВСЕГДА, а не только пока зажат огонь (v11.18);
 --   4) персонаж жив.
 local UIS = game:GetService("UserInputService")
 local AIMLOCKRAY = RaycastParams.new()
 AIMLOCKRAY.FilterType = Enum.RaycastFilterType.Exclude
 local gunInHand, gunCheckAt = false, 0
 
--- ПРИЦЕЛ С ЦЕЛЬЮ. Пока держим ЛКМ - держим ту же цель, даже если
--- она отошла из-под прицела: иначе взгляд постоянно «соскакивает» на
--- того, кто случайно ближе к центру экрана (тот же враг сбоку, второй
--- враг и т.п.) - аимлок выглядел мигающим: «чуть повернул камеру и
--- он слетел».
-local LOCK_TARGET = nil          -- Part (BOS)
-local LOCK_LAST_S, LOCK_UNTIL = nil, 0
-
+-- ПРИЦЕЛ С ЦЕЛЬЮ. Пока цель удерживается - она приоритетнее для
+-- computeBulletPreShot, чтобы взгляд не «соскакивал» на того, кто
+-- случайно ближе к центру экрана. Удержание живёт в LOCK_TARGET
+-- (объявлен выше, рядом с bulletList).
 local function dropLock()
     LOCK_TARGET, LOCK_LAST_S = nil, nil
 end
@@ -3707,17 +3744,67 @@ local function refreshGunFlag(now)
         local hum = ch:FindFirstChildOfClass("Humanoid")
         if hum and hum.Health <= 0 then res = false return end
         local tool = ch:FindFirstChildOfClass("Tool")
-        if not tool then res = false return end
+        if not tool then
+            -- оружие может быть не Tool, а моделью/стволом в персонаже
+            local mz = ch:FindFirstChild("Muzzle", true)
+            if mz then res = true return end
+            res = false
+            return
+        end
+        -- 1) ЯВНЫЕ ПРИЗНАКИ ОРУЖИЯ.
         if tool:FindFirstChild("Muzzle") then res = true return end
         if tool:GetAttribute("Variant") then res = true return end
+        local markers = { "Muzzle", "FirePoint", "Barrel", "Nozzle", "Tip",
+                          "Ammo", "Magazine", "Bullet", "Bolt" }
+        for i = 1, #markers do
+            if tool:FindFirstChild(markers[i]) then res = true return end
+        end
+        -- 2) АТРИБУТЫ: Ammo/ Damage/ Weapon/ ... (англ. и транслит)
+        local okA, at = pcall(function() return tool:GetAttributes() end)
+        if okA and type(at) == "table" then
+            for k in pairs(at) do
+                local kl = string.lower(tostring(k))
+                if string.find(kl, "ammo", 1, true)
+                   or string.find(kl, "damage", 1, true)
+                   or string.find(kl, "weapon", 1, true)
+                   or string.find(kl, "gun", 1, true)
+                   or string.find(kl, "shot", 1, true)
+                   or string.find(kl, "fire", 1, true)
+                   or string.find(kl, "patron", 1, true)
+                   or string.find(kl, "uron", 1, true) then
+                    res = true
+                    return
+                end
+            end
+        end
+        -- 3) НАЗВАНИЕ: английские и русские корни. Раньше проверялись
+        -- только английские слова, поэтому русское оружие не считалось
+        -- оружием и аимлок молчал (жалоба «целится только при выстреле»).
         local n = string.lower(tool.Name)
-        if string.find(n, "gun", 1, true)
-           or string.find(n, "shot", 1, true)
-           or string.find(n, "sniper", 1, true)
-           or string.find(n, "pistol", 1, true)
-           or string.find(n, "revolver", 1, true)
-           or string.find(n, "rifle", 1, true)
-           or string.find(n, "musket", 1, true) then res = true return end
+        local weaponWords = {
+            "gun", "shot", "sniper", "pistol", "revolver", "rifle", "musket",
+            "weapon", "smg", "carbine", "flintlock", "blunderbuss",
+            "револьвер", "пистолет", "дробовик", "винтовк", "ружь",
+            "автомат", "снайпер", "мушкет", "пушк", "оруж", "карабин",
+            "пулемёт", "пулемет", "ствол",
+        }
+        for i = 1, #weaponWords do
+            if string.find(n, weaponWords[i], 1, true) then res = true return end
+        end
+        -- 4) ЯВНО НЕ ОРУЖИЕ.
+        local utilityWords = {
+            "medkit", "bandage", "heal", "food", "drink", "scanner", "detector",
+            "luminol", "analyzer", "syringe", "key", "radio", "flashlight",
+            "camera", "evidence", "map", "compass",
+            "аптеч", "бинт", "еда", "сканер", "детектор", "ключ", "рация",
+            "фонар", "камер", "уликт", "карта", "компас", "шприц",
+        }
+        for i = 1, #utilityWords do
+            if string.find(n, utilityWords[i], 1, true) then res = false return end
+        end
+        -- 5) Неизвестный предмет считаем оружием: лучше, чтобы аимлок
+        -- работал, чем молчал из-за незнакомого названия.
+        res = true
     end)
     gunInHand = res
     return res
@@ -3731,12 +3818,6 @@ local function aimLockTick(dt, now)
     local pre = bulletPreShot
     if not (pre and pre.pos) then dropLock() return end
     if not refreshGunFlag(now) then dropLock() return end
-    if G.BS.AimLockFireOnly then
-        local okP, down = pcall(function()
-            return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-        end)
-        if not (okP and down) then return end
-    end
 
     local cam = workspace.CurrentCamera
     if not cam then return end
@@ -3751,7 +3832,9 @@ local function aimLockTick(dt, now)
         tgt = bulletListTarget
     end
     resolveLock(cam, now)
-    if LOCK_TARGET and LOCK_TARGET.Parent then tgt = LOCK_TARGET end
+    -- LOCK_TARGET не подменяет tgt здесь: computeBulletPreShot уже отдал
+    -- удерживаемой цели приоритет, и pre.pos/pre.part — это она же.
+    -- Иначе камера могла смотреть в pre.pos, а проверка стены — в другого.
     if not (tgt and tgt.Parent) then dropLock() return end
 
     -- ПОВ: поворот камеры можно выключить - тогда подмена патрона
@@ -3983,7 +4066,10 @@ local function ncFireWeapon(...)
     -- отставал». Поэтому здесь цель и опережение считаются заново, по
     -- актуальной позиции цели.
     -- Внутри хука ":"-вызовы запрещены, поэтому только свойства.
-    local tgtPart = LOCK_TARGET or bulletListTarget
+    -- bulletListTarget уже учитывает удержание (computeBulletPreShot
+    -- отдаёт приоритет LOCK_TARGET). Берём именно его, чтобы пуля и
+    -- камера всегда шли в одну цель.
+    local tgtPart = bulletListTarget
     if tgtPart and tgtPart.Parent then
         local p = tgtPart.Position
         local vel = tgtPart.AssemblyLinearVelocity
@@ -4806,7 +4892,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.17.1",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Танец v11.18",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -5063,25 +5149,16 @@ AI.CreateToggle({
 -- доводит камеру (G.BS.AimLockTurn = true). Если понадобится тихий аим
 -- без поворота камеры - из консоли:
 --   getgenv().BS.AimLockTurn = false
-AI.CreateToggle({
-    Name = "Аим пока держишь пушку",
-    CurrentValue = G.BS.AimFireMode,
-    Callback = function(v)
-        G.BS.AimFireMode = v
-        -- режим: и патрон, и камера работают только пока зажата ЛКМ
-        G.BS.AimLockFireOnly = v
-        if v then
-            pcall(setBulletSwap, true)
-            G.BS.AimLock = true
-            bindAimLockStep()
-        end
-    end,
-})
+-- Тумблер «Аим пока держишь пушку» УДАЛЁН в v11.18: из-за него камера
+-- велась только во время стрельбы. Теперь аимлок работает всегда, пока
+-- в руках оружие и цель внутри круга.
 
 AI.CreateSection("Круг аима (ПОВ)")
 -- ПОВ = круг вокруг прицела. Внутри круга скрипт видит цель и стреляет,
 -- вне круга - не трогает. 600 px = без ограничения (весь экран).
-AI.CreateSlider({ Name = "Радиус круга (FOV)", Flag = "BS_AimFOV",
+-- Flag сменён на BS_AimFOV2, чтобы старые сохранённые 160 px не
+-- перебивали новый дефолт 300 px.
+AI.CreateSlider({ Name = "Радиус круга (FOV)", Flag = "BS_AimFOV2",
     Range = {40, 600}, Increment = 10, CurrentValue = G.BS.AimFOV,
     Suffix = " px", Callback = function(v)
         G.BS.AimFOV = v
@@ -5094,7 +5171,7 @@ AI.CreateToggle({ Name = "Показывать круг аима",
 -- пикеры «Цвет: захват цели» / «Цвет метки» удалены по просьбе.
 -- Логика выбора цели осталась и работает на дефолтах:
 --   AIM_TARGETS  = противники по роли, AIM_PRIORITY = ближе,
---   радиус 160 px, прострел включён.
+--   радиус 300 px, прострел включён.
 
 -- Секция «Диагностика» (лог попаданий, диагностика патрона, лог
 -- ремоутов, глубокий лог 94 ремоутов) и кнопки сканеров УБРАНЫ по
@@ -5249,7 +5326,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.17.1 остановлен")
+    print("[BS HUB] v11.18 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -5324,7 +5401,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.17.1 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.18 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
