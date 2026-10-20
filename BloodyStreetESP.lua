@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.15.2
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.15.3
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -1006,9 +1006,16 @@ end
 local function drawFOV()
     -- КРУГ АЙМА (ПОВ). Показывает радиус, внутри которого скрипт видит
     -- цель: игрок в круге - аим/выстрел в него, вне круга - не трогаем.
+    -- Рисуем не каждый кадр: геометрия меняется только от радиуса/экрана.
+    local tick = os.clock()
+    if G.BS._fovNext and tick < G.BS._fovNext then return end
+    G.BS._fovNext = tick + 0.05
     local on = (G.BS.AimFOVShow ~= false)
         and (G.BS.AimLock ~= false or G.BS.BulletSwap ~= false)
-    if not on then
+    local r = tonumber(G.BS.AimFOV) or 160
+    -- 600+ = без ограничения: границы нет, кольцо не рисуем (иначе оно
+    -- показывало бы ложный предел, хотя цель выбирается по всему экрану).
+    if not on or r >= 600 then
         for i = 1, FOV_N do
             local s = FOVSegs[i]
             if s then s.Visible = false end
@@ -1020,7 +1027,6 @@ local function drawFOV()
     ensureOverlay()
     local vp = cam.ViewportSize
     local cx, cy = vp.X * 0.5, vp.Y * 0.5
-    local r = tonumber(G.BS.AimFOV) or 160
     if r < 10 then r = 10 end
     if r > 900 then r = 900 end
     local col = safeColor(G.BS.AimFOVColor, Color3.new(1, 1, 1))
@@ -1308,6 +1314,13 @@ if Remotes then
                             a = a.role or a.myRole or a.roleName or a.name
                         end
                         local k = aliasOf(a)
+                        -- aliasOf знает только vampire/hunter/none/civil.
+                        -- Остальные роли игры (doctor, detective, seer...) он
+                        -- не распознаёт, поэтому сохраняем строку как есть -
+                        -- иначе они снова превращались бы в «роль: ?».
+                        if not k and type(a) == "string" and a ~= "" then
+                            k = string.lower(a)
+                        end
                         if k and k ~= "none" and G.BS.MyRole ~= k then
                             G.BS.MyRole = k
                             addEvent("твоя роль: " .. k)
@@ -1515,6 +1528,7 @@ local ROLE_NAME = {
     armsdealer = "Оружейщик",
     vampire    = "Вампир",
     hunter     = "Хантер",
+    human      = "Гражданин",
     none       = "Гражданский",
 }
 
@@ -1872,6 +1886,11 @@ dance.next = function(step)
     -- СРАЗУ ВКЛЮЧАЕМ: нажал «следующий танец» - он и заиграл.
     dance.on = true
     G.BS.DanceOn = true
+    -- синхронизируем тумблер «Танцевать», иначе в меню он остаётся
+    -- выключенным, хотя танец уже играет
+    if dance.toggle then
+        pcall(function() dance.toggle:Set(true) end)
+    end
     if dance.pick then pcall(dance.pick, d.id, d.label) end
     if danceDD then
         pcall(function() danceDD:SetValue(dance.labels()[dance.idx]) end)
@@ -3277,12 +3296,15 @@ local function computeBulletPreShot()
     -- 600 и больше = без ограничения (весь экран).
     local FOV = tonumber(G.BS.AimFOV) or 160
     local UNLIM = FOV >= 600
-    local FOV2 = FOV * FOV
     buildList(cam, myRoot)
 
     local best, bestChar
     for _, it in ipairs(bulletList) do
-        if UNLIM or it.screen <= FOV2 then
+        -- it.screen - РАССТОЯНИЕ в пикселях (sqrt в buildList), поэтому
+        -- сравниваем с FOV, а не с FOV*FOV. Раньше тут был квадрат:
+        -- при 160 px цель ловилась в радиусе 25 600 px, то есть круг
+        -- рисовался, но ни на что не влиял.
+        if UNLIM or it.screen <= FOV then
             best, bestChar = it.part, it.char
             break
         end
@@ -4293,6 +4315,17 @@ local function scan()
     -- "line 1089 - function scan").
     local ok, list = pcall(function() return Players:GetPlayers() end)
     if not ok or type(list) ~= "table" then return end
+
+    -- СВОЯ РОЛЬ: player.Role проверяем и у себя. Раньше roleFromAttr
+    -- вызывался только для других игроков, поэтому в HUD могло висеть
+    -- «роль: ?», хотя атрибут Role у себя тоже есть.
+    if not G.BS.RoleFreeze then
+        local myR = roleFromAttr(LP)
+        if myR and myR ~= "none" and G.BS.MyRole ~= myR then
+            G.BS.MyRole = myR
+            if addEvent then addEvent("твоя роль: " .. myR) end
+        end
+    end
     for _, plr in ipairs(list) do
         if plr ~= LP then
             local ch = plr.Character
@@ -4567,7 +4600,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.15.2",
+    LoadingSubtitle = "ESP + Aim + Танец v11.15.3",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -4896,7 +4929,7 @@ refreshDanceDropdown = function()
 end
 
 DN.CreateSection("Тумблеры танца")
-DN.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
+dance.toggle = DN.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
     CurrentValue = dance.on == true,
     Callback = function(v) pcall(setDance, v) end })
 DN.CreateToggle({ Name = "Спин (крутишься)", Flag = "BS_Spin",
@@ -5007,7 +5040,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.15.2 остановлен")
+    print("[BS HUB] v11.15.3 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -5082,7 +5115,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.15.2 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.15.3 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
