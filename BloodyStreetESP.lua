@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.15.1
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + ТАНЕЦ  v11.15.2
 --  GUI на Rayfield. Вкладки: ESP / AIM.
 --
 --  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
@@ -864,9 +864,17 @@ function ROLES.summary()
     end
     local rv = tonumber(G.BS.RoundVamps) or 0
     local rh = tonumber(G.BS.RoundHunters) or 0
-    local msg = string.format("[BS ROLE] отмечено вампиров %d (в раунде %d), "
-        .. "хантеров %d (в раунде %d), неопознанных %d",
-        v, rv, h, rh, u)
+    -- by[] хранит только ДРУГИХ игроков (себя скрипт не красит), а
+    -- счётчики RoundState - всех вместе с тобой. Раньше из-за этого в
+    -- логе выглядело, будто одного вампира не нашли: «2 (в раунде 3)»,
+    -- хотя третий - это ты. Показываем честно: «других 2 из 2».
+    local mine = string.lower(tostring(G.BS.MyRole or "?"))
+    local rvOthers, rhOthers = rv, rh
+    if mine == "vampire" then rvOthers = math.max(0, rv - 1) end
+    if mine == "hunter"  then rhOthers = math.max(0, rh - 1) end
+    local msg = string.format("[BS ROLE] отмечено других: вампиров %d из %d, "
+        .. "хантеров %d из %d, без роли %d | ты: %s",
+        v, rvOthers, h, rhOthers, u, mine)
     print(msg)
     -- кто именно помечен и по какому источнику
     local names = {}
@@ -1269,6 +1277,17 @@ if Remotes then
                     -- RoundState: {phase, vampires, hunters}
                     if r.Name == "RoundState" and i == 1 and type(args[i]) == "table" then
                         local st = args[i]
+                        -- своя роль может лежать прямо в RoundState
+                        -- (role/myRole/...): раньше читали только счётчики,
+                        -- поэтому в HUD вечно было «роль: ?».
+                        local keys = { "role", "myRole", "selfRole", "roleName" }
+                        for ki = 1, #keys do
+                            local k = aliasOf(st[keys[ki]])
+                            if k and k ~= "none" and G.BS.MyRole ~= k then
+                                G.BS.MyRole = k
+                                addEvent("твоя роль: " .. k)
+                            end
+                        end
                         G.BS.RoundPhase   = tostring(st.phase or "?")
                         G.BS.RoundVamps   = tonumber(st.vampires) or 0
                         G.BS.RoundHunters = tonumber(st.hunters) or 0
@@ -1283,8 +1302,16 @@ if Remotes then
                     end
                     -- RoleAssigned
                     if r.Name == "RoleAssigned" and i == 1 then
-                        local k = aliasOf(args[i]) or string.lower(tostring(args[i] or ""))
-                        if k and k ~= "none" then G.BS.MyRole = k end
+                        -- роль может прийти строкой или таблицей {role=...}
+                        local a = args[i]
+                        if type(a) == "table" then
+                            a = a.role or a.myRole or a.roleName or a.name
+                        end
+                        local k = aliasOf(a)
+                        if k and k ~= "none" and G.BS.MyRole ~= k then
+                            G.BS.MyRole = k
+                            addEvent("твоя роль: " .. k)
+                        end
                     end
                     -- SoundPing {pos, sound}
                     if r.Name == "SoundPing" and i == 1 and typeof(args[i]) == "Vector3" then
@@ -4540,7 +4567,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Танец v11.15.1",
+    LoadingSubtitle = "ESP + Aim + Танец v11.15.2",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -4707,12 +4734,25 @@ TB.CreateToggle({ Name = "Лента событий (раунд/разоблач
 
 -- ======================= РОЛИ =======================
 TB.CreateSection("Роли (если скрипт ошибся)")
-TB.CreateParagraph({ Name = "Игра сама сообщает, сколько в раунде "
-    .. "вампиров и хантеров, поэтому скрипт не может пометить больше. "
-    .. "Если роль определилась неверно - выставь её ручно: введи ник "
-    .. "и нажми нужную кнопку." })
+-- ВАЖНО: в сборке Rayfield игрока CreateParagraph читает НЕ Name, а
+-- Text/Content, а CreateInput - PlaceholderText. Раньше передавали только
+-- Name/Placeholder, из-за этого в логе было «ошибок GUI=2»
+-- (Unable to assign property Text / PlaceholderText). Передаём все
+-- варианты ключей - лишние поля сборка просто игнорирует.
+local ROLE_HELP = "Игра сама сообщает, сколько в раунде вампиров и "
+    .. "хантеров, поэтому скрипт не может пометить больше. Если роль "
+    .. "определилась неверно - выставь её ручно: введи ник и нажми "
+    .. "нужную кнопку."
+TB.CreateParagraph({
+    Name    = ROLE_HELP,
+    Title   = "Роли",
+    Content = ROLE_HELP,
+    Text    = ROLE_HELP,
+})
 TB.CreateInput({ Name = "Ник игрока", Flag = "BS_RoleName",
-    Placeholder = "ник в игре", Callback = function(txt)
+    Placeholder = "ник в игре",
+    PlaceholderText = "ник в игре",
+    Callback = function(txt)
         G.BS.RoleName = txt
     end })
 TB.CreateButton({ Name = "ВАМПИР этому нику", Callback = function()
@@ -4967,7 +5007,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.15.1 остановлен")
+    print("[BS HUB] v11.15.2 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -5042,7 +5082,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.15.1 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.15.2 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
@@ -5055,5 +5095,4 @@ print("[BS HUB] v11.15.1 запущен | хуков=" .. #netConns
 -- (из-за этого искали причину пустого списка танцев).
 if #UI_ERR > 0 then
     print("[BS GUI] что не создалось: " .. table.concat(UI_ERR, " ; "))
-    print("[BS GUI] выбор танца работает кнопками «СЛЕДУЮЩИЙ ТАНЕЦ»")
 end
