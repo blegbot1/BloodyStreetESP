@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.29
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.31
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -112,6 +112,9 @@ local RGB_TARGETS  = {
 --  НАСТРОЙКИ
 -- ============================================================
 G.BS.Run = (G.BS.Run or 0) + 1
+-- Флаг «идёт телепорт» (прострел/сбор монеты). Сбрасываем при запуске:
+-- если прошлая версия упала посреди телепорта, флаг мог остаться true.
+G.BS._tpBusy = false
 
 -- ---------- ESP ----------
 G.BS.PlayerESP   = G.BS.PlayerESP   ~= false
@@ -236,6 +239,11 @@ G.BS.OffArrows     = G.BS.OffArrows ~= false
 G.BS.Snaplines     = G.BS.Snaplines ~= false
 G.BS.SnapThick     = tonumber(G.BS.SnapThick) or 1
 G.BS.VampAura      = G.BS.VampAura ~= false
+-- v11.31: скорость цели в подписи и цвет ника по HP.
+G.BS.ShowSpeed     = G.BS.ShowSpeed == true
+G.BS.NameHPColor   = G.BS.NameHPColor == true
+-- v11.31: линии между вампирами (видно, кто рядом с кем).
+G.BS.VampLinks     = G.BS.VampLinks == true
 G.BS.Box2D         = G.BS.Box2D or false
 G.BS.LabelSize     = tonumber(G.BS.LabelSize) or 13
 G.BS.CrateESP      = G.BS.CrateESP or false
@@ -254,7 +262,8 @@ G.BS.HeadBoxColor  = safeColor(G.BS.HeadBoxColor, Color3.new(1, 0, 0))
 G.BS.DamageNumbers = G.BS.DamageNumbers ~= false
 G.BS.DmgNumColor   = safeColor(G.BS.DmgNumColor, Color3.new(1, 1, 0))
 G.BS.CornerBoxes   = G.BS.CornerBoxes or false
-G.BS.SoundArrows   = G.BS.SoundArrows ~= false
+-- СТРЕЛКИ ЗВУКА УДАЛЕНЫ (по просьбе): вместе с меню убран и рендер.
+G.BS.SoundArrows   = false
 G.BS.SoundArrowColor = safeColor(G.BS.SoundArrowColor, Color3.new(0, 1, 0.5))
 G.BS.StaminaBar    = false
 G.BS.AmmoBar       = false
@@ -269,14 +278,14 @@ G.BS.DistFade      = G.BS.DistFade or false
 G.BS.HPBarText     = G.BS.HPBarText ~= false
 G.BS.ClueESP       = G.BS.ClueESP or false
 G.BS.ClueColor     = safeColor(G.BS.ClueColor, Color3.new(0.6, 1, 0.2))
-G.BS.LowHPWarn     = false
+G.BS.LowHPWarn     = G.BS.LowHPWarn == true
 G.BS.LowHPThreshold = tonumber(G.BS.LowHPThreshold) or 30
 G.BS.LowHPColor    = safeColor(G.BS.LowHPColor, Color3.new(1, 0, 0))
--- МОНЕТЫ (Workspace.CoinPickups). Сбор через ремоут игры. Если точный
--- ремоут неизвестен — включи «НАУЧИТЬ СБОР МОНЕТ» и подбери одну
--- монету руками: скрипт запомнит ремоут и аргументы.
+-- МОНЕТЫ (Workspace.CoinPickups). Магнит двигает монеты к игроку.
+-- АВТО-ОБУЧЕНИЕ: пока ремоут сбора не выучен, скрипт сам запоминает
+-- первый FireServer с монетой, когда монета рядом. Ручная кнопка не нужна.
 G.BS.CoinAuto      = G.BS.CoinAuto ~= false
-G.BS.CoinLearn     = G.BS.CoinLearn or false
+G.BS.CoinLearn     = true
 G.BS.CoinRange     = tonumber(G.BS.CoinRange) or 600
 G.BS.CoinScanEvery = tonumber(G.BS.CoinScanEvery) or 1.0
 -- МАГНИТ МОНЕТ: монеты физически летят к игроку. Работает без ремоута:
@@ -284,6 +293,12 @@ G.BS.CoinScanEvery = tonumber(G.BS.CoinScanEvery) or 1.0
 G.BS.CoinMagnet      = G.BS.CoinMagnet ~= false
 G.BS.CoinMagnetRadius = tonumber(G.BS.CoinMagnetRadius) or 250
 G.BS.CoinMagnetPower  = tonumber(G.BS.CoinMagnetPower) or 0.45
+-- СБОР ТЕЛЕПОРТОМ: монета физически остаётся на сервере там, где лежала
+-- (PivotTo двигает её только у нас). Чтобы ProximityPrompt засчитался,
+-- персонаж на мгновение переносится к ИСХОДНОЙ позиции монеты, жмёт
+-- prompt/click/touch и возвращается. Это единственный надёжный способ
+-- без серверного ремоута.
+G.BS.CoinBlink       = G.BS.CoinBlink ~= false
 -- ТЕЛЕПОРТ-ВЫСТРЕЛ ЧЕРЕЗ СТЕНЫ. На время выстрела персонаж окажется
 -- за спиной/над целью (для сервера), потом вернётся. Требует аимлока:
 -- камера должна смотреть на цель, иначе сервер может отклонить выстрел.
@@ -323,6 +338,14 @@ G.BS.AimFOVShow    = G.BS.AimFOVShow ~= false
 G.BS.AimFOVColor   = safeColor(G.BS.AimFOVColor, Color3.fromRGB(255, 255, 255))
 G.BS.AimFOVThick   = tonumber(G.BS.AimFOVThick) or 2
 G.BS.AimFOVAlpha   = tonumber(G.BS.AimFOVAlpha) or 0.35
+-- v11.31: выбор только видимых целей (без прострела) — для честной игры
+-- и для случаев, когда сервер не принимает выстрелы через стены.
+G.BS.AimVisibleOnly = G.BS.AimVisibleOnly == true
+-- v11.31: настройки метки цели (размер/толщина/пульс/имя).
+G.BS.AimMarkSize   = tonumber(G.BS.AimMarkSize) or 9
+G.BS.AimMarkThick  = tonumber(G.BS.AimMarkThick) or 2
+G.BS.AimMarkPulse  = G.BS.AimMarkPulse ~= false
+G.BS.AimMarkName   = G.BS.AimMarkName ~= false
 -- ОТКУДА СЧИТЫВАЕТСЯ НАПРАВЛЕНИЕ ВЫСТРЕЛА:
 --   "camera" (по умолчанию) — от камеры, как стреляет сама игра;
 --   "head"   — от головы персонажа;
@@ -338,11 +361,13 @@ G.BS.AimLead       = tonumber(G.BS.AimLead) or 0.08
 -- АИМЛОК: камера доворачивается на цель. Нужен потому, что сервер
 -- проверяет направление взгляда: направить патрон в цель, глядя в
 -- сторону, нельзя — выстрел отклоняется.
--- Скорость доворота: 1 = мгновенно (нужно по правилу сервера
--- SHOT_ANGLE_SLACK_DEG = 3), меньше 1 = плавно, 0 = не доворачивать.
--- ПО УМОЛЧАНИЮ 1: плавный доворот давал «отставание» при ходьбе.
+-- Скорость доворота: 1 = плавно, 35 = мгновенно (нужно по правилу
+-- сервера SHOT_ANGLE_SLACK_DEG = 3). В момент выстрела камера и
+-- персонаж всё равно доворачиваются точно на цель в ncFireWeapon,
+-- поэтому плавность влияет только на вид, а не на попадание.
+-- ПО УМОЛЧАНИЮ 35: плавный доворот давал «отставание» при ходьбе.
 G.BS.AimLock       = G.BS.AimLock ~= false
-G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 1
+G.BS.AimLockSpeed  = tonumber(G.BS.AimLockSpeed) or 35
 -- ПОВ (поворот камеры). true  - камера доворачивается на цель
 --                         (иначе подмена патрона работает молча).
 -- false - камера остаётся твоей, но выстрел всё равно идёт в цель.
@@ -380,8 +405,11 @@ G.BS.Trigger         = true   -- оставлено только для совм
 -- тейзера (StunFire). Удар принимает направление и проверяется так
 -- же, как выстрел, поэтому направление подменяется на цель.
 G.BS.MeleeAim        = G.BS.MeleeAim ~= false
--- Аимлок НЕ доводит камеру сквозь стены.
-G.BS.AimLockNoWall   = G.BS.AimLockNoWall ~= false
+-- ВАЖНО ДЛЯ ПРОСТРЕЛА: сервер сверяет направление пули с взглядом
+-- (SHOT_ANGLE_SLACK_DEG = 3). Если камера не доводится на цель за стеной,
+-- выстрел отклоняется. Поэтому при включённом простреле камера ВЕДЁТСЯ
+-- сквозь стены: AimLockNoWall = false. Отдельного тумблера нет.
+G.BS.AimLockNoWall   = false
 -- ПРОСТРЕЛ СТЕН. Сервер разрешает увести точку вылета на
 -- Config.Combat.SHOT_ORIGIN_SLACK = 14 студов. Ставим её за стеной.
 G.BS.WallPenetrate   = G.BS.WallPenetrate ~= false
@@ -452,15 +480,27 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 34 then
-    G.BS.CfgV      = 34
+if G.BS.CfgV ~= 36 then
+    -- Старые сохранённые 1/2..34 означали «мгновенно», потому что код
+    -- трактовал всё >= 1 как instant. Новая шкала: 1 = плавно,
+    -- 35 = мгновенно. Один раз переводим старый дефолт в 35.
+    if (tonumber(G.BS.AimLockSpeed) or 1) <= 35 then
+        local oldSpeed = tonumber(G.BS.AimLockSpeed) or 1
+        -- 1 была «мгновенно» по старой шкале; 2..34 тоже были мгновенны.
+        if oldSpeed >= 1 and oldSpeed < 35 then
+            -- сохраняем выбор пользователя: старые значения >1 были
+            -- бессмысленны (всё равно instant), поэтому ставим максимум.
+            G.BS.AimLockSpeed = 35
+        end
+    end
+    G.BS.CfgV      = 36
     -- АИМЛОК РАБОТАЕТ ВСЕГДА, а не только пока зажата ЛКМ
     -- (жалоба: «аймлок не работает, только когда я стреляю»).
     G.BS.AimLockFireOnly = false
     G.BS.AimLockTurn     = true    -- ПОВ: камера доворачивается на цель
     G.BS.AimLock   = true
     G.BS.BulletSwap = true
-    G.BS.AimLockSpeed = 1      -- мгновенный доворот (иначе отстаёт на ходу)
+    G.BS.AimLockSpeed = 35     -- мгновенный доворот (иначе отстаёт на ходу)
     G.BS.LockHold      = 0.6
     G.BS.LockHoldOnFire = true
     G.BS.SyncTarget    = true
@@ -492,8 +532,9 @@ if G.BS.CfgV ~= 34 then
     G.BS.TargetMark = true
     G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
     G.BS.AimLead   = 0.08
-    -- SHOT_ANGLE_SLACK_DEG = 3: взгляд и патрон должны совпадать
-    G.BS.AimLockNoWall = true
+    -- SHOT_ANGLE_SLACK_DEG = 3: взгляд и патрон должны совпадать.
+    -- Для прострела камера обязана вестись на цель за стеной — false.
+    G.BS.AimLockNoWall = false
     G.BS.MeleeAim  = true
     G.BS.WallPenetrate = true
     G.BS.OriginSlack = 13     -- SHOT_ORIGIN_SLACK = 14
@@ -618,8 +659,20 @@ local dmgFmt = {}
 -- ============================================================
 local COIN = {
     remote = nil, args = nil, argIdx = nil, argType = nil,
-    learned = false, lastScan = 0, seen = {},
-    magnetList = {}, magnetAt = 0, tryAt = {},
+    learned = false, lastScan = 0,
+    -- Слабые ключи: монеты удаляются, и старые записи не должны
+    -- копиться в памяти весь матч.
+    seen = setmetatable({}, { __mode = "k" }),
+    magnetList = {}, magnetAt = 0,
+    tryAt = setmetatable({}, { __mode = "k" }),
+    nearPlayer = false,
+    promptCheck = setmetatable({}, { __mode = "k" }),
+    firedLog = setmetatable({}, { __mode = "k" }),
+    -- v11.31: исходные (серверные) позиции монет. Слабые ключи, чтобы
+    -- удалённые монеты не держались в памяти.
+    origin = setmetatable({}, { __mode = "k" }),
+    originCF = setmetatable({}, { __mode = "k" }),
+    fns = {}, blinkBusy = false, blinkAt = 0,
 }
 G.BS.Coins = COIN
 
@@ -680,14 +733,18 @@ function COIN.collectOne(coin)
         return true
     elseif COIN.args and COIN.argIdx and COIN.argIdx > 0 and COIN.argIdx <= COIN.args.n then
         -- Model не имеет .Position: берём позицию пивота/части.
-        local coinPos
-        pcall(function()
-            if coin:IsA("BasePart") then
-                coinPos = coin.Position
-            elseif coin:IsA("Model") then
-                coinPos = coin:GetPivot().Position
-            end
-        end)
+        -- ВАЖНО: для позиции используем СЕРВЕРНУЮ (origin), а не
+        -- клиентскую после магнита — иначе ремоут отвергнет точку.
+        local coinPos = COIN.origin[coin]
+        if not coinPos then
+            pcall(function()
+                if coin:IsA("BasePart") then
+                    coinPos = coin.Position
+                elseif coin:IsA("Model") then
+                    coinPos = coin:GetPivot().Position
+                end
+            end)
+        end
         args = {}
         for i = 1, COIN.args.n do
             if i == COIN.argIdx then
@@ -708,6 +765,16 @@ end
 function COIN.scan()
     local folder = COIN.findFolder()
     if not folder then return 0 end
+    -- Если ремоута нет, не сканируем ReplicatedStorage каждые 5 с:
+    -- сбор идёт через prompt/click/touch. Поиск ремоута — раз в 15 с.
+    if not (COIN.remote and COIN.remote.Parent) then
+        local nowR = os.clock()
+        if nowR - (COIN.remoteSearchAt or 0) >= 15 then
+            COIN.remoteSearchAt = nowR
+            pcall(COIN.findRemote)
+        end
+    end
+    if not (COIN.remote or COIN.learned) then return 0 end
     local n = 0
     for _, coin in ipairs(folder:GetDescendants()) do
         if coin:IsA("Model") and coin.Name == "CoinPickup" then
@@ -757,21 +824,235 @@ local function coinPivot(coin)
     return nil
 end
 
-local function fireCoinPrompts(coin, now)
-    if COIN.tryAt[coin] and now - COIN.tryAt[coin] < 0.9 then return end
-    COIN.tryAt[coin] = now
-    -- 1) если ремоут уже выучен/найден — пробуем штатный сбор
-    pcall(function() COIN.collectOne(coin) end)
-    -- 2) ProximityPrompt: монета уже рядом, значит дистанция проходит.
+-- ФУНКЦИИ ИСПОЛНИТЕЛЯ. getgenv()/fireproximityprompt есть не везде:
+-- проверяем и env, и _G, и кэшируем результат, чтобы не искать каждый
+-- кадр. Если функции нет — остаётся InputHoldBegin/InputHoldEnd.
+local function coinFn(name)
+    local cached = COIN.fns and COIN.fns[name]
+    if cached ~= nil then return cached or nil end
+    local f
+    if type(getgenv) == "function" then
+        local ok, env = pcall(getgenv)
+        if ok and type(env) == "table" then f = env[name] end
+    end
+    if type(f) ~= "function" then
+        local ok, g = pcall(function() return _G[name] end)
+        if ok and type(g) == "function" then f = g end
+    end
+    if not COIN.fns then COIN.fns = {} end
+    COIN.fns[name] = f or false
+    return f
+end
+
+local function coinPromptAndClick(coin)
+    local prompt, click
     for _, d in ipairs(coin:GetDescendants()) do
-        if d:IsA("ProximityPrompt") and d.Enabled then
-            pcall(function() d:InputHoldBegin() end)
-            local hold = tonumber(d.HoldDuration) or 0
-            task.delay(math.max(0.05, hold + 0.05), function()
-                pcall(function() d:InputHoldEnd() end)
+        if not prompt and d:IsA("ProximityPrompt") then prompt = d end
+        if not click and d:IsA("ClickDetector") then click = d end
+        if prompt and click then break end
+    end
+    return prompt, click
+end
+
+-- ВЗАИМОДЕЙСТВИЕ С МОНЕТОЙ. Вызывать ТОЛЬКО когда персонаж уже стоит
+-- у исходной (серверной) позиции монеты: prompt проверяет дистанцию
+-- на сервере, а не на нашем клиенте.
+local function fireCoinPrompts(coin)
+    local prompt, click = coinPromptAndClick(coin)
+    local fired = false
+    local fpp = coinFn("fireproximityprompt")
+    if prompt then
+        fired = true
+        if fpp then
+            local ok = pcall(fpp, prompt)
+            if not ok then pcall(fpp, prompt, 1) end
+        end
+        -- Ручной путь: InputHoldBegin/End. Он нужен и как запасной, и
+        -- для prompt'ов с HoldDuration > 0 (executor-функция у многих
+        -- исполнителей отпускает prompt мгновенно, но сервер ждёт hold).
+        pcall(function()
+            if prompt.Enabled then
+                prompt:InputHoldBegin()
+                local hold = tonumber(prompt.HoldDuration) or 0
+                task.delay(math.max(0.06, hold + 0.08), function()
+                    pcall(function() prompt:InputHoldEnd() end)
+                end)
+            end
+        end)
+    end
+    local fcd = coinFn("fireclickdetector")
+    if click and fcd then
+        pcall(fcd, click, 0)
+        fired = true
+    end
+    -- TouchTransmitter: некоторые игры собирают монету по касанию.
+    local part = coinPart(coin)
+    local ft = coinFn("firetouchinterest")
+    if part and ft then
+        local myRoot = LP and LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        if myRoot then
+            pcall(ft, part, myRoot, 0)
+            task.delay(0.12, function()
+                if part.Parent then pcall(ft, part, myRoot, 1) end
             end)
+            fired = true
         end
     end
+    -- Ремоут — только если он реально есть/выучен. Иначе findRemote
+    -- каждую секунду обходил бы ReplicatedStorage без пользы.
+    if (COIN.remote and COIN.remote.Parent) or COIN.learned then
+        pcall(function() COIN.collectOne(coin) end)
+        fired = true
+    end
+    return fired
+end
+
+-- СБОР ТЕЛЕПОРТОМ. Монета на сервере остаётся на исходной позиции:
+-- клиентский PivotTo её не двигает. Поэтому переносим ПЕРСОНАЖА к
+-- COIN.origin (запомненной до магнита), ждём репликацию, жмём prompt
+-- и возвращаемся. За один раз — одна монета, иначе персонажа будет
+-- швырять между точками.
+function COIN.blinkCollect(coin, now)
+    if G.BS.CoinBlink == false then return false end
+    if COIN.blinkBusy or G.BS._tpBusy then return false end
+    local ch = LP and LP.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    local root = ch and ch:FindFirstChild("HumanoidRootPart")
+    if not (ch and root and hum and hum.Health > 0) then return false end
+    local part = coinPart(coin)
+    if not part or not part.Parent then return false end
+    local origin = COIN.origin[coin]
+    if not origin then
+        local cf0 = coinPivot(coin)
+        origin = (cf0 and cf0.Position) or part.Position
+        COIN.origin[coin] = origin
+        COIN.originCF[coin] = cf0
+    end
+    local originCF = COIN.originCF[coin] or CFrame.new(origin)
+    local radius = tonumber(G.BS.CoinMagnetRadius) or 250
+    local dist = (origin - root.Position).Magnitude
+    if dist > radius + 30 then return false end
+    if now - (COIN.blinkAt or 0) < 0.75 then return false end
+    -- Если у монеты нет ни prompt, ни click, ни touch и ремоут не выучен,
+    -- телепорт всё равно ничего не даст — не дёргаем персонажа зря.
+    local prompt, click = coinPromptAndClick(coin)
+    local hasTouch = coinFn("firetouchinterest") ~= nil
+    local hasRemote = (COIN.remote and COIN.remote.Parent) or COIN.learned
+    if not prompt and not click and not hasTouch and not hasRemote then
+        return false
+    end
+    COIN.blinkAt = now
+    COIN.blinkBusy = true
+    G.BS._tpBusy = true
+    -- Диагностика именно попытки сбора: раньше лог печатался даже когда
+    -- телепорт был занят прострелом и blink не запускался.
+    if not COIN.firedLog[coin] then
+        COIN.firedLog[coin] = true
+        local nm = "?"
+        pcall(function() nm = coin:GetFullName() end)
+        print(string.format("[BS COIN] сбор: %s | серверная дистанция %.0f",
+            nm, dist))
+        task.delay(1.6, function()
+            if coin.Parent then
+                print("[BS COIN] НЕ собралась: " .. nm
+                    .. " (prompt/click/touch не сработали)")
+            else
+                print("[BS COIN] собрана: " .. nm)
+            end
+        end)
+    end
+
+    local hold = prompt and tonumber(prompt.HoldDuration) or 0
+    -- Держим персонажа у монеты, пока prompt не доиграет hold. Иначе
+    -- InputHoldEnd уходил уже после телепорта назад, и сервер отклонял
+    -- сбор по дистанции.
+    local stay = math.clamp(hold + 0.18, 0.16, 1.5)
+
+    local oldCF = root.CFrame
+    local oldVel = root.AssemblyLinearVelocity
+    local spot = origin + Vector3.new(0, 2.4, 0)
+
+    task.spawn(function()
+        local okBody, errBody = pcall(function()
+            -- Возвращаем монету на серверную позицию: prompt проверяет
+            -- дистанцию по ЛОКАЛЬНОЙ позиции объекта, а магнит утащил её
+            -- к игроку. Без этого InputHoldBegin считал цель далёкой.
+            if coin.Parent then
+                pcall(function()
+                    if coin:IsA("Model") then
+                        coin:PivotTo(originCF)
+                    elseif coin:IsA("BasePart") then
+                        coin.CFrame = originCF
+                    end
+                end)
+            end
+            root.CFrame = CFrame.new(spot)
+            -- 0.22 c: сервер должен увидеть новую позицию персонажа.
+            task.wait(0.22)
+            if coin.Parent then pcall(fireCoinPrompts, coin) end
+            task.wait(stay)
+        end)
+        -- Возвращаем только если игрок всё ещё там, куда мы его ставили:
+        -- иначе можно откатить его движение/респавн.
+        pcall(function()
+            if root.Parent and ch.Parent and hum.Health > 0 then
+                if (root.Position - spot).Magnitude < 16 then
+                    root.CFrame = oldCF
+                    root.AssemblyLinearVelocity = oldVel
+                end
+            end
+        end)
+        -- Флаги сбрасываем ВСЕГДА: ошибка внутри не должна навсегда
+        -- заблокировать и телепорт-сбор, и прострел.
+        COIN.blinkBusy = false
+        G.BS._tpBusy = false
+        if not okBody then
+            print("[BS COIN] blink: " .. tostring(errBody))
+        end
+    end)
+    return true
+end
+
+-- ОДИН РАЗ печатаем структуру первой монеты: по ней видно, чем игра
+-- собирает монеты (ProximityPrompt / ClickDetector / скрипт / атрибуты).
+function COIN.dumpOnce(coin)
+    if COIN.dumped or not coin or not coin.Parent then return end
+    COIN.dumped = true
+    print("[BS COIN] структура: " .. coin:GetFullName() .. " (" .. coin.ClassName .. ")")
+    local p = coinPart(coin)
+    if p then
+        local myRoot = LP and LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        local dist = myRoot and (p.Position - myRoot.Position).Magnitude or -1
+        print(string.format(
+            "  часть=%s | Anchored=%s | CanCollide=%s | Size=%.1f,%.1f,%.1f | дистанция=%.0f",
+            p:GetFullName(), tostring(p.Anchored), tostring(p.CanCollide),
+            p.Size.X, p.Size.Y, p.Size.Z, dist))
+    end
+    local attrs = {}
+    pcall(function()
+        local a = coin:GetAttributes()
+        for k, v in pairs(a) do attrs[#attrs + 1] = tostring(k) .. "=" .. tostring(v) end
+    end)
+    table.sort(attrs)
+    if #attrs > 0 then print("  атрибуты: " .. table.concat(attrs, ", ")) end
+    local shown = 0
+    for _, d in ipairs(coin:GetDescendants()) do
+        if shown < 25 then
+            print("  " .. d.ClassName .. " " .. d.Name)
+            shown = shown + 1
+        end
+        if d:IsA("ProximityPrompt") then
+            print(string.format(
+                "  PROMPT %s | Enabled=%s | Hold=%.2f | MaxDist=%.1f | Action=%s | Object=%s | LOS=%s",
+                d:GetFullName(), tostring(d.Enabled), tonumber(d.HoldDuration) or -1,
+                tonumber(d.MaxActivationDistance) or -1, tostring(d.ActionText),
+                tostring(d.ObjectText), tostring(d.RequiresLineOfSight)))
+        elseif d:IsA("ClickDetector") then
+            print("  CLICK " .. d:GetFullName()
+                .. " | MaxDist=" .. tostring(d.MaxActivationDistance))
+        end
+    end
+    print("[BS COIN] структура выведена один раз")
 end
 
 function COIN.magnetTick(now)
@@ -779,6 +1060,7 @@ function COIN.magnetTick(now)
     local ch = LP and LP.Character
     local root = ch and ch:FindFirstChild("HumanoidRootPart")
     if not root then return end
+    COIN.nearPlayer = false
     -- список монет обновляем раз в секунду, а не каждый кадр
     if now - COIN.magnetAt > 1 then
         COIN.magnetAt = now
@@ -788,18 +1070,51 @@ function COIN.magnetTick(now)
             for _, d in ipairs(folder:GetDescendants()) do
                 if d:IsA("Model") and d.Name == "CoinPickup" and d.Parent then
                     COIN.magnetList[#COIN.magnetList + 1] = d
+                    -- ВАЖНО: исходную позицию запоминаем ДО первого
+                    -- PivotTo. Клиентский магнит двигает монету только
+                    -- у нас; на сервере она остаётся здесь.
+                    if not COIN.origin[d] then
+                        local cf = coinPivot(d)
+                        if cf then
+                            COIN.origin[d] = cf.Position
+                            COIN.originCF[d] = cf
+                        end
+                    end
                 end
             end
+        end
+        if not COIN.dumped and #COIN.magnetList > 0 then
+            pcall(COIN.dumpOnce, COIN.magnetList[1])
         end
     end
     local radius = tonumber(G.BS.CoinMagnetRadius) or 250
     local power = math.clamp(tonumber(G.BS.CoinMagnetPower) or 0.45, 0.1, 1)
     local rp = root.Position
+    local bestCoin, bestDist
     for i = 1, #COIN.magnetList do
         local coin = COIN.magnetList[i]
-        if coin.Parent then
+        -- После удаления монеты в списке остаётся дырка (nil), пока
+        -- список не пересоберётся через секунду. Без проверки `coin`
+        -- следующий тик падал на coin.Parent и магнит замирал.
+        if coin and coin.Parent then
             local part = coinPart(coin)
             if part and part.Parent then
+                if not COIN.origin[coin] then
+                    local cf0 = coinPivot(coin)
+                    COIN.origin[coin] = cf0 and cf0.Position or part.Position
+                    COIN.originCF[coin] = cf0
+                end
+                local serverPos = COIN.origin[coin]
+                local serverDist = (serverPos - rp).Magnitude
+                if serverDist <= 20 then COIN.nearPlayer = true end
+                if serverDist <= radius then
+                    if not bestCoin or serverDist < bestDist then
+                        bestCoin, bestDist = coin, serverDist
+                    end
+                end
+
+                -- ВИЗУАЛЬНЫЙ МАГНИТ: монета летит к игроку на нашем
+                -- клиенте. Это только картинка; сбор делает blink ниже.
                 local delta = rp - part.Position
                 local dist = delta.Magnitude
                 if dist <= radius and dist > 2.5 then
@@ -809,20 +1124,39 @@ function COIN.magnetTick(now)
                         math.cos(i * 1.7) * 1.2)
                     local cf = coinPivot(coin)
                     if cf then
-                        local target = CFrame.new(goal)
+                        -- Сохраняем вращение монеты: иначе она резко
+                        -- поворачивается в ноль и выглядит сломанно.
+                        local target = CFrame.new(goal) * (cf - cf.Position)
                         if coin:IsA("Model") then
                             pcall(function() coin:PivotTo(cf:Lerp(target, power)) end)
                         elseif coin:IsA("BasePart") then
                             pcall(function() coin.CFrame = cf:Lerp(target, power) end)
                         end
                     end
-                elseif dist <= 6 then
-                    fireCoinPrompts(coin, now)
+                end
+
+                -- Если персонаж УЖЕ у серверной позиции монеты — жмём
+                -- prompt без телепорта (например, подошёл сам).
+                if G.BS.CoinAuto ~= false and serverDist <= 12
+                   and now - (COIN.tryAt[coin] or 0) > 1.0 then
+                    COIN.tryAt[coin] = now
+                    pcall(fireCoinPrompts, coin)
                 end
             end
         else
-            COIN.magnetList[i] = nil
+            if coin then
+                COIN.magnetList[i] = nil
+                COIN.tryAt[coin] = nil
+                COIN.firedLog[coin] = nil
+                COIN.promptCheck[coin] = nil
+            end
         end
+    end
+
+    -- Сбор телепортом — по ближайшей серверной монете, не чаще 0.75 c.
+    if G.BS.CoinAuto ~= false and G.BS.CoinBlink ~= false
+       and bestCoin and bestDist and bestDist > 12 then
+        pcall(COIN.blinkCollect, bestCoin, now)
     end
 end
 
@@ -1239,6 +1573,9 @@ local minimapSelf = vCircle()
 local tracerLine = vLine()
 local tracerT0 = 0
 local tracerFrom, tracerTo
+-- v11.31: линии между вампирами (до 16 отрезков, создаются по мере
+-- необходимости и переиспользуются).
+local vampLinks = {}
 
 local function vProj(cam, pos)
     local ok, sp = pcall(function() return cam:WorldToViewportPoint(pos) end)
@@ -1376,6 +1713,7 @@ function VIS.destroy()
     end
     for i = 1, #dmgNums do rm(dmgNums[i].obj) end
     for i = 1, #soundArrows do rm(soundArrows[i]) end
+    for i = 1, #vampLinks do rm(vampLinks[i]) end
     for i = 1, #minimapDots do rm(minimapDots[i]) end
     rm(minimapBg); rm(minimapBorder); rm(minimapSelf)
     rm(tracerLine)
@@ -1389,6 +1727,7 @@ function VIS.destroy()
     vpool = {}
     dmgNums = {}
     soundArrows = {}
+    vampLinks = {}
     minimapDots = {}
     crateHL = {}
     coinHL = {}
@@ -1458,8 +1797,17 @@ function VIS.update(cam, myRoot, by, locked)
     end
 
     -- 2) ЛИНИЯ К ЦЕЛИ (трейсер)
-    if G.BS.AimLine and locked and locked.Parent and myRoot then
-        local sp = vProj(cam, locked.Position)
+    -- locked — это Player (так его возвращает pickTarget), а не часть.
+    -- Раньше здесь было locked.Position: у Player такого свойства нет,
+    -- ошибка рвала весь VIS.update через pcall, и ВСЕ визуалы молчали.
+    local lockedPart
+    if locked and locked.Parent then
+        local lch = locked.Character
+        lockedPart = lch and (lch:FindFirstChild("Head")
+            or lch:FindFirstChild("HumanoidRootPart"))
+    end
+    if G.BS.AimLine and lockedPart and myRoot then
+        local sp = vProj(cam, lockedPart.Position)
         if sp and sp.Z > 0 then
             vSetLine(aimLine, Vector2.new(cx, cy), Vector2.new(sp.X, sp.Y),
                 safeColor(G.BS.AimLineColor, Color3.new(1, 0, 0)), 1)
@@ -1714,6 +2062,45 @@ function VIS.update(cam, myRoot, by, locked)
 
     end
 
+    -- 5.5) ЛИНИИ МЕЖДУ ВАМПИРАМИ. Помогают читать группу: видно, кто
+    -- стоит рядом и куда сходится стая. Только между вампирами и
+    -- только в пределах 140 студов, чтобы не залить экран паутиной.
+    if G.BS.VampLinks then
+        local vroots = {}
+        for _, e in pairs(by) do
+            if e.role == "vampire" and e.char and e.char.Parent then
+                local r = e.char:FindFirstChild("HumanoidRootPart")
+                if r and r.Parent then vroots[#vroots + 1] = r end
+            end
+        end
+        local li = 0
+        for i = 1, #vroots do
+            for j = i + 1, #vroots do
+                local pa = vroots[i].Position
+                local pb = vroots[j].Position
+                if (pa - pb).Magnitude <= 140 then
+                    li = li + 1
+                    if li > 16 then break end
+                    local l = vampLinks[li]
+                    if not l then l = vLine(); vampLinks[li] = l end
+                    local a = vProj(cam, pa)
+                    local b = vProj(cam, pb)
+                    if l and a and b and a.Z > 0 and b.Z > 0 then
+                        vSetLine(l, Vector2.new(a.X, a.Y), Vector2.new(b.X, b.Y),
+                            safeColor(G.BS.VampColor, Color3.new(1, 0, 0)), 1)
+                        if l.Transparency ~= nil then l.Transparency = 0.45 end
+                    else
+                        vHideLine(l)
+                    end
+                end
+            end
+            if li > 16 then break end
+        end
+        for k = li + 1, #vampLinks do vHideLine(vampLinks[k]) end
+    else
+        for k = 1, #vampLinks do vHideLine(vampLinks[k]) end
+    end
+
     -- 6) ПОДСВЕТКА ЯЩИКОВ
     if G.BS.CrateESP then
         local folder = workspace:FindFirstChild("SupplyCaches")
@@ -1803,40 +2190,8 @@ function VIS.update(cam, myRoot, by, locked)
         end
     end
 
-    -- СТРЕЛКИ ЗВУКА
-    local sIdx = 0
-    for _, m in ipairs(soundMarks) do
-        if (nowT - m.t) <= 10 and m.pos then
-            sIdx = sIdx + 1
-            if sIdx > 8 then break end
-            local l = soundArrows[sIdx]
-            if not l then l = vLine(); soundArrows[sIdx] = l end
-            local sp = vProj(cam, m.pos)
-            local onScreen = sp and sp.Z > 0
-                and sp.X >= 0 and sp.X <= vp.X and sp.Y >= 0 and sp.Y <= vp.Y
-            if onScreen then
-                vHideLine(l)
-            else
-                local dir
-                if sp and sp.Z > 0 then
-                    dir = Vector2.new(sp.X - cx, sp.Y - cy)
-                else
-                    dir = Vector2.new(m.pos.X - camPos.X, m.pos.Z - camPos.Z)
-                end
-                local mag = dir.Magnitude
-                if mag < 0.001 then dir = Vector2.new(0, -1); mag = 1 end
-                local ux, uy = dir.X / mag, dir.Y / mag
-                local margin = 40
-                local reach = math.min(cx, cy) - margin
-                if reach < 10 then reach = 10 end
-                local ax = math.clamp(cx + ux * reach, margin, vp.X - margin)
-                local ay = math.clamp(cy + uy * reach, margin, vp.Y - margin)
-                vSetLine(l, Vector2.new(ax, ay), Vector2.new(ax + ux * 12, ay + uy * 12),
-                    safeColor(G.BS.SoundArrowColor, Color3.new(0, 1, 0.5)), 2)
-            end
-        end
-    end
-    for i = sIdx + 1, #soundArrows do vHideLine(soundArrows[i]) end
+    -- СТРЕЛКИ ЗВУКА УДАЛЕНЫ (v11.31): звуковые метки остаются только
+    -- источником ролей, на экран ничего не рисуется.
 
     -- МИНИКАРТА
     if G.BS.Minimap and myRoot and minimapBg then
@@ -2252,12 +2607,18 @@ local function drawTarget(plr)
         if NameLabel then NameLabel.Visible = false end
         return
     end
-    local s = 9
+    -- v11.31: размер/толщина/пульс метки настраиваются. Пульс делает
+    -- захват цели заметнее, не мешая прицеливанию.
+    local s = tonumber(G.BS.AimMarkSize) or 9
+    if G.BS.AimMarkPulse then
+        s = s * (0.88 + 0.12 * math.sin(os.clock() * 7))
+    end
+    local thick = math.clamp(tonumber(G.BS.AimMarkThick) or 2, 1, 5)
     local function mark(i, fx, fy, tx, ty)
         placeSeg(MarkLines[i],
             Vector2.new(sp.X + fx * s, sp.Y + fy * s),
             Vector2.new(sp.X + tx * s, sp.Y + ty * s),
-            2, G.BS.AimMarkColor)
+            thick, G.BS.AimMarkColor)
     end
     mark(1, -1, -1, 0, -1)
     mark(2, 0, -1, 1, -1)
@@ -2266,7 +2627,7 @@ local function drawTarget(plr)
     if NameLabel then
         NameLabel.Position = UDim2.new(0, sp.X, 0, sp.Y - 14)
         NameLabel.TextColor3 = G.BS.AimMarkColor
-        NameLabel.Visible = true
+        NameLabel.Visible = G.BS.AimMarkName ~= false
     end
 end
 
@@ -2402,7 +2763,11 @@ local function pickTarget(cam)
                         local hum = plr.Character:FindFirstChildOfClass("Humanoid")
                         score = -(hum and hum.Health or 100)
                     else
-                        score = dist
+                        -- «Ближе к прицелу» = экранное расстояние, а не
+                        -- мировая дистанция (раньше ветка была такой же,
+                        -- как «Ближе по расстоянию», и настройка врала).
+                        local dx, dy = sp.X - ccx, sp.Y - ccy
+                        score = dx * dx + dy * dy
                     end
                     if not bestScore or score < bestScore then
                         bestScore, best = score, plr
@@ -5273,7 +5638,11 @@ local function buildList(cam, myRoot)
                 local q = pickPartOf(ch)
                 if q then
                     local d = (q.Position - myRoot.Position).Magnitude
-                    if maxD <= 0 or d <= maxD then
+                    local visibleOK = true
+                    if G.BS.AimVisibleOnly then
+                        visibleOK = visiblePart(ch, q, cam.CFrame.Position)
+                    end
+                    if visibleOK and (maxD <= 0 or d <= maxD) then
                         local scr = 1e9
                         pcall(function()
                             local sp = cam:WorldToViewportPoint(q.Position)
@@ -5284,17 +5653,76 @@ local function buildList(cam, myRoot)
                         end)
                         bulletList[#bulletList + 1] = {
                             part = q, char = ch, player = plr,
-                            dist = d, screen = scr,
+                            dist = d, screen = scr, hp = hum.Health,
                         }
                     end
                 end
             end
         end
     end
+    -- ПРИОРИТЕТ ЦЕЛИ. Раньше список всегда сортировался по близости к
+    -- центру экрана, а настройка AimPriority влияла только на запасной
+    -- pickTarget. Теперь и клиент-айм, и аимлок, и маркер используют
+    -- один и тот же порядок.
+    local prio = G.BS.AimPriority
     table.sort(bulletList, function(a, b)
+        if prio == "Ближе по расстоянию" then
+            if a.dist ~= b.dist then return a.dist < b.dist end
+        elseif prio == "Больше HP" then
+            local ha = tonumber(a.hp) or 0
+            local hb = tonumber(b.hp) or 0
+            if ha ~= hb then return ha > hb end
+        else
+            if a.screen ~= b.screen then return a.screen < b.screen end
+        end
         if a.screen ~= b.screen then return a.screen < b.screen end
         return a.dist < b.dist
     end)
+end
+
+-- ТОЧКА ДЛЯ ТЕЛЕПОРТ-ВЫСТРЕЛА. Ищем место за целью, откуда она
+-- видна и которое не находится внутри стены/пола/потолка. Раньше
+-- бралась одна точка «4 студа за целью + 2.5 вверх»: если там была
+-- стена, персонаж оказывался внутри геометрии и выстрел не проходил.
+local GHOST_CACHE = { at = 0, char = nil, pos = nil, cf = nil }
+local function findGhostSpot(aimPos, srcPos, bestChar)
+    local toT = aimPos - srcPos
+    local len = toT.Magnitude
+    if len < 1 or not bestChar then return nil end
+    local dir = toT / len
+    local side = Vector3.new(-dir.Z, 0, dir.X)
+    if side.Magnitude < 0.01 then
+        side = Vector3.new(1, 0, 0)
+    else
+        side = side.Unit
+    end
+    local cands = {
+        aimPos + dir * 4.0 + Vector3.new(0, 2.5, 0),
+        aimPos + dir * 3.0 + side * 2.5 + Vector3.new(0, 2.5, 0),
+        aimPos + dir * 3.0 - side * 2.5 + Vector3.new(0, 2.5, 0),
+        aimPos + dir * 2.5 + Vector3.new(0, 4.0, 0),
+    }
+    for i = 1, #cands do
+        local cand = cands[i]
+        local ok, clear = pcall(function()
+            WALLRAY.FilterDescendantsInstances = { LP.Character, bestChar }
+            -- 1) от кандидата до цели не должно быть стены (иначе
+            -- телепорт бессмысленен).
+            local d = aimPos - cand
+            local hit = workspace:Raycast(cand, d, WALLRAY)
+            if hit and hit.Distance < d.Magnitude - 0.8 then return false end
+            -- 2) кандидат не должен быть внутри коллизии.
+            local overlap = workspace:GetPartBoundsInRadius(cand, 1.6, WALLRAY)
+            for _, p in ipairs(overlap) do
+                if p:IsA("BasePart") and p.CanCollide then return false end
+            end
+            return true
+        end)
+        if ok and clear then
+            return cand, CFrame.lookAt(cand, aimPos)
+        end
+    end
+    return nil
 end
 
 local function computeBulletPreShot()
@@ -5439,16 +5867,22 @@ local function computeBulletPreShot()
     -- (но не дальше 14 студов, иначе сервер отклонит выстрел).
     local wallPast = nil
     if G.BS.WallPenetrate then
-        local len = (aimPos - srcPos).Magnitude
+        -- Луч строим ИЗ КАМЕРЫ, а не из ствола: сервер сверяет
+        -- направление пули именно со взглядом камеры (3°). Тогда
+        -- точка за стеной лежит на линии камеры, и после подмены
+        -- origin направление на цель совпадает с взглядом.
+        local raySrc = cam.CFrame.Position
+        local rayVec = aimPos - raySrc
+        local len = rayVec.Magnitude
         if len > 1 then
             local okW, res = pcall(function()
                 WALLRAY.FilterDescendantsInstances = { LP.Character, best.Parent }
-                local hit = workspace:Raycast(srcPos, aimPos - srcPos, WALLRAY)
+                local hit = workspace:Raycast(raySrc, rayVec, WALLRAY)
                 if not hit then return nil end
                 if hit.Distance >= len - 1.2 then return nil end   -- это цель
                 local slack = tonumber(G.BS.OriginSlack) or 13
                 if slack < 1 then slack = 1 end
-                local d = (aimPos - srcPos).Unit
+                local d = rayVec.Unit
                 -- ТОЛЩИНА СТЕНЫ. Раньше вылет ставился на 2 студа за
                 -- поверхностью и при толстой стене оставался ВНУТРИ неё.
                 -- Считаем габарит детали вдоль луча и выносим точку за
@@ -5468,9 +5902,19 @@ local function computeBulletPreShot()
                 end
                 if ext < 0.25 then ext = 0.25 end
                 if ext > 10 then ext = 10 end
-                local shift = hit.Distance + ext * 2 + 0.5
-                if shift > slack then return nil end
-                return hit.Position + d * (ext * 2 + 0.5)
+                local wp = hit.Position + d * (ext * 2 + 0.5)
+                -- Сервер меряет сдвиг от исходной точки вылета (ствола).
+                if (wp - srcPos).Magnitude > slack then return nil end
+                -- ПРОВЕРКА ВТОРОЙ СТЕНЫ: если за первой стеной есть ещё
+                -- одна, вылет из-за первой всё равно упрётся в неё.
+                -- Тогда wallPast не используем — сработает телепорт.
+                local rest = aimPos - wp
+                local restLen = rest.Magnitude
+                if restLen > 0.1 then
+                    local clear = workspace:Raycast(wp, rest, WALLRAY)
+                    if clear and clear.Distance < restLen - 1.2 then return nil end
+                end
+                return wp
             end)
             if okW and res then wallPast = res end
         end
@@ -5480,20 +5924,41 @@ local function computeBulletPreShot()
     -- ставим точку вылета за спиной/над целью. Для сервера персонаж на
     -- этот момент тоже окажется там (в ncWrapper).
     local ghostPos, ghostCFrame = nil, nil
-    if G.BS.GhostShot and best and srcPos then
+    -- Телепорт нужен только если стену НЕЛЬЗЯ обойти сдвигом вылета
+    -- (wallPast). Иначе лишний телепорт персонажа не нужен.
+    if G.BS.GhostShot and best and srcPos and not wallPast then
         local toT = aimPos - srcPos
         local lenG = toT.Magnitude
         if lenG > 1 then
             local okG, hitG = pcall(function()
-                WALLRAY.FilterDescendantsInstances = { LP.Character, best.Parent }
+                WALLRAY.FilterDescendantsInstances = { LP.Character, bestChar }
                 return workspace:Raycast(srcPos, toT, WALLRAY)
             end)
             if okG and hitG and hitG.Distance < lenG - 1.2 then
-                -- 4 студа за целью и 2.5 вверх: ближе к цели, чем старые
-                -- 5+3, меньше шанс оказаться внутри стены/пола.
-                local behind = aimPos + toT.Unit * 4
-                ghostPos = behind + Vector3.new(0, 2.5, 0)
-                ghostCFrame = CFrame.lookAt(ghostPos, aimPos)
+                local nowG = os.clock()
+                local canUse = false
+                -- Кэш на 0.2 с: не считаем 4 raycast'а каждый кадр.
+                if GHOST_CACHE.char == best and GHOST_CACHE.pos
+                   and nowG - GHOST_CACHE.at < 0.2 then
+                    local d = aimPos - GHOST_CACHE.pos
+                    local okC, hitC = pcall(function()
+                        WALLRAY.FilterDescendantsInstances = { LP.Character, bestChar }
+                        return workspace:Raycast(GHOST_CACHE.pos, d, WALLRAY)
+                    end)
+                    canUse = okC and (not hitC or hitC.Distance >= d.Magnitude - 0.8)
+                end
+                if not canUse then
+                    local cand, cf = findGhostSpot(aimPos, srcPos, bestChar)
+                    GHOST_CACHE.at   = nowG
+                    GHOST_CACHE.char = best
+                    GHOST_CACHE.pos  = cand
+                    GHOST_CACHE.cf   = cf
+                    if cand then
+                        ghostPos, ghostCFrame = cand, cf
+                    end
+                else
+                    ghostPos, ghostCFrame = GHOST_CACHE.pos, GHOST_CACHE.cf
+                end
             end
         end
     end
@@ -5745,24 +6210,22 @@ local function aimLockTick(dt, now)
 
     local target = CFrame.lookAt(pos, look, cf.UpVector)
 
-    -- ДОВОРОТ. По умолчанию МГНОВЕННЫЙ (доля 1), и это не «крутая
-    -- опция», а требование сервера: Config.Combat.SHOT_ANGLE_SLACK_DEG
-    -- = 3, то есть взгляд и патрон должны совпадать в пределах 3°.
-    -- Плавный LerCFrame как раз и давал жалобу «иду вперёд - аимлок
-    -- тянет назад»: каждый кадр камера недодоводила, и на ходу взгляд
-    -- оставался ПОЗАДИ цели. Ползунок скорости уменьшает доворот
-    -- только осознанно: 1 = мгновенно, 0 = не доворачивать, 0.3 = плавно.
+    -- ДОВОРОТ. Шкала 1..35: 1 = максимально плавно, 35 = мгновенно.
+    -- Раньше всё >= 1 было мгновенным, из-за чего ползунок 2..35 ни на
+    -- что не влиял. В момент выстрела точное доведение всё равно делает
+    -- ncFireWeapon, поэтому здесь важна только визуальная плавность.
     local sp = tonumber(G.BS.AimLockSpeed)
-    if sp == nil then sp = 1.0 end
+    if sp == nil then sp = 35 end
+    if sp < 1 then sp = 1 end
+    if sp > 35 then sp = 35 end
     local frac
-    if sp <= 0 then
-        frac = 0
-    elseif sp >= 1 then
+    if sp >= 35 then
         frac = 1
     else
-        local dist = toT.Magnitude
-        frac = sp * (1 - (dist / 400) * 0.5)
-        if frac < 0.02 then frac = 0.02 end
+        -- Экспоненциальное сглаживание, не зависит от FPS. На 60 FPS:
+        -- 1 ≈ 3.5 c, 17 ≈ 0.35 c, 34 ≈ 0.2 c до почти полного доведения.
+        frac = 1 - math.exp(-sp * (dt or 0.016) * 0.5)
+        if frac < 0.006 then frac = 0.006 end
         if frac > 1 then frac = 1 end
     end
     if frac <= 0 then
@@ -5777,9 +6240,10 @@ local function aimLockTick(dt, now)
         pcall(SPIN.face, target.LookVector, dt)
         return
     end
-    -- Плавный режим: сглаживание по ВРЕМЕНИ, а не по кадрам, чтобы
-    -- скорость не зависела от FPS.
-    local k = 1 - math.exp(-frac / math.max(dt or 0.016, 0.001))
+    -- Плавный режим: frac уже посчитан по dt, поэтому Lerp применяем
+    -- напрямую (раньше здесь было повторное exp(-frac/dt), из-за чего
+    -- любой frac превращался в почти мгновенный доворот).
+    local k = frac
     if k > 1 then k = 1 end
     local newCF = cf:Lerp(target, k)
     cam.CFrame = newCF
@@ -5896,14 +6360,41 @@ local function refreshHookTargets()
     end
     local ch = LP and LP.Character
     NC.myHum = (ch and ch:FindFirstChildOfClass("Humanoid")) or nil
+    NC.myRoot = (ch and ch:FindFirstChild("HumanoidRootPart")) or nil
 end
 
 -- Подмена аргументов выстрела. Возвращает (out, n) либо nil.
 local function ncFireWeapon(...)
     local pre = bulletPreShot
-    if not (pre and pre.part and pre.part.Parent and pre.dir) then return nil end
+    if not (pre and pre.part and pre.part.Parent and pre.dir) then
+        if not G.BS._noPreLog then
+            G.BS._noPreLog = true
+            print("[BS BULLET] FireWeapon вызван без цели: bulletPreShot=nil (нет цели в круге/оружия)")
+        end
+        return nil
+    end
     local n = select("#", ...)
     if n < 1 then return nil end
+
+    -- ТОЧНОЕ ДОВЕДЕНИЕ ПЕРЕД ВЫСТРЕЛОМ. Сервер сверяет направление
+    -- пули со взглядом (SHOT_ANGLE_SLACK_DEG = 3). Плавный аимлок мог
+    -- не успеть довести камеру/персонажа, и выстрел отклонялся.
+    -- Здесь поворот делается мгновенно от текущей позиции: персонаж
+    -- смотрит на pre.pos, камера тоже. Это не меняет позицию игрока.
+    if G.BS.AimLock and pre.pos then
+        local root = NC.myRoot
+        if root and root.Parent and pre.dist and pre.dist > 0.5 then
+            pcall(function()
+                root.CFrame = CFrame.lookAt(root.Position, pre.pos)
+            end)
+        end
+        local cam = workspace.CurrentCamera
+        if cam then
+            pcall(function()
+                cam.CFrame = CFrame.lookAt(cam.CFrame.Position, pre.pos)
+            end)
+        end
+    end
 
     local args = table.pack(...)
     local out = {}
@@ -5938,6 +6429,13 @@ local function ncFireWeapon(...)
         end
     end
 
+    -- Телепорт-выстрел имеет смысл только когда игра передала и точку
+    -- вылета, и направление. Иначе после переноса за цель направление
+    -- осталось бы старым и пуля ушла бы мимо (а камера смотрела назад).
+    if pre.ghostPos and not (posIdx and dirIdx) then
+        pre.ghostPos, pre.ghostCFrame = nil, nil
+    end
+
     local replaced = false
     local bits = {}
 
@@ -5947,6 +6445,7 @@ local function ncFireWeapon(...)
     -- назад/в сторону от ствола. Именно из-за этой разницы пуля уходила
     -- мимо головы.
     local aimDir, aimDist = pre.dir, pre.dist
+    local aimPoint = pre.pos
     if posIdx and typeof(out[posIdx]) == "Vector3" then
         local v = pre.pos - out[posIdx]
         if v.Magnitude > 0.001 then
@@ -5981,6 +6480,7 @@ local function ncFireWeapon(...)
                 p = p + Vector3.new(ox, oy, oz)
             end
         end
+        aimPoint = p
         local from = (posIdx and typeof(out[posIdx]) == "Vector3") and out[posIdx] or pre.src
         if from then
             local dx, dy, dz = p.X - from.X, p.Y - from.Y, p.Z - from.Z
@@ -5991,6 +6491,27 @@ local function ncFireWeapon(...)
             end
         end
     end
+
+    -- ФИНАЛЬНЫЙ ДОВОРОТ по свежей позиции цели. pre.pos посчитан в
+    -- начале кадра; если цель бежит, к моменту выстрела камера смотрела
+    -- чуть мимо, и сервер (3°) мог отклонить выстрел.
+    if G.BS.AimLock and aimPoint then
+        local root = NC.myRoot
+        if root and root.Parent then
+            pcall(function()
+                root.CFrame = CFrame.lookAt(root.Position, aimPoint)
+            end)
+        end
+        local cam = workspace.CurrentCamera
+        if cam then
+            pcall(function()
+                cam.CFrame = CFrame.lookAt(cam.CFrame.Position, aimPoint)
+            end)
+        end
+    end
+    -- Свежая точка цели для отложенного ghost-выстрела: камера за
+    -- спиной должна смотреть туда же, куда уйдёт пуля.
+    pre.aimPoint = aimPoint
 
     -- 1) НАПРАВЛЕНИЕ. Длину НЕ уменьшаем: если игра берёт из неё
     --    дальность полёта (или вообще складывает origin + vector как
@@ -6011,7 +6532,7 @@ local function ncFireWeapon(...)
     -- по старому вектору и не попадёт с заспинной позиции.
     if pre.ghostPos and posIdx and dirIdx and G.BS.GhostShot then
         out[posIdx] = pre.ghostPos
-        local gd = pre.pos - pre.ghostPos
+        local gd = aimPoint - pre.ghostPos
         local glen = gd.Magnitude
         if glen > 0.001 then
             local gbase = dirLen or glen
@@ -6026,11 +6547,23 @@ local function ncFireWeapon(...)
     --    (14 студов). Если стена ближе этого - ставим точку ЗА стеной,
     --    и пуля начинается по ту сторону стены.
     if posIdx and not (pre.ghostPos and G.BS.GhostShot) then
-        if pre.wallPast then
+        if pre.wallPast and dirIdx then
             out[posIdx] = pre.wallPast
-            replaced = true
-            bits[#bits + 1] = "точка вылета ЗА стеной #" .. tostring(posIdx)
+            -- ВАЖНО: направление пересчитываем от НОВОЙ точки. Иначе
+            -- пуля летит по линии ствола, а стартует из-за стены, и
+            -- промахивается на смещение камеры/ствола.
+            local wd = aimPoint - pre.wallPast
+            local wlen = wd.Magnitude
+            if wlen > 0.001 then
+                local wbase = dirLen or wlen
+                if wbase < wlen then wbase = wlen end
+                out[dirIdx] = wd.Unit * wbase
+                replaced = true
+                bits[#bits + 1] = "точка вылета ЗА стеной #" .. tostring(posIdx)
+            end
         else
+            -- Нет отдельного аргумента направления — не трогаем origin,
+            -- иначе выстрел уйдёт в неизвестном направлении.
             local back = tonumber(G.BS.SpoofBack) or 0
             if back > 0 then
                 if back > 100 then back = 100 end
@@ -6279,46 +6812,57 @@ end
 
 -- Сам хук. Хот-путь максимально дешёвый: без ":"-вызовов и без pcall.
 local function ncWrapper(self, ...)
+    -- PASSTHROUGH: отложенный выстрел после телепорта заново вызывает
+    -- self:FireServer(...). В этот момент getnamecallmethod() снова
+    -- валиден, и вызов сразу уходит в оригинал. Раньше NC.orig звали
+    -- из task.spawn — там контекст namecall уже потерян, поэтому
+    -- прострел молча не отправлялся.
+    if NC.passthrough then
+        if NC.orig then return NC.orig(self, ...) end
+        return
+    end
     local method = getnamecallmethod()
-    -- МОНЕТЫ: учим ремоут и аргументы, когда игрок подбирает монету.
-    if G.BS.CoinLearn and method == "FireServer" and typeof(self) == "Instance"
-       and (self:IsA("RemoteEvent") or self:IsA("UnreliableRemoteEvent")) then
-        local rawArgs = table.pack(...)
-        pcall(function()
-            local args = rawArgs
-            local idx, atype = nil, nil
-            for i = 1, args.n do
-                local v = args[i]
-                if typeof(v) == "Instance"
-                   and (string.find(string.lower(v.Name), "coin", 1, true)
-                        or string.find(string.lower(v.Name), "pickup", 1, true)) then
-                    idx, atype = i, "instance"; break
-                elseif typeof(v) == "Vector3" then
-                    idx, atype = i, "position"; break
-                elseif typeof(v) == "string" then
-                    idx, atype = i, "name"; break
+    -- МОНЕТЫ: авто-обучение ремоута. Срабатывает только когда монета
+    -- рядом с игроком, чтобы не проверять каждый FireServer в бою.
+    -- Берём только ЯВНЫЕ признаки (Instance с "coin"/"pickup" в имени
+    -- или имя ремоута), иначе можно случайно перехватить чужой ремоут.
+    if G.BS.CoinLearn and COIN.nearPlayer and method == "FireServer"
+       and typeof(self) == "Instance" then
+        local cls = self.ClassName
+        if cls == "RemoteEvent" or cls == "UnreliableRemoteEvent" then
+            local rawArgs = table.pack(...)
+            pcall(function()
+                local args = rawArgs
+                local idx, atype = nil, nil
+                for i = 1, args.n do
+                    local v = args[i]
+                    if typeof(v) == "Instance"
+                       and (string.find(string.lower(v.Name), "coin", 1, true)
+                            or string.find(string.lower(v.Name), "pickup", 1, true)) then
+                        idx, atype = i, "instance"; break
+                    end
                 end
-            end
-            if not idx then
-                local n = string.lower(self.Name)
-                if string.find(n, "coin", 1, true) or string.find(n, "pickup", 1, true)
-                   or string.find(n, "collect", 1, true) then
-                    idx, atype = 0, "remote-name"
+                if not idx then
+                    local n = string.lower(self.Name)
+                    if string.find(n, "coin", 1, true) or string.find(n, "pickup", 1, true)
+                       or string.find(n, "collect", 1, true) then
+                        idx, atype = 0, "remote-name"
+                    end
                 end
-            end
-            if idx then
-                COIN.remote = self
-                COIN.args = args
-                COIN.argIdx = idx
-                COIN.argType = atype
-                COIN.learned = true
-                G.BS.CoinLearn = false
-                print("[BS COIN] выучил ремоут: " .. self:GetFullName()
-                    .. " | аргументов=" .. tostring(args.n)
-                    .. " | coinArgIdx=" .. tostring(idx)
-                    .. " | тип=" .. tostring(atype))
-            end
-        end)
+                if idx then
+                    COIN.remote = self
+                    COIN.args = args
+                    COIN.argIdx = idx
+                    COIN.argType = atype
+                    COIN.learned = true
+                    G.BS.CoinLearn = false
+                    print("[BS COIN] выучил ремоут: " .. self:GetFullName()
+                        .. " | аргументов=" .. tostring(args.n)
+                        .. " | coinArgIdx=" .. tostring(idx)
+                        .. " | тип=" .. tostring(atype))
+                end
+            end)
+        end
     end
     -- ТАНЦЫ: ловим анимации, которые игра грузит сама (эмоуты).
     -- Animator:LoadAnimation(Animation) и Humanoid:PlayAnimation(Animation)
@@ -6347,29 +6891,89 @@ local function ncWrapper(self, ...)
         -- ПРОСТРЕЛ / КЛИЕНТ АЙМ
         elseif method == "FireServer" and self == NC.fw then
             if G.BS.BulletSwap then
+                -- Прострел-телепорт и сбор монет делят одно окно
+                -- занятости. Если телепорт сейчас недоступен, убираем
+                -- ghost-аргументы ДО ncFireWeapon, иначе выстрел ушёл бы
+                -- из точки за целью, где персонажа на сервере нет.
+                local preNow = bulletPreShot
+                local ghostOK = preNow and preNow.ghostCFrame and G.BS.GhostShot
+                    and not NC.ghostBusy and not G.BS._tpBusy
+                if preNow and preNow.ghostPos and not ghostOK then
+                    preNow.ghostPos, preNow.ghostCFrame = nil, nil
+                end
                 local out, n = ncFireWeapon(...)
                 if out then
                     local pre = bulletPreShot
-                    if pre and pre.ghostCFrame and G.BS.GhostShot then
+                    if ghostOK and pre and pre.ghostCFrame and pre.ghostPos then
                         local ch = LP and LP.Character
                         local root = ch and ch:FindFirstChild("HumanoidRootPart")
-                        if root then
+                        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                        if root and hum and hum.Health > 0 then
                             local oldCFrame = root.CFrame
-                            local hold = math.clamp(tonumber(G.BS.GhostHold) or 0.12, 0.03, 0.3)
+                            local cam = workspace.CurrentCamera
+                            local oldCam = cam and cam.CFrame
+                            local hold = math.clamp(tonumber(G.BS.GhostHold) or 0.12, 0.05, 0.35)
+                            NC.ghostBusy = true
+                            G.BS._tpBusy = true
                             -- ВАЖНО: не стреляем в том же кадре. Сначала
                             -- ставим CFrame, ждём репликации на сервер, и
                             -- только потом отправляем FireWeapon. Иначе
                             -- сервер видит старую позицию и отклоняет шот.
                             task.spawn(function()
-                                pcall(function() root.CFrame = pre.ghostCFrame end)
-                                task.wait(hold)
-                                pcall(function()
-                                    NC.orig(self, table.unpack(out, 1, n))
+                                local okBody, errBody = pcall(function()
+                                    root.CFrame = pre.ghostCFrame
+                                    task.wait(hold)
+                                    -- Камеру ставим ПОСЛЕ ожидания, прямо перед
+                                    -- выстрелом: иначе CameraModule успевал
+                                    -- вернуть её назад за эти 0.12 c.
+                                    local lookAt = pre.aimPoint or pre.pos
+                                    if cam and pre.ghostPos and lookAt then
+                                        cam.CFrame = CFrame.lookAt(pre.ghostPos, lookAt)
+                                    end
+                                    -- Повторно фиксируем позицию/взгляд: между
+                                    -- wait и выстрелом персонажа могло сдвинуть.
+                                    root.CFrame = pre.ghostCFrame
+                                    -- ОТПРАВЛЯЕМ ПОВТОРНЫМ ВЫЗОВОМ, а не через
+                                    -- NC.orig: только так снова валиден
+                                    -- getnamecallmethod(). NC.passthrough
+                                    -- заставляет wrapper сразу пропустить вызов
+                                    -- в оригинал без повторной подмены.
+                                    NC.passthrough = true
+                                    local okSend, errSend = pcall(function()
+                                        self:FireServer(table.unpack(out, 1, n))
+                                    end)
+                                    NC.passthrough = false
+                                    if not okSend and G.BS.BulletDebug then
+                                        print("[BS BULLET] прострел: отправка не удалась: "
+                                            .. tostring(errSend))
+                                    end
+                                    task.wait(0.06)
                                 end)
-                                task.wait(0.05)
-                                pcall(function() root.CFrame = oldCFrame end)
+                                -- Аварийный сброс: passthrough не должен
+                                -- остаться включённым, иначе следующие вызовы
+                                -- пойдут в обход клиент-айма. Флаги занятости
+                                -- сбрасываем ВСЕГДА, иначе один сбой навсегда
+                                -- выключает прострел и сбор монет.
+                                NC.passthrough = false
+                                pcall(function()
+                                    if root.Parent and pre.ghostPos
+                                       and (root.Position - pre.ghostPos).Magnitude < 16 then
+                                        root.CFrame = oldCFrame
+                                    end
+                                end)
+                                if cam and oldCam then
+                                    pcall(function() cam.CFrame = oldCam end)
+                                end
+                                NC.ghostBusy = false
+                                G.BS._tpBusy = false
+                                if not okBody then
+                                    print("[BS BULLET] прострел: ошибка: "
+                                        .. tostring(errBody))
+                                end
                             end)
-                            if G.BS.BulletDebug then
+                            if G.BS.BulletDebug and (not G.BS._ghostLogAt
+                               or os.clock() - G.BS._ghostLogAt > 1) then
+                                G.BS._ghostLogAt = os.clock()
                                 print(string.format(
                                     "[BS BULLET] прострел: телепорт к цели %s, удержание %.2f c",
                                     tostring(pre.part and pre.part.Name), hold))
@@ -6701,13 +7305,18 @@ connRemoving = Players.PlayerRemoving:Connect(function(p) remove(p) end)
 --  КАДР
 -- ============================================================
 local lastT = os.clock()
+local hookRefreshAt = 0
 local conn = RunService.RenderStepped:Connect(function()
     local now = os.clock()
     local dt = math.min(0.1, math.max(0.001, now - lastT))
     lastT = now
 
-    -- держим кэш целей хука свежим (внутри хука ":"-вызовы нельзя)
-    if NC.installed then pcall(refreshHookTargets) end
+    -- держим кэш целей хука свежим. Раз в секунду достаточно:
+    -- FindFirstChild на каждый кадр — лишние 360 вызовов/с.
+    if NC.installed and now - hookRefreshAt > 1 then
+        hookRefreshAt = now
+        pcall(refreshHookTargets)
+    end
 
     -- vyzhivanie
     if G.BS.InfStamina then pcall(patchEnergy) end
@@ -6797,12 +7406,25 @@ local conn = RunService.RenderStepped:Connect(function()
                 if d > G.BS.MaxDist then vis = false end
             end
 
-            e.hl.FillColor        = color
+            -- v11.31: низкое HP пульсирует. Порог и цвет настраиваются;
+            -- это не отдельная подсветка, а перекраска уже существующей,
+            -- поэтому лишних Highlight на персонаже не появляется.
+            local humNow = ch:FindFirstChildOfClass("Humanoid")
+            if G.BS.LowHPWarn and vis and humNow and (humNow.MaxHealth or 0) > 0
+               and (humNow.Health / humNow.MaxHealth * 100) <= (tonumber(G.BS.LowHPThreshold) or 30) then
+                local pulse = 0.15 + 0.35 * (0.5 + 0.5 * math.sin(now * 7))
+                color = safeColor(G.BS.LowHPColor, Color3.new(1, 0, 0))
+                    :Lerp(Color3.new(1, 1, 1), pulse)
+            end
+
+            if e.hl.FillColor ~= color then e.hl.FillColor = color end
             -- Красим И контур: именно он виден (заливка полупрозрачная).
-            e.hl.OutlineColor     = color
-            e.hl.FillTransparency = tonumber(G.BS.FillTransparency) or 0.7
-            e.hl.Enabled   = vis and G.BS.BodyHighlight
-            e.gui.Enabled  = vis
+            if e.hl.OutlineColor ~= color then e.hl.OutlineColor = color end
+            local fillT = tonumber(G.BS.FillTransparency) or 0.7
+            if e.hl.FillTransparency ~= fillT then e.hl.FillTransparency = fillT end
+            local bodyOn = vis and G.BS.BodyHighlight and true or false
+            if e.hl.Enabled ~= bodyOn then e.hl.Enabled = bodyOn end
+            if e.gui.Enabled ~= vis then e.gui.Enabled = vis end
 
             if vis then
                 local parts = {}
@@ -6823,9 +7445,13 @@ local conn = RunService.RenderStepped:Connect(function()
                     parts[#parts + 1] = math.floor(
                         (root.Position - myRoot.Position).Magnitude + 0.5) .. " st"
                 end
-                if G.BS.ShowHP then
-                    local hum = ch:FindFirstChildOfClass("Humanoid")
-                    if hum then parts[#parts + 1] = "HP " .. math.floor(hum.Health + 0.5) end
+                if G.BS.ShowHP and humNow then
+                    parts[#parts + 1] = "HP " .. math.floor(humNow.Health + 0.5)
+                end
+                -- v11.31: скорость цели — по ней видно бегущего/стоящего.
+                if G.BS.ShowSpeed and root then
+                    local spd = root.AssemblyLinearVelocity
+                    parts[#parts + 1] = math.floor(spd.Magnitude + 0.5) .. " st/s"
                 end
                 -- ОСОБАЯ РОЛЬ ПО ПРЕДМЕТУ: Medkit = доктор,
                 -- MagnifyingGlass = детектив, Baton = вампир и т.д.
@@ -6842,8 +7468,19 @@ local conn = RunService.RenderStepped:Connect(function()
                 if e.lbl.TextSize ~= G.BS.LabelSize then
                     e.lbl.TextSize = tonumber(G.BS.LabelSize) or 13
                 end
-                e.lbl.TextColor3 = color
-                e.lbl.Visible = true
+                local labelColor = color
+                if G.BS.NameHPColor and humNow and (humNow.MaxHealth or 0) > 0 then
+                    local hp01 = math.clamp(humNow.Health / humNow.MaxHealth, 0, 1)
+                    if hp01 > 0.5 then
+                        labelColor = Color3.new(1, 1, 1):Lerp(Color3.new(1, 1, 0), (1 - hp01) * 2)
+                    else
+                        labelColor = Color3.new(1, 1, 0):Lerp(Color3.new(1, 0, 0), 1 - hp01 * 2)
+                    end
+                end
+                if e.lbl.TextColor3 ~= labelColor then
+                    e.lbl.TextColor3 = labelColor
+                end
+                if not e.lbl.Visible then e.lbl.Visible = true end
 
                 if G.BS.Boxes then
                     if not e.box then e.box = makeBox() end
@@ -6864,13 +7501,11 @@ local conn = RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- ---------- KLIENT AYM: METKA ЦельI ----------
-    if G.BS.BulletSwap then
-        if locked then
-            if not pickTarget(cam) then locked = nil end
-        else
-            locked = pickTarget(cam)
-        end
+    -- ---------- МЕТКА ЦЕЛИ ----------
+    -- Показываем и при выключенном клиент-айме, если работает аимлок:
+    -- цель у них общая (bulletListTarget), и метка не должна пропадать.
+    if G.BS.BulletSwap or G.BS.AimLock then
+        locked = pickTarget(cam)
         drawTarget(locked)
         if NameLabel and locked then
             NameLabel.Text = locked.DisplayName
@@ -6897,7 +7532,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.29",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.31",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -6946,13 +7581,11 @@ local PL = mkTab(PLRT, "ИГРОК")
 -- hexToRGB/applyMainColor больше не вызываются.
 
 -- ======================= ESP =======================
-TB.CreateSection("Игроки")
+TB.CreateSection("Цели и роли")
 TB.CreateToggle({ Name = "ESP игроков", Flag = "BS_PlayerESP",
     CurrentValue = G.BS.PlayerESP, Callback = function(v) G.BS.PlayerESP = v end })
 TB.CreateColorPicker({ Name = "Цвет игроков", Flag = "BS_PlayerColor",
     Color = G.BS.PlayerColor, Callback = function(c) G.BS.PlayerColor = c end })
-
-TB.CreateSection("Роли")
 TB.CreateToggle({ Name = "ESP ВАМПИРОВ", Flag = "BS_VampESP",
     CurrentValue = G.BS.VampESP, Callback = function(v) G.BS.VampESP = v end })
 TB.CreateColorPicker({ Name = "Цвет вампиров", Flag = "BS_VampColor",
@@ -6964,13 +7597,23 @@ TB.CreateColorPicker({ Name = "Цвет хантеров", Flag = "BS_HunterColo
 TB.CreateToggle({ Name = "Только вампиры (остальных скрыть)", Flag = "BS_OnlyVamps",
     CurrentValue = G.BS.OnlyVamps, Callback = function(v) G.BS.OnlyVamps = v end })
 
-TB.CreateSection("Вид")
+TB.CreateSection("Подписи и коробки")
 TB.CreateToggle({ Name = "Ники", Flag = "BS_Names",
     CurrentValue = G.BS.Names, Callback = function(v) G.BS.Names = v end })
 TB.CreateToggle({ Name = "Дистанция", Flag = "BS_ShowDist",
     CurrentValue = G.BS.ShowDist, Callback = function(v) G.BS.ShowDist = v end })
 TB.CreateToggle({ Name = "HP", Flag = "BS_ShowHP",
     CurrentValue = G.BS.ShowHP, Callback = function(v) G.BS.ShowHP = v end })
+-- v11.31: новые строки подписи.
+TB.CreateToggle({ Name = "Скорость цели", Flag = "BS_ShowSpeed",
+    CurrentValue = G.BS.ShowSpeed == true,
+    Callback = function(v) G.BS.ShowSpeed = v end })
+TB.CreateToggle({ Name = "Цвет ника по HP", Flag = "BS_NameHPColor",
+    CurrentValue = G.BS.NameHPColor == true,
+    Callback = function(v) G.BS.NameHPColor = v end })
+TB.CreateToggle({ Name = "Статус (сбит / раскрыт)", Flag = "BS_ShowStatus",
+    CurrentValue = G.BS.ShowStatus ~= false,
+    Callback = function(v) G.BS.ShowStatus = v end })
 TB.CreateToggle({ Name = "Коробки игроков", Flag = "BS_Boxes",
     CurrentValue = G.BS.Boxes,
     Callback = function(v)
@@ -6986,6 +7629,9 @@ TB.CreateToggle({ Name = "2D-коробки (плоские)", Flag = "BS_Box2D"
 TB.CreateSlider({ Name = "Толщина коробки", Flag = "BS_BoxThick",
     Range = {1, 6}, Increment = 1, CurrentValue = G.BS.BoxThick,
     Callback = function(v) G.BS.BoxThick = v end })
+TB.CreateToggle({ Name = "Ромб для вампиров", Flag = "BS_CornerBoxes",
+    CurrentValue = G.BS.CornerBoxes == true,
+    Callback = function(v) G.BS.CornerBoxes = v end })
 TB.CreateSlider({ Name = "Размер текста ESP", Flag = "BS_LabelSize",
     Range = {9, 24}, Increment = 1, CurrentValue = G.BS.LabelSize or 13,
     Suffix = " px", Callback = function(v) G.BS.LabelSize = v end })
@@ -7010,6 +7656,9 @@ TB.CreateSlider({ Name = "Толщина линий", Flag = "BS_SnapThick",
 TB.CreateToggle({ Name = "Аура под вампирами", Flag = "BS_VampAura",
     CurrentValue = G.BS.VampAura ~= false,
     Callback = function(v) G.BS.VampAura = v end })
+TB.CreateToggle({ Name = "Линии между вампирами", Flag = "BS_VampLinks",
+    CurrentValue = G.BS.VampLinks == true,
+    Callback = function(v) G.BS.VampLinks = v end })
 TB.CreateToggle({ Name = "Скелет ESP", Flag = "BS_Skeleton",
     CurrentValue = G.BS.Skeleton == true,
     Callback = function(v) G.BS.Skeleton = v end })
@@ -7036,9 +7685,6 @@ TB.CreateSlider({ Name = "Размер рамки головы", Flag = "BS_Head
     Suffix = " px", Callback = function(v) G.BS.HeadBoxSize = v end })
 TB.CreateColorPicker({ Name = "Цвет рамки головы", Flag = "BS_HeadBoxColor",
     Color = G.BS.HeadBoxColor, Callback = function(c) G.BS.HeadBoxColor = c end })
-TB.CreateToggle({ Name = "Ромб для вампиров", Flag = "BS_CornerBoxes",
-    CurrentValue = G.BS.CornerBoxes == true,
-    Callback = function(v) G.BS.CornerBoxes = v end })
 TB.CreateToggle({ Name = "Цифры урона", Flag = "BS_DamageNumbers",
     CurrentValue = G.BS.DamageNumbers ~= false,
     Callback = function(v) G.BS.DamageNumbers = v end })
@@ -7047,11 +7693,16 @@ TB.CreateColorPicker({ Name = "Цвет цифр урона", Flag = "BS_DmgNumC
 TB.CreateToggle({ Name = "Стрелки к целям за экраном", Flag = "BS_OffArrows",
     CurrentValue = G.BS.OffArrows ~= false,
     Callback = function(v) G.BS.OffArrows = v end })
-TB.CreateToggle({ Name = "Стрелки звука", Flag = "BS_SoundArrows",
-    CurrentValue = G.BS.SoundArrows ~= false,
-    Callback = function(v) G.BS.SoundArrows = v end })
-TB.CreateColorPicker({ Name = "Цвет стрелок звука", Flag = "BS_SoundArrowColor",
-    Color = G.BS.SoundArrowColor, Callback = function(c) G.BS.SoundArrowColor = c end })
+-- v11.31: пульс низкого HP. Перекрашивает существующую подсветку,
+-- поэтому не создаёт второй Highlight.
+TB.CreateToggle({ Name = "Пульс низкого HP", Flag = "BS_LowHPWarn",
+    CurrentValue = G.BS.LowHPWarn == true,
+    Callback = function(v) G.BS.LowHPWarn = v end })
+TB.CreateSlider({ Name = "Порог низкого HP", Flag = "BS_LowHPThreshold",
+    Range = {5, 50}, Increment = 5, CurrentValue = G.BS.LowHPThreshold or 30,
+    Suffix = " %", Callback = function(v) G.BS.LowHPThreshold = v end })
+TB.CreateColorPicker({ Name = "Цвет низкого HP", Flag = "BS_LowHPColor",
+    Color = G.BS.LowHPColor, Callback = function(c) G.BS.LowHPColor = c end })
 
 TB.CreateSection("Трейсеры")
 TB.CreateToggle({ Name = "Трейсер выстрела", Flag = "BS_ShotTracer",
@@ -7129,7 +7780,7 @@ local function setBulletSwap(v)
     end
 end
 
-AI.CreateSection("Тумблеры аима")
+AI.CreateSection("Основное")
 -- ВАЖНО: у этих тумблеров НЕТ Flag. Rayfield при запуске восстанавливает
 -- сохранённые значения и перебивал ими дефолты (из-за этого аимлок мог
 -- остаться выключенным, а режим «только на ЛКМ» - включённым).
@@ -7146,6 +7797,12 @@ AI.CreateToggle({
         if v then bindAimLockStep() end
     end,
 })
+-- v11.31: «только видимые» — не целиться в того, кто за стеной.
+-- По умолчанию выключено: прострел стен работает через телепорт.
+AI.CreateToggle({ Name = "Только видимые цели (без прострела)",
+    Flag = "BS_AimVisibleOnly",
+    CurrentValue = G.BS.AimVisibleOnly == true,
+    Callback = function(v) G.BS.AimVisibleOnly = v end })
 -- Тумблер «камера доворачивается» УДАЛЁН по просьбе: аимлок всегда
 -- доводит камеру (G.BS.AimLockTurn = true). Если понадобится тихий аим
 -- без поворота камеры - из консоли:
@@ -7177,7 +7834,34 @@ AI.CreateSlider({ Name = "Прозрачность круга аима", Flag = 
     Range = {0, 1}, Increment = 0.05, CurrentValue = G.BS.AimFOVAlpha or 0.35,
     Callback = function(v) G.BS.AimFOVAlpha = v end })
 
-AI.CreateSection("Цель и наведение")
+AI.CreateSection("Выбор цели")
+-- v11.31: вернули выбор целей и приоритет. Настройки AimTargets и
+-- AimPriority существовали, но в GUI их не было — работали только
+-- дефолты, а приоритет вообще игнорировался клиент-аймом.
+AI.CreateDropdown({
+    Name = "Кого целить",
+    Flag = "BS_AimTargetsPick",
+    Options = AIM_TARGETS,
+    CurrentOption = { G.BS.AimTargets },
+    MultipleOptions = false,
+    Callback = function(selected)
+        local picked = selected
+        if type(picked) == "table" then picked = picked[1] end
+        if type(picked) == "string" then G.BS.AimTargets = picked end
+    end,
+})
+AI.CreateDropdown({
+    Name = "Приоритет цели",
+    Flag = "BS_AimPriorityPick",
+    Options = AIM_PRIORITY,
+    CurrentOption = { G.BS.AimPriority },
+    MultipleOptions = false,
+    Callback = function(selected)
+        local picked = selected
+        if type(picked) == "table" then picked = picked[1] end
+        if type(picked) == "string" then G.BS.AimPriority = picked end
+    end,
+})
 local AIM_PART_LABELS = {
     ["Голова"] = "Head",
     ["Корпус"] = "UpperTorso",
@@ -7206,14 +7890,30 @@ AI.CreateSlider({ Name = "Опережение цели", Flag = "BS_AimLeadPick
     Range = {0, 0.3}, Increment = 0.01,
     CurrentValue = tonumber(G.BS.AimLead) or 0.08,
     Suffix = " c", Callback = function(v) G.BS.AimLead = v end })
-AI.CreateSlider({ Name = "Скорость доводки (1 = мгновенно)", Flag = "BS_AimLockSpeedPick",
+-- Новый Flag: старый BS_AimLockSpeedPick хранил 1 из v11.29/11.30,
+-- где 1 означало «мгновенно». Теперь 1 = плавно, 35 = мгновенно,
+-- поэтому старую сохранённую единицу нельзя восстанавливать.
+AI.CreateSlider({ Name = "Скорость доводки (1 = плавно, 35 = мгновенно)",
+    Flag = "BS_AimLockSpeedPick2",
     Range = {1, 35}, Increment = 1,
-    CurrentValue = tonumber(G.BS.AimLockSpeed) or 1,
+    CurrentValue = tonumber(G.BS.AimLockSpeed) or 35,
     Callback = function(v) G.BS.AimLockSpeed = v end })
 AI.CreateSlider({ Name = "Макс. дистанция аима", Flag = "BS_AimMaxDistPick",
     Range = {50, 300}, Increment = 10,
     CurrentValue = tonumber(G.BS.AimMaxDist) or 290,
     Suffix = " st", Callback = function(v) G.BS.AimMaxDist = v end })
+
+AI.CreateSection("Точки тела")
+AI.CreateToggle({ Name = "Цепочка частей (голова → корпус → ноги)",
+    Flag = "BS_AimChainToggle",
+    CurrentValue = G.BS.AimChain ~= false,
+    Callback = function(v) G.BS.AimChain = v end })
+AI.CreateToggle({ Name = "Свободная часть тела (не в стену)",
+    Flag = "BS_AimFreePartToggle",
+    CurrentValue = G.BS.AimFreePart ~= false,
+    Callback = function(v) G.BS.AimFreePart = v end })
+
+AI.CreateSection("Метка цели")
 AI.CreateToggle({ Name = "Подсветка текущей цели", Flag = "BS_TargetMark",
     CurrentValue = G.BS.TargetMark,
     Callback = function(v)
@@ -7223,6 +7923,22 @@ AI.CreateToggle({ Name = "Подсветка текущей цели", Flag = "B
 AI.CreateColorPicker({ Name = "Цвет подсветки цели", Flag = "BS_TargetMarkColor",
     Color = G.BS.TargetMarkColor,
     Callback = function(c) G.BS.TargetMarkColor = c end })
+-- v11.31: настройки самой метки (уголки вокруг головы).
+AI.CreateColorPicker({ Name = "Цвет уголков метки", Flag = "BS_AimMarkColor",
+    Color = G.BS.AimMarkColor,
+    Callback = function(c) G.BS.AimMarkColor = c end })
+AI.CreateSlider({ Name = "Размер метки", Flag = "BS_AimMarkSize",
+    Range = {5, 20}, Increment = 1, CurrentValue = G.BS.AimMarkSize or 9,
+    Suffix = " px", Callback = function(v) G.BS.AimMarkSize = v end })
+AI.CreateSlider({ Name = "Толщина метки", Flag = "BS_AimMarkThick",
+    Range = {1, 5}, Increment = 1, CurrentValue = G.BS.AimMarkThick or 2,
+    Callback = function(v) G.BS.AimMarkThick = v end })
+AI.CreateToggle({ Name = "Пульс метки", Flag = "BS_AimMarkPulse",
+    CurrentValue = G.BS.AimMarkPulse ~= false,
+    Callback = function(v) G.BS.AimMarkPulse = v end })
+AI.CreateToggle({ Name = "Имя цели над меткой", Flag = "BS_AimMarkName",
+    CurrentValue = G.BS.AimMarkName ~= false,
+    Callback = function(v) G.BS.AimMarkName = v end })
 
 AI.CreateSection("Прицел и хитмаркер")
 AI.CreateToggle({ Name = "Свой прицел (crosshair)", Flag = "BS_Crosshair",
@@ -7252,11 +7968,8 @@ AI.CreateColorPicker({ Name = "Цвет хитмаркера", Flag = "BS_HitMar
     Color = G.BS.HitMarkColor,
     Callback = function(c) G.BS.HitMarkColor = c end })
 
--- Секция «Цель» («Кого целить», «Приоритет», «Радиус захвата») и
--- пикеры «Цвет: захват цели» / «Цвет метки» удалены по просьбе.
--- Логика выбора цели осталась и работает на дефолтах:
---   AIM_TARGETS  = противники по роли, AIM_PRIORITY = ближе,
---   радиус 300 px, прострел включён.
+-- Выбор цели, приоритет и часть тела теперь в секции «Выбор цели»
+-- выше; радиус захвата живёт в «Макс. дистанция аима».
 
 -- Секция «Диагностика» (лог попаданий, диагностика патрона, лог
 -- ремоутов, глубокий лог 94 ремоутов) и кнопки сканеров УБРАНЫ по
@@ -7338,9 +8051,12 @@ PL.CreateSlider({ Name = "Скорость притяжения", Flag = "BS_Coi
     Range = {0.1, 1}, Increment = 0.05,
     CurrentValue = tonumber(G.BS.CoinMagnetPower) or 0.45,
     Callback = function(v) G.BS.CoinMagnetPower = v end })
-PL.CreateToggle({ Name = "Авто-сбор через ремоут (если найден)", Flag = "BS_CoinAuto",
+PL.CreateToggle({ Name = "Авто-сбор монет (prompt / ремоут)", Flag = "BS_CoinAuto",
     CurrentValue = G.BS.CoinAuto ~= false,
     Callback = function(v) G.BS.CoinAuto = v end })
+PL.CreateToggle({ Name = "Сбор телепортом к монете (риск)", Flag = "BS_CoinBlink",
+    CurrentValue = G.BS.CoinBlink ~= false,
+    Callback = function(v) G.BS.CoinBlink = v end })
 
 PL.CreateSection("Танец")
 dance.toggle = PL.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
@@ -7553,7 +8269,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.29 остановлен")
+    print("[BS HUB] v11.31 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -7661,15 +8377,49 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.29 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.31 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
     .. " | лома: " .. tostring(G.BS.MeleeAim)
     .. " | патроны: авто=" .. tostring(G.BS.AmmoAuto)
     .. " | магнит монет: " .. tostring(G.BS.CoinMagnet ~= false)
-    .. " | прострел: " .. tostring(G.BS.Penetrate)
+    .. " | прострел: " .. tostring(G.BS.WallPenetrate and G.BS.GhostShot)
     .. " | ошибок GUI=" .. #UI_ERR)
+-- ОДИН РАЗ проверяем, что ремоут выстрела вообще найден. Без него
+-- «клиент айм» и прострел молча не работают — именно это надо видеть
+-- в логе, а не догадываться.
+task.delay(1, function()
+    pcall(refreshHookTargets)
+    local names = {}
+    if Remotes then
+        for _, r in ipairs(Remotes:GetChildren()) do
+            if r:IsA("RemoteEvent") or r:IsA("UnreliableRemoteEvent") then
+                local n = string.lower(r.Name)
+                if string.find(n, "fire", 1, true)
+                   or string.find(n, "shoot", 1, true)
+                   or string.find(n, "weapon", 1, true)
+                   or string.find(n, "gun", 1, true)
+                   or string.find(n, "hit", 1, true)
+                   or string.find(n, "damage", 1, true)
+                   or string.find(n, "coin", 1, true)
+                   or string.find(n, "pickup", 1, true)
+                   or string.find(n, "collect", 1, true) then
+                    names[#names + 1] = r.Name
+                end
+            end
+        end
+    end
+    print("[BS BULLET] FireWeapon=" .. tostring(NC.fw ~= nil)
+        .. " | BulletSwap=" .. tostring(G.BS.BulletSwap)
+        .. " | GhostShot=" .. tostring(G.BS.GhostShot)
+        .. " | WallPenetrate=" .. tostring(G.BS.WallPenetrate)
+        .. " | OriginSlack=" .. tostring(G.BS.OriginSlack)
+        .. " | похожие ремоуты: " .. (#names > 0 and table.concat(names, ", ") or "нет"))
+    if not NC.fw then
+        print("[BS BULLET] ВНИМАНИЕ: Remotes.FireWeapon не найден — клиент-айм/прострел не работают")
+    end
+end)
 -- Ошибки создания элементов печатаем одной строкой: по прошлому логу
 -- было "ошибок GUI=2", но не было видно, ЧТО именно не создалось
 -- (из-за этого искали причину пустого списка танцев).
