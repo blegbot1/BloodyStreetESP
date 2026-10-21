@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.23
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.24
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -3557,6 +3557,15 @@ G.BS.AmmoAutoTP   = G.BS.AmmoAutoTP == true
 G.BS.AmmoRange    = tonumber(G.BS.AmmoRange) or 25
 G.BS.AmmoSearch   = tonumber(G.BS.AmmoSearch) or 600
 G.BS.AmmoEvery    = tonumber(G.BS.AmmoEvery) or 4
+-- ПОРОГ АВТО-ПОПОЛНЕНИЯ: не дёргаемся из-за 1 патрона. 0.5 = 50% и
+-- ниже. 0 = старое поведение (пополнять при любом недоборе).
+G.BS.AmmoLowPct   = tonumber(G.BS.AmmoLowPct)
+if G.BS.AmmoLowPct == nil then G.BS.AmmoLowPct = 0.5 end
+if G.BS.AmmoLowPct < 0 then G.BS.AmmoLowPct = 0 end
+if G.BS.AmmoLowPct > 1 then G.BS.AmmoLowPct = 1 end
+-- ЯЩИК КО МНЕ: вместо телепорта игрока к ящику временно подвозим
+-- сам ящик к игроку, пополняем и возвращаем на место.
+G.BS.AmmoBringCrate = G.BS.AmmoBringCrate ~= false
 
 -- Весь модуль в do-блоке: его локальные не расходуют лимит 200
 -- локальных переменных главного блока (иначе luac падает).
@@ -3855,7 +3864,10 @@ function SUPPLY.refill(opts)
     -- жать E с 20 студов: для forceTP считаем «рядом» максимум 8.
     if opts.forceTP then nearRange = math.min(nearRange, 8) end
     local mustTP = dist > nearRange
-    local allowTP = opts.forceTP == true or G.BS.AmmoTeleport ~= false
+    -- ЯЩИК КО МНЕ: разрешаем «дальний» ящик, но двигаем не игрока,
+    -- а сам ящик. Так персонаж остаётся на месте.
+    local bringCrate = (opts.bringCrate and G.BS.AmmoBringCrate ~= false) and true or false
+    local allowTP = opts.forceTP == true or G.BS.AmmoTeleport ~= false or bringCrate
     if mustTP and not allowTP then
         if not opts.silent then
             notify("ближайший ящик " .. math.floor(dist + 0.5)
@@ -3866,21 +3878,52 @@ function SUPPLY.refill(opts)
 
     SUPPLY.busy = true
     local oldCF = hrp.CFrame
+    local oldCrateCF = nil
     local touched = false
     local prompts, clicks
     local holdMax = 0
     local okRun = pcall(function()
         if mustTP then
-            local ammo, any = supplyParts(crate)
-            local part = ammo[1] or any[1]
-            local p = supplyPos(crate)
-            if part then
-                local lift = math.max(2.2, part.Size.Y * 0.5 + 1.8)
-                hrp.CFrame = part.CFrame * CFrame.new(0, lift, 0)
-            elseif p then
-                hrp.CFrame = CFrame.new(p + Vector3.new(0, 5, 0))
+            if bringCrate then
+                -- ЯЩИК КО МНЕ: подвозим сам ящик к игроку, персонаж
+                -- остаётся на месте. После пополнения вернём на место.
+                local okP, cf = pcall(function() return crate:GetPivot() end)
+                if okP and cf and crate.Parent then
+                    oldCrateCF = cf
+                    local target = hrp.CFrame * CFrame.new(0, 0, -3)
+                    local okMove = pcall(function() crate:PivotTo(target) end)
+                    local moved = false
+                    if okMove then
+                        local okN, newCF = pcall(function() return crate:GetPivot() end)
+                        if okN and newCF and (newCF.Position - target.Position).Magnitude < 5 then
+                            moved = true
+                        end
+                    end
+                    if moved then
+                        task.wait(0.25)
+                    else
+                        -- сервер/клиент не дал двигать ящик — откатываемся
+                        -- на телепорт игрока, иначе пополнение сломается
+                        oldCrateCF = nil
+                        bringCrate = false
+                    end
+                else
+                    oldCrateCF = nil
+                    bringCrate = false
+                end
             end
-            task.wait(0.35)
+            if mustTP and not bringCrate then
+                local ammo, any = supplyParts(crate)
+                local part = ammo[1] or any[1]
+                local p = supplyPos(crate)
+                if part then
+                    local lift = math.max(2.2, part.Size.Y * 0.5 + 1.8)
+                    hrp.CFrame = part.CFrame * CFrame.new(0, lift, 0)
+                elseif p then
+                    hrp.CFrame = CFrame.new(p + Vector3.new(0, 5, 0))
+                end
+                task.wait(0.35)
+            end
         end
 
         prompts, clicks = supplyPrompts(crate)
@@ -3925,6 +3968,10 @@ function SUPPLY.refill(opts)
     -- ящику и «вернуться» выключено — остаёмся у ящика.
     if hrp.Parent and (not mustTP or G.BS.AmmoReturn ~= false) then
         pcall(function() hrp.CFrame = oldCF end)
+    end
+    -- возвращаем ящик на место, если мы его подвозили
+    if oldCrateCF and crate.Parent then
+        pcall(function() crate:PivotTo(oldCrateCF) end)
     end
     SUPPLY.busy = false
 
@@ -3974,32 +4021,41 @@ function SUPPLY.autoTick(now)
     if known and cur >= max then
         return
     end
+    -- ПОРОГ: не дёргаемся из-за 1 патрона. 0.5 = пополнять только когда
+    -- осталось <= 50%. 0 = старое поведение (при любом недоборе).
+    local lowPct = tonumber(G.BS.AmmoLowPct)
+    if lowPct == nil then lowPct = 0.5 end
+    if lowPct < 0 then lowPct = 0 end
+    if lowPct > 1 then lowPct = 1 end
+    if known and lowPct > 0 and cur > max * lowPct then
+        return
+    end
     local near = supplyNearest(tonumber(G.BS.AmmoRange) or 25)
     if near then
         SUPPLY.lastAuto = now
         task.spawn(function()
             pcall(SUPPLY.refill, {
                 nearRange = G.BS.AmmoRange, silent = true, forceTP = false,
+                bringCrate = true,
                 -- если счётчик не читается, не трогаем персонажа
                 noTouch = not known,
             })
         end)
         return
     end
-    if G.BS.AmmoAutoTP and type(cur) == "number" and type(max) == "number"
-       and max > 0 and cur <= math.max(1, math.floor(max * 0.25)) then
+    if (G.BS.AmmoAutoTP or G.BS.AmmoBringCrate) and known then
         local far = supplyNearest(tonumber(G.BS.AmmoSearch) or 600)
         if far then
             SUPPLY.lastAuto = now
             task.spawn(function()
-                pcall(SUPPLY.refill, { forceTP = true, silent = true })
+                pcall(SUPPLY.refill, { forceTP = true, silent = true, bringCrate = true })
             end)
         end
     end
 end
 
 G.BS.RefillAmmo = function()
-    return SUPPLY.refill({ forceTP = true })
+    return SUPPLY.refill({ forceTP = true, bringCrate = true })
 end
 G.BS.ScanSupply = function()
     return SUPPLY.scan()
@@ -6030,7 +6086,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.23",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.24",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -6302,7 +6358,7 @@ PL.CreateSection("Патроны")
 PL.CreateButton({
     Name = "ПОПОЛНИТЬ ПАТРОНЫ (ближайший ящик)",
     Callback = function()
-        pcall(function() G.BS.Supply.refill({ forceTP = true }) end)
+        pcall(function() G.BS.Supply.refill({ forceTP = true, bringCrate = true }) end)
     end,
 })
 PL.CreateToggle({
@@ -6325,6 +6381,21 @@ PL.CreateSlider({
     CurrentValue = tonumber(G.BS.AmmoRange) or 25,
     Suffix = " st",
     Callback = function(v) G.BS.AmmoRange = v end,
+})
+PL.CreateToggle({
+    Name = "Ящик подходит ко мне",
+    Flag = "BS_AmmoBringCrate",
+    CurrentValue = G.BS.AmmoBringCrate ~= false,
+    Callback = function(v) G.BS.AmmoBringCrate = v end,
+})
+PL.CreateSlider({
+    Name = "Порог автопополнения",
+    Flag = "BS_AmmoLowPct",
+    Range = { 0, 100 },
+    Increment = 5,
+    CurrentValue = math.floor((tonumber(G.BS.AmmoLowPct) or 0.5) * 100 + 0.5),
+    Suffix = " %",
+    Callback = function(v) G.BS.AmmoLowPct = v / 100 end,
 })
 PL.CreateButton({
     Name = "СКАНИРОВАТЬ ЯЩИКИ (в консоль)",
@@ -6638,7 +6709,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.23 остановлен")
+    print("[BS HUB] v11.24 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -6739,7 +6810,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.23 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.24 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
