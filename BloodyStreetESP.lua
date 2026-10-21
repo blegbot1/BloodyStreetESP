@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.26
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.27
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -11,6 +11,11 @@
 --  ролям (вампир / хантер / неизвестный), сканер игры.
 --  (Блоки «главный RGB», «Точность ролей», «Выживание» и «Прострел»
 --   удалены по просьбе — GUI их больше не показывает.)
+--
+--  ВИЗУАЛЫ (вкладка HUD): прицел, трейсер, скелет, полоски HP,
+--  стрелки за экраном, chams, рамка головы, ромб вампиров, цифры
+--  урона, стрелки звука, миникарта, полоски стамины/патронов,
+--  FPS/пинг/скорость/координаты, затухание коробок, улики.
 --
 --  КЛИЕНТ АИМ (вкладка AIM): ПОДМЕНА ПАТРОНА. Remotes.FireWeapon
 --  перехватывается через глобальный __namecall, и аргументы
@@ -212,6 +217,8 @@ G.BS.Crosshair     = G.BS.Crosshair ~= false
 G.BS.CrosshairGap  = tonumber(G.BS.CrosshairGap) or 4
 G.BS.CrosshairLen  = tonumber(G.BS.CrosshairLen) or 10
 G.BS.CrosshairColor = safeColor(G.BS.CrosshairColor, Color3.new(1, 1, 1))
+G.BS.RecoilCrosshair = G.BS.RecoilCrosshair ~= false
+G.BS.RecoilAmount = tonumber(G.BS.RecoilAmount) or 8
 G.BS.AimLine       = G.BS.AimLine ~= false
 G.BS.AimLineColor  = safeColor(G.BS.AimLineColor, Color3.new(1, 0, 0))
 G.BS.DistCircle    = G.BS.DistCircle or false
@@ -235,6 +242,28 @@ G.BS.WeaponESP     = G.BS.WeaponESP ~= false
 G.BS.RoundTimer    = G.BS.RoundTimer ~= false
 G.BS.KillCounter   = G.BS.KillCounter ~= false
 G.BS.CountsESP     = G.BS.CountsESP ~= false
+-- v11.27: ещё визуалы.
+G.BS.HeadBox       = G.BS.HeadBox ~= false
+G.BS.HeadBoxSize   = tonumber(G.BS.HeadBoxSize) or 22
+G.BS.HeadBoxColor  = safeColor(G.BS.HeadBoxColor, Color3.new(1, 0, 0))
+G.BS.DamageNumbers = G.BS.DamageNumbers ~= false
+G.BS.DmgNumColor   = safeColor(G.BS.DmgNumColor, Color3.new(1, 1, 0))
+G.BS.CornerBoxes   = G.BS.CornerBoxes or false
+G.BS.SoundArrows   = G.BS.SoundArrows ~= false
+G.BS.SoundArrowColor = safeColor(G.BS.SoundArrowColor, Color3.new(0, 1, 0.5))
+G.BS.StaminaBar    = G.BS.StaminaBar ~= false
+G.BS.AmmoBar       = G.BS.AmmoBar ~= false
+G.BS.FPSCounter    = G.BS.FPSCounter ~= false
+G.BS.CoordsTime    = G.BS.CoordsTime ~= false
+G.BS.Minimap       = G.BS.Minimap or false
+G.BS.MinimapSize   = tonumber(G.BS.MinimapSize) or 160
+G.BS.MinimapSelf   = G.BS.MinimapSelf ~= false
+-- v11.27.1: пинг/скорость, затухание коробок, цифры HP, улики.
+G.BS.PingSpeed     = G.BS.PingSpeed ~= false
+G.BS.DistFade      = G.BS.DistFade or false
+G.BS.HPBarText     = G.BS.HPBarText ~= false
+G.BS.ClueESP       = G.BS.ClueESP or false
+G.BS.ClueColor     = safeColor(G.BS.ClueColor, Color3.new(0.6, 1, 0.2))
 -- МОНЕТЫ (Workspace.CoinPickups). Сбор через ремоут игры. Если точный
 -- ремоут неизвестен — включи «НАУЧИТЬ СБОР МОНЕТ» и подбери одну
 -- монету руками: скрипт запомнит ремоут и аргументы.
@@ -890,6 +919,51 @@ local function drawBox(b, root, cam)
     local p7 = project( s,  h,  d)
     local p8 = project(-s,  h,  d)
     local corners = { p1, p2, p3, p4, p5, p6, p7, p8 }
+
+    -- Затухание по дистанции: ближние яркие, дальние почти прозрачные.
+    local fade = 0
+    if G.BS.DistFade then
+        local camera = cam or workspace.CurrentCamera
+        local cpos = camera and camera.CFrame and camera.CFrame.Position
+        if cpos then
+            local dist = (root.Position - cpos).Magnitude
+            fade = math.clamp((dist - 70) / 180, 0, 0.85)
+        end
+    end
+
+    -- РОЛЕВОЙ СТИЛЬ: ромб для вампиров (если включён CornerBoxes).
+    -- Строим ромб по экранному bounding box всех 8 углов, иначе
+    -- вершины брались только с верхней грани и ромб «слипался» сверху.
+    if b.corner then
+        local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
+        for _, p in ipairs(corners) do
+            if p.X < minX then minX = p.X end
+            if p.X > maxX then maxX = p.X end
+            if p.Y < minY then minY = p.Y end
+            if p.Y > maxY then maxY = p.Y end
+        end
+        local top = Vector2.new((minX + maxX) * 0.5, minY)
+        local right = Vector2.new(maxX, (minY + maxY) * 0.5)
+        local bottom = Vector2.new((minX + maxX) * 0.5, maxY)
+        local left = Vector2.new(minX, (minY + maxY) * 0.5)
+        local dia = { top, right, bottom, left }
+        for i = 1, 4 do
+            local ln = b.lines[i]
+            if ln then
+                ln.From = dia[i]
+                ln.To = dia[i % 4 + 1]
+                ln.Color = b.color or Color3.new(1, 1, 1)
+                ln.Thickness = G.BS.BoxThick
+                ln.Transparency = fade
+                ln.Visible = true
+            end
+        end
+        for i = 5, 12 do
+            if b.lines[i] then b.lines[i].Visible = false end
+        end
+        return
+    end
+
     local idx = { {1,2},{2,3},{3,4},{4,1},{5,6},{6,7},{7,8},{8,5},{1,5},{2,6},{3,7},{4,8} }
     for i = 1, 12 do
         local a = corners[idx[i][1]]
@@ -901,6 +975,7 @@ local function drawBox(b, root, cam)
             ln.Visible = true
             ln.Color  = b.color or Color3.new(1, 1, 1)
             ln.Thickness = G.BS.BoxThick
+            ln.Transparency = fade
         end
     end
 end
@@ -954,6 +1029,12 @@ local function vCircle()
     if ok and c then c.Visible = false; return c end
     return nil
 end
+local function vText()
+    if not VDRAW then return nil end
+    local ok, t = pcall(function() return Drawing.new("Text") end)
+    if ok and t then t.Visible = false; return t end
+    return nil
+end
 
 local VMAX = 20
 local vpool = {}
@@ -962,7 +1043,9 @@ for i = 1, VMAX do
         skeleton = {},
         hpBg = vSquare(),
         hpFg = vSquare(),
+        hpText = vText(),
         arrow = vLine(),
+        headBox = vSquare(),
     }
 end
 
@@ -974,8 +1057,28 @@ local distCircle = vCircle()
 local chams = {}
 local crateHL = {}
 local coinHL = {}
+local clueHL = {}
+local lastClueScan = 0
 local lastHealth = {}
 local kills = 0
+
+-- v11.27: цифры урона, стрелки звука, миникарта, полоски.
+local dmgNums = {}
+local soundArrows = {}
+local minimapBg = vSquare()
+local minimapBorder = vSquare()
+local minimapDots = {}
+local minimapSelf = vCircle()
+local staminaBg = vSquare()
+local staminaFg = vSquare()
+local ammoBg = vSquare()
+local ammoFg = vSquare()
+local fpsFrames = {}
+local lastFpsT = 0
+local fpsValue = 0
+local lastPingAt = 0
+local pingValue = 0
+local speedValue = 0
 
 local function vProj(cam, pos)
     local ok, sp = pcall(function() return cam:WorldToViewportPoint(pos) end)
@@ -1004,19 +1107,229 @@ local function vHideCircle(c)
     if c then c.Visible = false end
 end
 
+local function vHideText(t)
+    if t then t.Visible = false end
+end
+
+-- Стамина игрока: атрибут или NumberValue.
+local function readStamina()
+    local ch = LP and LP.Character
+    if not ch then return nil, nil end
+    local ok, s = pcall(function() return ch:GetAttribute("Stamina") end)
+    if ok and type(s) == "number" then
+        local _, m = pcall(function() return ch:GetAttribute("MaxStamina") end)
+        return s, (type(m) == "number" and m > 0) and m or 100
+    end
+    local v = ch:FindFirstChild("Stamina")
+    if v and v:IsA("NumberValue") then return v.Value, 100 end
+    return nil, nil
+end
+
+-- Пинг сервера (мс). Читаем не чаще раза в секунду: GetValue дергает
+-- Stats, а нам достаточно обновлять HUD раз в 0.2 с.
+local function readPing(now)
+    if now - lastPingAt < 1 then return pingValue end
+    lastPingAt = now
+    local ok, v = pcall(function()
+        local stats = game:GetService("Stats")
+        return stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    if ok and type(v) == "number" then
+        pingValue = math.floor(v + 0.5)
+    end
+    return pingValue
+end
+
+-- Скорость персонажа в studs/s.
+local function readSpeed(root)
+    if not root then return 0 end
+    local ok, v = pcall(function()
+        return root.AssemblyLinearVelocity or root.Velocity
+    end)
+    if ok and v then return math.floor(v.Magnitude + 0.5) end
+    return 0
+end
+
+-- УЛИКИ / КРОВЬ / ПРЕДМЕТЫ. Скан workspace раз в 3 секунды, чтобы не
+-- ронять FPS на больших картах. Подсвечиваем только объекты с
+-- «говорящими» именами, не трогаем персонажей и уже обработанные
+-- ящики/монеты.
+local CLUE_WORDS = {
+    "blood", "clue", "evidence", "forensic", "corpse", "body",
+    "footprint", "fingerprint", "weaponpickup", "itempickup",
+    "droppeditem", "dropped", "loot",
+}
+local function isClueName(name)
+    local n = string.lower(tostring(name or ""))
+    if n == "" or #n > 48 then return false end
+    for i = 1, #CLUE_WORDS do
+        if string.find(n, CLUE_WORDS[i], 1, true) then return true end
+    end
+    return false
+end
+
+local function clearClues()
+    for obj, h in pairs(clueHL) do
+        pcall(function() h:Destroy() end)
+        clueHL[obj] = nil
+    end
+end
+
+local function scanClues(now)
+    if now - lastClueScan < 3 then return end
+    lastClueScan = now
+    local seen = {}
+    local n = 0
+    local ok, list = pcall(function() return workspace:GetDescendants() end)
+    if not ok or not list then return end
+    local maxScan = math.min(#list, 5000)
+    for i = 1, maxScan do
+        if n >= 40 then break end
+        local obj = list[i]
+        if (obj:IsA("Model") or obj:IsA("BasePart")) and isClueName(obj.Name) then
+            local isChar = false
+            for _, plr in ipairs(Players:GetPlayers()) do
+                local ch = plr.Character
+                if ch and (obj == ch or obj:IsDescendantOf(ch)) then
+                    isChar = true
+                    break
+                end
+            end
+            if not isChar then
+                n = n + 1
+                seen[obj] = true
+            end
+        end
+    end
+    for obj, h in pairs(clueHL) do
+        if not seen[obj] or not obj.Parent then
+            pcall(function() h:Destroy() end)
+            clueHL[obj] = nil
+        end
+    end
+    local col = safeColor(G.BS.ClueColor, Color3.new(0.6, 1, 0.2))
+    for obj in pairs(seen) do
+        local h = clueHL[obj]
+        if not h or not h.Parent then
+            local ok2, nh = pcall(function() return Instance.new("Highlight") end)
+            if ok2 and nh then
+                nh.FillColor = col
+                nh.OutlineColor = col
+                nh.FillTransparency = 0.6
+                nh.Adornee = obj
+                nh.Parent = obj
+                clueHL[obj] = nh
+                h = nh
+            end
+        end
+        if h then
+            h.Enabled = true
+            h.FillColor = col
+            h.OutlineColor = col
+        end
+    end
+end
+
+
 function VIS.resetKills() kills = 0 end
 function VIS.addKill() kills = kills + 1 end
 function VIS.getKills() return kills end
+
+-- Полное снятие всех Drawing/Highlight объектов модуля. Вызывается из
+-- G.BS_Stop, иначе после остановки скрипта прицел, миникарта, полоски и
+-- цифры урона остаются висеть на экране.
+function VIS.destroy()
+    local function rm(o)
+        if not o then return end
+        pcall(function() o:Remove() end)
+        pcall(function() o:Destroy() end)
+    end
+    for i = 1, #crossLines do rm(crossLines[i]) end
+    rm(aimLine); rm(centerDot); rm(distCircle)
+    for i = 1, #vpool do
+        local p = vpool[i]
+        for j = 1, #(p.skeleton or {}) do rm(p.skeleton[j]) end
+        rm(p.hpBg); rm(p.hpFg); rm(p.hpText); rm(p.arrow); rm(p.headBox)
+    end
+    for i = 1, #dmgNums do rm(dmgNums[i].obj) end
+    for i = 1, #soundArrows do rm(soundArrows[i]) end
+    for i = 1, #minimapDots do rm(minimapDots[i]) end
+    rm(minimapBg); rm(minimapBorder); rm(minimapSelf)
+    rm(staminaBg); rm(staminaFg); rm(ammoBg); rm(ammoFg)
+    for _, tbl in pairs({ chams, crateHL, coinHL, clueHL }) do
+        for _, h in pairs(tbl) do
+            pcall(function() h:Destroy() end)
+        end
+    end
+    crossLines = {}
+    vpool = {}
+    dmgNums = {}
+    soundArrows = {}
+    minimapDots = {}
+    chams = {}
+    crateHL = {}
+    coinHL = {}
+    clueHL = {}
+    lastHealth = {}
+end
+
+-- Всплывающая цифра урона (вызывается из хука попаданий).
+function VIS.spawnDmgNum(pos, amount)
+    if not G.BS.DamageNumbers then return end
+    local t = vText()
+    if not t then return end
+    t.Text = tostring(amount or "HIT")
+    t.Size = 16
+    t.Color = safeColor(G.BS.DmgNumColor, Color3.new(1, 1, 0))
+    t.Center = true
+    t.Outline = true
+    t.Position = Vector2.new(0, 0)
+    t.Visible = true
+    dmgNums[#dmgNums + 1] = { obj = t, pos = pos, t0 = os.clock() }
+    if #dmgNums > 20 then
+        local old = table.remove(dmgNums, 1)
+        pcall(function() old.obj:Remove() end)
+    end
+end
 
 function VIS.update(cam, myRoot, by, locked)
     local vp = cam.ViewportSize
     local cx, cy = vp.X * 0.5, vp.Y * 0.5
     local camPos = cam.CFrame.Position
 
+    -- 0) FPS
+    local nowT = os.clock()
+    if lastFpsT > 0 then
+        local dt = nowT - lastFpsT
+        if dt > 0 then
+            fpsFrames[#fpsFrames + 1] = 1 / dt
+            if #fpsFrames > 30 then table.remove(fpsFrames, 1) end
+            local sum = 0
+            for i = 1, #fpsFrames do sum = sum + fpsFrames[i] end
+            fpsValue = math.floor(sum / #fpsFrames + 0.5)
+        end
+    end
+    lastFpsT = nowT
+    G.BS.FPS = fpsValue
+    G.BS.Ping = readPing(nowT)
+    speedValue = readSpeed(myRoot)
+    G.BS.Speed = speedValue
+
+    -- Без Drawing визуалы рисовать нечем. FPS/пинг/скорость уже
+    -- посчитаны выше — HUD продолжает работать.
+    if not VDRAW then return end
+
     -- 1) ПРИЦЕЛ
     if G.BS.Crosshair then
         local gap = tonumber(G.BS.CrosshairGap) or 4
         local len = tonumber(G.BS.CrosshairLen) or 10
+        -- Отдача: после выстрела прицел на короткое время разъезжается.
+        if G.BS.RecoilCrosshair and G.BS.LastShotAt then
+            local age = nowT - G.BS.LastShotAt
+            if age >= 0 and age < 0.25 then
+                gap = gap + (1 - age / 0.25) * (tonumber(G.BS.RecoilAmount) or 8)
+            end
+        end
         local col = safeColor(G.BS.CrosshairColor, Color3.new(1, 1, 1))
         vSetLine(crossLines[1], Vector2.new(cx - gap - len, cy), Vector2.new(cx - gap, cy), col, 1)
         vSetLine(crossLines[2], Vector2.new(cx + gap, cy), Vector2.new(cx + gap + len, cy), col, 1)
@@ -1159,14 +1472,51 @@ function VIS.update(cam, myRoot, by, locked)
                         p.hpFg.Filled = true
                         p.hpFg.Visible = true
                     end
+                    if p.hpText then
+                        if G.BS.HPBarText then
+                            p.hpText.Text = tostring(math.floor(hum.Health + 0.5))
+                            p.hpText.Size = 12
+                            p.hpText.Color = Color3.new(1, 1, 1)
+                            p.hpText.Center = true
+                            p.hpText.Outline = true
+                            p.hpText.Position = Vector2.new(sp.X, y - 2)
+                            p.hpText.Visible = true
+                        else
+                            vHideText(p.hpText)
+                        end
+                    end
                 else
-                    vHideSquare(p.hpBg); vHideSquare(p.hpFg)
+                    vHideSquare(p.hpBg); vHideSquare(p.hpFg); vHideText(p.hpText)
                 end
             else
-                vHideSquare(p.hpBg); vHideSquare(p.hpFg)
+                vHideSquare(p.hpBg); vHideSquare(p.hpFg); vHideText(p.hpText)
             end
         else
-            vHideSquare(p.hpBg); vHideSquare(p.hpFg)
+            vHideSquare(p.hpBg); vHideSquare(p.hpFg); vHideText(p.hpText)
+        end
+
+        -- РАМКА ВОКРУГ ГОЛОВЫ
+        if G.BS.HeadBox and ch and ch.Parent then
+            local head = ch:FindFirstChild("Head")
+            if head then
+                local sp = vProj(cam, head.Position)
+                if sp and sp.Z > 0 then
+                    local sz = tonumber(G.BS.HeadBoxSize) or 22
+                    if p.headBox then
+                        p.headBox.Position = Vector2.new(sp.X - sz * 0.5, sp.Y - sz * 0.5)
+                        p.headBox.Size = Vector2.new(sz, sz)
+                        p.headBox.Color = safeColor(G.BS.HeadBoxColor, Color3.new(1, 0, 0))
+                        p.headBox.Filled = false
+                        p.headBox.Visible = true
+                    end
+                else
+                    vHideSquare(p.headBox)
+                end
+            else
+                vHideSquare(p.headBox)
+            end
+        else
+            vHideSquare(p.headBox)
         end
 
         -- СТРЕЛКА ЗА ЭКРАНОМ
@@ -1286,6 +1636,178 @@ function VIS.update(cam, myRoot, by, locked)
         end
     else
         for _, h in pairs(coinHL) do if h then h.Enabled = false end end
+    end
+
+    -- 8) УЛИКИ / КРОВЬ / ПРЕДМЕТЫ
+    if G.BS.ClueESP then
+        scanClues(nowT)
+    elseif next(clueHL) ~= nil then
+        clearClues()
+    end
+
+    -- ЦИФРЫ УРОНА
+    for i = #dmgNums, 1, -1 do
+        local d = dmgNums[i]
+        local age = nowT - d.t0
+        if age > 1 or not d.obj then
+            if d.obj then pcall(function() d.obj:Remove() end) end
+            table.remove(dmgNums, i)
+        else
+            local sp = vProj(cam, d.pos + Vector3.new(0, age * 1.5, 0))
+            if sp and sp.Z > 0 then
+                d.obj.Position = Vector2.new(sp.X, sp.Y)
+                d.obj.Transparency = age
+                d.obj.Visible = true
+            else
+                d.obj.Visible = false
+            end
+        end
+    end
+
+    -- СТРЕЛКИ ЗВУКА
+    local sIdx = 0
+    for _, m in ipairs(soundMarks) do
+        if (nowT - m.t) <= 10 and m.pos then
+            sIdx = sIdx + 1
+            if sIdx > 8 then break end
+            local l = soundArrows[sIdx]
+            if not l then l = vLine(); soundArrows[sIdx] = l end
+            local sp = vProj(cam, m.pos)
+            local onScreen = sp and sp.Z > 0
+                and sp.X >= 0 and sp.X <= vp.X and sp.Y >= 0 and sp.Y <= vp.Y
+            if onScreen then
+                vHideLine(l)
+            else
+                local dir
+                if sp and sp.Z > 0 then
+                    dir = Vector2.new(sp.X - cx, sp.Y - cy)
+                else
+                    dir = Vector2.new(m.pos.X - camPos.X, m.pos.Z - camPos.Z)
+                end
+                local mag = dir.Magnitude
+                if mag < 0.001 then dir = Vector2.new(0, -1); mag = 1 end
+                local ux, uy = dir.X / mag, dir.Y / mag
+                local margin = 40
+                local reach = math.min(cx, cy) - margin
+                if reach < 10 then reach = 10 end
+                local ax = math.clamp(cx + ux * reach, margin, vp.X - margin)
+                local ay = math.clamp(cy + uy * reach, margin, vp.Y - margin)
+                vSetLine(l, Vector2.new(ax, ay), Vector2.new(ax + ux * 12, ay + uy * 12),
+                    safeColor(G.BS.SoundArrowColor, Color3.new(0, 1, 0.5)), 2)
+            end
+        end
+    end
+    for i = sIdx + 1, #soundArrows do vHideLine(soundArrows[i]) end
+
+    -- ПОЛОСКА СТАМИНЫ
+    if G.BS.StaminaBar and myRoot and staminaBg and staminaFg then
+        local cur, max = readStamina()
+        if cur and max and max > 0 then
+            local pct = math.clamp(cur / max, 0, 1)
+            local w, h = 200, 6
+            local x = vp.X * 0.5 - w * 0.5
+            local y = vp.Y - 60
+            staminaBg.Position = Vector2.new(x, y)
+            staminaBg.Size = Vector2.new(w, h)
+            staminaBg.Color = Color3.new(0, 0, 0)
+            staminaBg.Filled = true
+            staminaBg.Visible = true
+            staminaFg.Position = Vector2.new(x, y)
+            staminaFg.Size = Vector2.new(math.max(1, w * pct), h)
+            staminaFg.Color = Color3.new(0.2, 0.8, 1)
+            staminaFg.Filled = true
+            staminaFg.Visible = true
+        else
+            vHideSquare(staminaBg); vHideSquare(staminaFg)
+        end
+    else
+        vHideSquare(staminaBg); vHideSquare(staminaFg)
+    end
+
+    -- ПОЛОСКА ПАТРОНОВ
+    if G.BS.AmmoBar and ammoBg and ammoFg then
+        local cur, max = G.BS.ReadAmmo()
+        if cur and max and max > 0 then
+            local pct = math.clamp(cur / max, 0, 1)
+            local w, h = 200, 6
+            local x = vp.X * 0.5 - w * 0.5
+            local y = vp.Y - 74
+            ammoBg.Position = Vector2.new(x, y)
+            ammoBg.Size = Vector2.new(w, h)
+            ammoBg.Color = Color3.new(0, 0, 0)
+            ammoBg.Filled = true
+            ammoBg.Visible = true
+            ammoFg.Position = Vector2.new(x, y)
+            ammoFg.Size = Vector2.new(math.max(1, w * pct), h)
+            ammoFg.Color = Color3.new(1, 0.5, 0)
+            ammoFg.Filled = true
+            ammoFg.Visible = true
+        else
+            vHideSquare(ammoBg); vHideSquare(ammoFg)
+        end
+    else
+        vHideSquare(ammoBg); vHideSquare(ammoFg)
+    end
+
+    -- МИНИКАРТА
+    if G.BS.Minimap and myRoot and minimapBg then
+        local size = tonumber(G.BS.MinimapSize) or 160
+        local mx, my = vp.X - size - 20, 20
+        minimapBg.Position = Vector2.new(mx, my)
+        minimapBg.Size = Vector2.new(size, size)
+        minimapBg.Color = Color3.new(0, 0, 0)
+        minimapBg.Filled = true
+        minimapBg.Transparency = 0.5
+        minimapBg.Visible = true
+        if minimapBorder then
+            minimapBorder.Position = Vector2.new(mx, my)
+            minimapBorder.Size = Vector2.new(size, size)
+            minimapBorder.Color = Color3.new(1, 1, 1)
+            minimapBorder.Filled = false
+            minimapBorder.Thickness = 1
+            minimapBorder.Visible = true
+        end
+        local scale = 0.5
+        local cx0, cy0 = mx + size * 0.5, my + size * 0.5
+        if minimapSelf then
+            minimapSelf.Position = Vector2.new(cx0, cy0)
+            minimapSelf.Radius = 3
+            minimapSelf.Color = Color3.new(0, 1, 0)
+            minimapSelf.Filled = true
+            minimapSelf.Visible = G.BS.MinimapSelf ~= false
+        end
+        local dotIdx = 0
+        for _, e in pairs(by) do
+            local ch = e.char
+            local root = ch and ch:FindFirstChild("HumanoidRootPart")
+            if root and root.Parent then
+                local rel = root.Position - myRoot.Position
+                local px = cx0 + rel.X * scale
+                local py = cy0 + rel.Z * scale
+                if px >= mx and px <= mx + size and py >= my and py <= my + size then
+                    dotIdx = dotIdx + 1
+                    if dotIdx <= 20 then
+                        local d = minimapDots[dotIdx]
+                        if not d then d = vCircle(); minimapDots[dotIdx] = d end
+                        if d then
+                            d.Position = Vector2.new(px, py)
+                            d.Radius = 3
+                            d.Color = e.role == "vampire" and Color3.new(1, 0, 0)
+                                or e.role == "hunter" and Color3.new(0, 0.7, 1)
+                                or Color3.new(1, 1, 1)
+                            d.Filled = true
+                            d.Visible = true
+                        end
+                    end
+                end
+            end
+        end
+        for i = dotIdx + 1, #minimapDots do vHideCircle(minimapDots[i]) end
+    else
+        vHideSquare(minimapBg)
+        vHideSquare(minimapBorder)
+        vHideCircle(minimapSelf)
+        for _, d in pairs(minimapDots) do vHideCircle(d) end
     end
 
     -- очистка данных ушедших игроков
@@ -2005,6 +2527,19 @@ if Remotes then
                         -- ХИТМАРКЕР: урон пришёл с сервера = попадание
                         -- реально засчиталось. Плюс строка в ленту событий.
                         hitMarkAt = os.clock()
+                        -- ЦИФРЫ УРОНА
+                        if G.BS.VIS and G.BS.VIS.spawnDmgNum then
+                            local tpart = bulletListTarget
+                            if tpart and tpart.Parent then
+                                local amount = nil
+                                if type(a0) == "table" then
+                                    amount = a0.value or a0.amount
+                                        or a0.damage or a0.dmg
+                                end
+                                if type(amount) ~= "number" then amount = nil end
+                                pcall(G.BS.VIS.spawnDmgNum, tpart.Position, amount)
+                            end
+                        end
                         if not dmgFmt[r.Name] then
                             dmgFmt[r.Name] = true
                             local list = {}
@@ -2342,13 +2877,34 @@ local function updateHud(now)
         roundT = string.format("%d:%02d", math.floor(t / 60), math.floor(t % 60))
     end
     local kills = G.BS.KillCounter and (tonumber(G.BS.Kills) or 0) or "-"
+    local fpsTxt = ""
+    if G.BS.FPSCounter then
+        fpsTxt = string.format(" | FPS: %d", tonumber(G.BS.FPS) or 0)
+    end
+    local coordTxt = ""
+    if G.BS.CoordsTime and myRoot then
+        local p = myRoot.Position
+        coordTxt = string.format(" | X:%.0f Y:%.0f Z:%.0f", p.X, p.Y, p.Z)
+    end
+    local timeTxt = ""
+    if G.BS.CoordsTime then
+        timeTxt = string.format(" | %02d:%02d",
+            tonumber(os.date("%H")) or 0, tonumber(os.date("%M")) or 0)
+    end
+    local pingTxt = ""
+    if G.BS.PingSpeed then
+        pingTxt = string.format(" | пинг: %d ms | скор: %d",
+            tonumber(G.BS.Ping) or 0, tonumber(G.BS.Speed) or 0)
+    end
     local counts
     if G.BS.CountsESP then
-        counts = string.format("\nвремя: %s | убийства: %s | живых: %d/%d",
+        counts = string.format("\nвремя: %s | убийства: %s | живых: %d/%d%s%s%s%s",
             roundT, tostring(kills),
-            tonumber(G.BS.AliveCount) or 0, tonumber(G.BS.PlayerCount) or 0)
+            tonumber(G.BS.AliveCount) or 0, tonumber(G.BS.PlayerCount) or 0,
+            fpsTxt, pingTxt, coordTxt, timeTxt)
     else
-        counts = string.format("\nвремя: %s | убийства: %s", roundT, tostring(kills))
+        counts = string.format("\nвремя: %s | убийства: %s%s%s%s%s",
+            roundT, tostring(kills), fpsTxt, pingTxt, coordTxt, timeTxt)
     end
     local line = string.format(
         "[BS] роль: %s | фаза: %s | патроны: %s | оружие: %s\nцель: %s | танец: %s%s",
@@ -5661,6 +6217,7 @@ local function ncFireWeapon(...)
     -- 1) НАПРАВЛЕНИЕ. Длину НЕ уменьшаем: если игра берёт из неё
     --    дальность полёта (или вообще складывает origin + vector как
     --    конечную точку), короткий вектор = короткий выстрел.
+    G.BS.LastShotAt = os.clock()
     if dirIdx then
         local base = dirLen or 1
         if base < aimDist then base = aimDist end
@@ -6501,6 +7058,7 @@ local conn = RunService.RenderStepped:Connect(function()
                     if not e.box then e.box = makeBox() end
                     if e.box and root then
                         e.box.color = color
+                        e.box.corner = (G.BS.CornerBoxes and role == "vampire") and true or false
                         drawBox(e.box, root, cam)
                     end
                 elseif e.box then
@@ -6548,7 +7106,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.26",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.27",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -6628,6 +7186,12 @@ HUD.CreateSlider({ Name = "Длина прицела", Flag = "BS_CrosshairLen",
     Suffix = " px", Callback = function(v) G.BS.CrosshairLen = v end })
 HUD.CreateColorPicker({ Name = "Цвет прицела", Flag = "BS_CrosshairColor",
     Color = G.BS.CrosshairColor, Callback = function(c) G.BS.CrosshairColor = c end })
+HUD.CreateToggle({ Name = "Отдача прицела при выстреле", Flag = "BS_RecoilCrosshair",
+    CurrentValue = G.BS.RecoilCrosshair ~= false,
+    Callback = function(v) G.BS.RecoilCrosshair = v end })
+HUD.CreateSlider({ Name = "Сила отдачи прицела", Flag = "BS_RecoilAmount",
+    Range = {0, 24}, Increment = 1, CurrentValue = G.BS.RecoilAmount or 8,
+    Suffix = " px", Callback = function(v) G.BS.RecoilAmount = v end })
 HUD.CreateToggle({ Name = "Линия к цели (трейсер)", Flag = "BS_AimLine",
     CurrentValue = G.BS.AimLine ~= false,
     Callback = function(v) G.BS.AimLine = v end })
@@ -6692,6 +7256,64 @@ HUD.CreateToggle({ Name = "Счётчик убийств", Flag = "BS_KillCounte
 HUD.CreateToggle({ Name = "Счётчики живых/всего", Flag = "BS_CountsESP",
     CurrentValue = G.BS.CountsESP ~= false,
     Callback = function(v) G.BS.CountsESP = v end })
+HUD.CreateSection("Стиль и подсветка")
+HUD.CreateToggle({ Name = "Рамка вокруг головы", Flag = "BS_HeadBox",
+    CurrentValue = G.BS.HeadBox ~= false,
+    Callback = function(v) G.BS.HeadBox = v end })
+HUD.CreateSlider({ Name = "Размер рамки головы", Flag = "BS_HeadBoxSize",
+    Range = {10, 50}, Increment = 1, CurrentValue = G.BS.HeadBoxSize or 22,
+    Suffix = " px", Callback = function(v) G.BS.HeadBoxSize = v end })
+HUD.CreateColorPicker({ Name = "Цвет рамки головы", Flag = "BS_HeadBoxColor",
+    Color = G.BS.HeadBoxColor, Callback = function(c) G.BS.HeadBoxColor = c end })
+HUD.CreateToggle({ Name = "Цифры урона", Flag = "BS_DamageNumbers",
+    CurrentValue = G.BS.DamageNumbers ~= false,
+    Callback = function(v) G.BS.DamageNumbers = v end })
+HUD.CreateColorPicker({ Name = "Цвет цифр урона", Flag = "BS_DmgNumColor",
+    Color = G.BS.DmgNumColor, Callback = function(c) G.BS.DmgNumColor = c end })
+HUD.CreateToggle({ Name = "Ромб для вампиров", Flag = "BS_CornerBoxes",
+    CurrentValue = G.BS.CornerBoxes == true,
+    Callback = function(v) G.BS.CornerBoxes = v end })
+HUD.CreateToggle({ Name = "Стрелки звука", Flag = "BS_SoundArrows",
+    CurrentValue = G.BS.SoundArrows ~= false,
+    Callback = function(v) G.BS.SoundArrows = v end })
+HUD.CreateColorPicker({ Name = "Цвет стрелок звука", Flag = "BS_SoundArrowColor",
+    Color = G.BS.SoundArrowColor, Callback = function(c) G.BS.SoundArrowColor = c end })
+HUD.CreateToggle({ Name = "Полоска стамины", Flag = "BS_StaminaBar",
+    CurrentValue = G.BS.StaminaBar ~= false,
+    Callback = function(v) G.BS.StaminaBar = v end })
+HUD.CreateToggle({ Name = "Полоска патронов", Flag = "BS_AmmoBar",
+    CurrentValue = G.BS.AmmoBar ~= false,
+    Callback = function(v) G.BS.AmmoBar = v end })
+HUD.CreateSection("Метрики и миникарта")
+HUD.CreateToggle({ Name = "FPS в HUD", Flag = "BS_FPSCounter",
+    CurrentValue = G.BS.FPSCounter ~= false,
+    Callback = function(v) G.BS.FPSCounter = v end })
+HUD.CreateToggle({ Name = "Координаты и время в HUD", Flag = "BS_CoordsTime",
+    CurrentValue = G.BS.CoordsTime ~= false,
+    Callback = function(v) G.BS.CoordsTime = v end })
+HUD.CreateToggle({ Name = "Миникарта", Flag = "BS_Minimap",
+    CurrentValue = G.BS.Minimap == true,
+    Callback = function(v) G.BS.Minimap = v end })
+HUD.CreateSlider({ Name = "Размер миникарты", Flag = "BS_MinimapSize",
+    Range = {100, 300}, Increment = 10, CurrentValue = G.BS.MinimapSize or 160,
+    Suffix = " px", Callback = function(v) G.BS.MinimapSize = v end })
+HUD.CreateToggle({ Name = "Точка игрока на миникарте", Flag = "BS_MinimapSelf",
+    CurrentValue = G.BS.MinimapSelf ~= false,
+    Callback = function(v) G.BS.MinimapSelf = v end })
+HUD.CreateToggle({ Name = "Пинг и скорость в HUD", Flag = "BS_PingSpeed",
+    CurrentValue = G.BS.PingSpeed ~= false,
+    Callback = function(v) G.BS.PingSpeed = v end })
+HUD.CreateToggle({ Name = "Затухание коробок по дистанции", Flag = "BS_DistFade",
+    CurrentValue = G.BS.DistFade == true,
+    Callback = function(v) G.BS.DistFade = v end })
+HUD.CreateToggle({ Name = "Цифры HP на полоске", Flag = "BS_HPBarText",
+    CurrentValue = G.BS.HPBarText ~= false,
+    Callback = function(v) G.BS.HPBarText = v end })
+HUD.CreateToggle({ Name = "Подсветка улик / крови", Flag = "BS_ClueESP",
+    CurrentValue = G.BS.ClueESP == true,
+    Callback = function(v) G.BS.ClueESP = v end })
+HUD.CreateColorPicker({ Name = "Цвет улик", Flag = "BS_ClueColor",
+    Color = G.BS.ClueColor, Callback = function(c) G.BS.ClueColor = c end })
 
 -- Кнопок-выключателей больше нет: везде обычные тумблеры Rayfield.
 
@@ -7197,6 +7819,8 @@ G.BS_Stop = function()
     if TargetHL then pcall(function() TargetHL:Destroy() end) end
     if aimDot then pcall(function() aimDot:Remove() end) end
     if Overlay then pcall(function() Overlay:Destroy() end) end
+    -- снять все Drawing/Highlight визуалов (прицел, миникарта, полоски...)
+    if G.BS.VIS and G.BS.VIS.destroy then pcall(G.BS.VIS.destroy) end
     -- звуковые метки и HUD тоже снимаем, иначе останутся висеть
     for i = 1, #noiseRings do pcall(function() noiseRings[i]:Remove() end) end
     for i = 1, #noiseLabels do pcall(function() noiseLabels[i]:Remove() end) end
@@ -7248,7 +7872,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.26 остановлен")
+    print("[BS HUB] v11.27 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -7356,7 +7980,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.26 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.27 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
