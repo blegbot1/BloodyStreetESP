@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.24
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.25
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -1483,6 +1483,22 @@ if Remotes then
                             task.delay(1.5, function()
                                 if tok == summaryToken then pcall(ROLES.summary) end
                             end)
+                            -- ТАНЕЦ: новый раунд может снести анимацию.
+                            -- Перезапускаем танец на старте раунда.
+                            if G.BS.DanceOn
+                               and (G.BS.RoundPhase == "Active"
+                                    or G.BS.RoundPhase == "RoleAssign") then
+                                local now = os.clock()
+                                if now - (G.BS._danceRestartAt or 0) > 1.5 then
+                                    G.BS._danceRestartAt = now
+                                    task.delay(1, function()
+                                        if not STOPPED and G.BS.DanceOn
+                                           and G.BS.DanceRestart then
+                                            pcall(G.BS.DanceRestart)
+                                        end
+                                    end)
+                                end
+                            end
                         end
                     end
                     -- RoleAssigned
@@ -2784,6 +2800,12 @@ local function setDance(on, silent)
     else
         stopDance()
     end
+end
+
+-- Перезапуск танца при смене раунда/респавне (вызывается из фазы и
+-- CharacterAdded через G.BS, чтобы не держать ссылку на setDance).
+G.BS.DanceRestart = function()
+    if dance.on then pcall(setDance, true) end
 end
 
 local function pickDance(id, label)
@@ -6086,7 +6108,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.24",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.25",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -6709,7 +6731,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.24 остановлен")
+    print("[BS HUB] v11.25 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -6724,6 +6746,13 @@ task.spawn(function()
             if STOPPED then return end
             pcall(installDamageHooks)
             pcall(scan)
+            -- ТАНЕЦ: персонаж переродился (новый раунд/респавн) — старый
+            -- трек потерян. Поднимаем танец заново, если он был включён.
+            if dance.on then
+                task.delay(0.3, function()
+                    if not STOPPED and dance.on then pcall(setDance, true) end
+                end)
+            end
         end)
     end
     if G.BS.ScanOnStart then
@@ -6810,7 +6839,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.24 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.25 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
