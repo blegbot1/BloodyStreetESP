@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.27
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.28
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -219,6 +219,10 @@ G.BS.CrosshairLen  = tonumber(G.BS.CrosshairLen) or 10
 G.BS.CrosshairColor = safeColor(G.BS.CrosshairColor, Color3.new(1, 1, 1))
 G.BS.RecoilCrosshair = G.BS.RecoilCrosshair ~= false
 G.BS.RecoilAmount = tonumber(G.BS.RecoilAmount) or 8
+G.BS.ShotTracer       = G.BS.ShotTracer ~= false
+G.BS.ShotTracerColor  = safeColor(G.BS.ShotTracerColor, Color3.new(1, 0.4, 0))
+G.BS.ShotTracerTime   = tonumber(G.BS.ShotTracerTime) or 0.25
+G.BS.CrosshairHitFlash = G.BS.CrosshairHitFlash ~= false
 G.BS.AimLine       = G.BS.AimLine ~= false
 G.BS.AimLineColor  = safeColor(G.BS.AimLineColor, Color3.new(1, 0, 0))
 G.BS.DistCircle    = G.BS.DistCircle or false
@@ -264,6 +268,9 @@ G.BS.DistFade      = G.BS.DistFade or false
 G.BS.HPBarText     = G.BS.HPBarText ~= false
 G.BS.ClueESP       = G.BS.ClueESP or false
 G.BS.ClueColor     = safeColor(G.BS.ClueColor, Color3.new(0.6, 1, 0.2))
+G.BS.LowHPWarn     = G.BS.LowHPWarn or false
+G.BS.LowHPThreshold = tonumber(G.BS.LowHPThreshold) or 30
+G.BS.LowHPColor    = safeColor(G.BS.LowHPColor, Color3.new(1, 0, 0))
 -- МОНЕТЫ (Workspace.CoinPickups). Сбор через ремоут игры. Если точный
 -- ремоут неизвестен — включи «НАУЧИТЬ СБОР МОНЕТ» и подбери одну
 -- монету руками: скрипт запомнит ремоут и аргументы.
@@ -1073,6 +1080,13 @@ local staminaBg = vSquare()
 local staminaFg = vSquare()
 local ammoBg = vSquare()
 local ammoFg = vSquare()
+local tracerLine = vLine()
+local tracerT0 = 0
+local tracerFrom, tracerTo
+local lowHpTop = vSquare()
+local lowHpBottom = vSquare()
+local lowHpLeft = vSquare()
+local lowHpRight = vSquare()
 local fpsFrames = {}
 local lastFpsT = 0
 local fpsValue = 0
@@ -1256,6 +1270,9 @@ function VIS.destroy()
     for i = 1, #minimapDots do rm(minimapDots[i]) end
     rm(minimapBg); rm(minimapBorder); rm(minimapSelf)
     rm(staminaBg); rm(staminaFg); rm(ammoBg); rm(ammoFg)
+    rm(tracerLine)
+    tracerFrom, tracerTo, tracerT0 = nil, nil, 0
+    rm(lowHpTop); rm(lowHpBottom); rm(lowHpLeft); rm(lowHpRight)
     for _, tbl in pairs({ chams, crateHL, coinHL, clueHL }) do
         for _, h in pairs(tbl) do
             pcall(function() h:Destroy() end)
@@ -1290,6 +1307,13 @@ function VIS.spawnDmgNum(pos, amount)
         local old = table.remove(dmgNums, 1)
         pcall(function() old.obj:Remove() end)
     end
+end
+
+-- Трейсер выстрела: короткая линия от ствола/головы до точки попадания.
+function VIS.spawnTracer(from, to)
+    if not G.BS.ShotTracer or not from or not to then return end
+    tracerFrom, tracerTo = from, to
+    tracerT0 = os.clock()
 end
 
 function VIS.update(cam, myRoot, by, locked)
@@ -1331,6 +1355,10 @@ function VIS.update(cam, myRoot, by, locked)
             end
         end
         local col = safeColor(G.BS.CrosshairColor, Color3.new(1, 1, 1))
+        if G.BS.CrosshairHitFlash and type(hitMarkAt) == "number"
+           and hitMarkAt > 0 and (nowT - hitMarkAt) < 0.12 then
+            col = safeColor(G.BS.HitMarkColor, Color3.new(1, 0, 0))
+        end
         vSetLine(crossLines[1], Vector2.new(cx - gap - len, cy), Vector2.new(cx - gap, cy), col, 1)
         vSetLine(crossLines[2], Vector2.new(cx + gap, cy), Vector2.new(cx + gap + len, cy), col, 1)
         vSetLine(crossLines[3], Vector2.new(cx, cy - gap - len), Vector2.new(cx, cy - gap), col, 1)
@@ -1358,6 +1386,32 @@ function VIS.update(cam, myRoot, by, locked)
         end
     else
         vHideLine(aimLine)
+    end
+
+    -- 2.5) ТРЕЙСЕР ВЫСТРЕЛА (от ствола до попадания)
+    if G.BS.ShotTracer and tracerFrom and tracerTo and tracerT0 > 0 then
+        local age = nowT - tracerT0
+        local life = tonumber(G.BS.ShotTracerTime) or 0.25
+        if age >= 0 and age <= life then
+            local a = vProj(cam, tracerFrom)
+            local b = vProj(cam, tracerTo)
+            if a and b and a.Z > 0 and b.Z > 0 then
+                if tracerLine then
+                    tracerLine.Transparency = math.clamp(age / life, 0, 1)
+                end
+                vSetLine(tracerLine, Vector2.new(a.X, a.Y), Vector2.new(b.X, b.Y),
+                    safeColor(G.BS.ShotTracerColor, Color3.new(1, 0.4, 0)), 2)
+            else
+                vHideLine(tracerLine)
+            end
+        else
+            vHideLine(tracerLine)
+            if age > life then
+                tracerFrom, tracerTo, tracerT0 = nil, nil, 0
+            end
+        end
+    else
+        vHideLine(tracerLine)
     end
 
     -- 3) КРУГ ДИСТАНЦИИ ВОКРУГ ИГРОКА
@@ -1808,6 +1862,40 @@ function VIS.update(cam, myRoot, by, locked)
         vHideSquare(minimapBorder)
         vHideCircle(minimapSelf)
         for _, d in pairs(minimapDots) do vHideCircle(d) end
+    end
+
+    -- КРАСНАЯ РАМКА ПРИ НИЗКОМ HP
+    if G.BS.LowHPWarn and lowHpTop and lowHpBottom and lowHpLeft and lowHpRight then
+        local ch = LP and LP.Character
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        local pct = (hum and hum.MaxHealth and hum.MaxHealth > 0)
+            and (hum.Health / hum.MaxHealth) or 1
+        local th = (tonumber(G.BS.LowHPThreshold) or 30) / 100
+        if hum and hum.Health > 0 and pct <= th then
+            local tr = math.clamp(0.75 - (pct / math.max(th, 0.01)) * 0.45, 0.3, 0.75)
+            local col = safeColor(G.BS.LowHPColor, Color3.new(1, 0, 0))
+            local edge = 5
+            lowHpTop.Position = Vector2.new(0, 0)
+            lowHpTop.Size = Vector2.new(vp.X, edge)
+            lowHpBottom.Position = Vector2.new(0, vp.Y - edge)
+            lowHpBottom.Size = Vector2.new(vp.X, edge)
+            lowHpLeft.Position = Vector2.new(0, 0)
+            lowHpLeft.Size = Vector2.new(edge, vp.Y)
+            lowHpRight.Position = Vector2.new(vp.X - edge, 0)
+            lowHpRight.Size = Vector2.new(edge, vp.Y)
+            for _, s in ipairs({ lowHpTop, lowHpBottom, lowHpLeft, lowHpRight }) do
+                s.Color = col
+                s.Filled = true
+                s.Transparency = tr
+                s.Visible = true
+            end
+        else
+            vHideSquare(lowHpTop); vHideSquare(lowHpBottom)
+            vHideSquare(lowHpLeft); vHideSquare(lowHpRight)
+        end
+    else
+        vHideSquare(lowHpTop); vHideSquare(lowHpBottom)
+        vHideSquare(lowHpLeft); vHideSquare(lowHpRight)
     end
 
     -- очистка данных ушедших игроков
@@ -2527,10 +2615,10 @@ if Remotes then
                         -- ХИТМАРКЕР: урон пришёл с сервера = попадание
                         -- реально засчиталось. Плюс строка в ленту событий.
                         hitMarkAt = os.clock()
-                        -- ЦИФРЫ УРОНА
-                        if G.BS.VIS and G.BS.VIS.spawnDmgNum then
-                            local tpart = bulletListTarget
-                            if tpart and tpart.Parent then
+                        -- ЦИФРЫ УРОНА + ТРЕЙСЕР ВЫСТРЕЛА
+                        local tpart = bulletListTarget
+                        if tpart and tpart.Parent then
+                            if G.BS.VIS and G.BS.VIS.spawnDmgNum then
                                 local amount = nil
                                 if type(a0) == "table" then
                                     amount = a0.value or a0.amount
@@ -2538,6 +2626,22 @@ if Remotes then
                                 end
                                 if type(amount) ~= "number" then amount = nil end
                                 pcall(G.BS.VIS.spawnDmgNum, tpart.Position, amount)
+                            end
+                            if G.BS.VIS and G.BS.VIS.spawnTracer then
+                                local ch = LP and LP.Character
+                                local tool = ch and ch:FindFirstChildOfClass("Tool")
+                                local handle = tool and tool:FindFirstChild("Handle")
+                                local from = handle and handle.Position
+                                if not from then
+                                    local head = ch and ch:FindFirstChild("Head")
+                                    from = head and head.Position
+                                end
+                                if not from and workspace.CurrentCamera then
+                                    from = workspace.CurrentCamera.CFrame.Position
+                                end
+                                if from then
+                                    pcall(G.BS.VIS.spawnTracer, from, tpart.Position)
+                                end
                             end
                         end
                         if not dmgFmt[r.Name] then
@@ -7106,7 +7210,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.27",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.28",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -7192,6 +7296,17 @@ HUD.CreateToggle({ Name = "Отдача прицела при выстреле",
 HUD.CreateSlider({ Name = "Сила отдачи прицела", Flag = "BS_RecoilAmount",
     Range = {0, 24}, Increment = 1, CurrentValue = G.BS.RecoilAmount or 8,
     Suffix = " px", Callback = function(v) G.BS.RecoilAmount = v end })
+HUD.CreateToggle({ Name = "Трейсер выстрела", Flag = "BS_ShotTracer",
+    CurrentValue = G.BS.ShotTracer ~= false,
+    Callback = function(v) G.BS.ShotTracer = v end })
+HUD.CreateColorPicker({ Name = "Цвет трейсера выстрела", Flag = "BS_ShotTracerColor",
+    Color = G.BS.ShotTracerColor, Callback = function(c) G.BS.ShotTracerColor = c end })
+HUD.CreateSlider({ Name = "Время трейсера выстрела", Flag = "BS_ShotTracerTime",
+    Range = {0.05, 1}, Increment = 0.05, CurrentValue = G.BS.ShotTracerTime or 0.25,
+    Suffix = " c", Callback = function(v) G.BS.ShotTracerTime = v end })
+HUD.CreateToggle({ Name = "Вспышка прицела при попадании", Flag = "BS_CrosshairHitFlash",
+    CurrentValue = G.BS.CrosshairHitFlash ~= false,
+    Callback = function(v) G.BS.CrosshairHitFlash = v end })
 HUD.CreateToggle({ Name = "Линия к цели (трейсер)", Flag = "BS_AimLine",
     CurrentValue = G.BS.AimLine ~= false,
     Callback = function(v) G.BS.AimLine = v end })
@@ -7309,6 +7424,14 @@ HUD.CreateToggle({ Name = "Затухание коробок по дистанц
 HUD.CreateToggle({ Name = "Цифры HP на полоске", Flag = "BS_HPBarText",
     CurrentValue = G.BS.HPBarText ~= false,
     Callback = function(v) G.BS.HPBarText = v end })
+HUD.CreateToggle({ Name = "Красная рамка при низком HP", Flag = "BS_LowHPWarn",
+    CurrentValue = G.BS.LowHPWarn == true,
+    Callback = function(v) G.BS.LowHPWarn = v end })
+HUD.CreateSlider({ Name = "Порог HP для рамки", Flag = "BS_LowHPThreshold",
+    Range = {5, 60}, Increment = 5, CurrentValue = G.BS.LowHPThreshold or 30,
+    Suffix = " %", Callback = function(v) G.BS.LowHPThreshold = v end })
+HUD.CreateColorPicker({ Name = "Цвет рамки низкого HP", Flag = "BS_LowHPColor",
+    Color = G.BS.LowHPColor, Callback = function(c) G.BS.LowHPColor = c end })
 HUD.CreateToggle({ Name = "Подсветка улик / крови", Flag = "BS_ClueESP",
     CurrentValue = G.BS.ClueESP == true,
     Callback = function(v) G.BS.ClueESP = v end })
@@ -7872,7 +7995,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.27 остановлен")
+    print("[BS HUB] v11.28 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -7980,7 +8103,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.27 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.28 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
