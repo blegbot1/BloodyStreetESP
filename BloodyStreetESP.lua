@@ -1,21 +1,18 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.28
---  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК.
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.29
+--  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
 --  Кнопка ищет ближайший SupplyCrate, пробует ProximityPrompt,
 --  ClickDetector и Touched, при необходимости телепортируется к ящику
 --  и возвращает на место. Есть авто-пополнение рядом с ящиком.
 --
---  ESP (вкладка ESP): 3D-коробки, ники, дистанция, HP, цвет по
---  ролям (вампир / хантер / неизвестный), сканер игры.
---  (Блоки «главный RGB», «Точность ролей», «Выживание» и «Прострел»
---   удалены по просьбе — GUI их больше не показывает.)
+--  МОНЕТЫ (вкладка ИГРОК): магнит физически тащит CoinPickup к игроку
+--  (PivotTo/CFrame), затем дёргает ProximityPrompt и известный ремоут.
 --
---  ВИЗУАЛЫ (вкладка HUD): прицел, трейсер, скелет, полоски HP,
---  стрелки за экраном, chams, рамка головы, ромб вампиров, цифры
---  урона, стрелки звука, миникарта, полоски стамины/патронов,
---  FPS/пинг/скорость/координаты, затухание коробок, улики.
+--  ESP (вкладка ESP): 3D/2D-коробки, ники, дистанция, HP, цвет по
+--  ролям, скелет, полоски HP, рамка головы, цифры урона, стрелки,
+--  snaplines, аура под вампирами, трейсеры, объекты, миникарта.
 --
 --  КЛИЕНТ АИМ (вкладка AIM): ПОДМЕНА ПАТРОНА. Remotes.FireWeapon
 --  перехватывается через глобальный __namecall, и аргументы
@@ -23,8 +20,8 @@
 --  АИМЛОК: камера сама ведётся на цель, пока в руках оружие и цель
 --  внутри круга (ПОВ). Работает ВСЕГДА, а не только пока зажат огонь;
 --  целиться начинает, как только игрок появился впереди в круге.
---  ПРОСТРЕЛ: по умолчанию ВКЛ — стены не мешают патрону; камера
---  сквозь стены не ведётся (AimLockNoWall).
+--  ПРОСТРЕЛ: всегда ВКЛ — при цели за стеной скрипт временно переносит
+--  персонажа за цель, ждёт репликации CFrame и только потом стреляет.
 --
 --  КАК ЧИТАЕТСЯ РОЛЬ (сервер атрибут -> 100% с первого кадра):
 --  У КАЖДОГО игрока есть атрибут player.Role (None / Vampire /
@@ -124,7 +121,7 @@ G.BS.VampColor   = safeColor(G.BS.VampColor, Color3.fromRGB(255, 55, 55))
 G.BS.HunterESP   = G.BS.HunterESP   ~= false
 G.BS.HunterColor = safeColor(G.BS.HunterColor, Color3.fromRGB(70, 190, 255))
 G.BS.OnlyVamps   = G.BS.OnlyVamps   or false
-G.BS.ShowUnknown = G.BS.ShowUnknown ~= false
+G.BS.ShowUnknown = false
 G.BS.Names       = G.BS.Names       ~= false
 G.BS.ShowDist    = G.BS.ShowDist    ~= false
 G.BS.ShowHP      = G.BS.ShowHP      ~= false
@@ -135,6 +132,10 @@ G.BS.MaxDist     = G.BS.MaxDist     or 0
 -- 1 = заливки нет (остаётся только контур). Контур красится всегда.
 -- Меняется на ходу: getgenv().BS.FillTransparency = 0.4
 G.BS.FillTransparency = tonumber(G.BS.FillTransparency) or 0.7
+-- Единый переключатель подсветки тела. Раньше рядом с ней была отдельная
+-- «Chams», которая вешала ВТОРОЙ Highlight на того же игрока — тело
+-- краснело вдвое. Теперь chams = существующий e.hl, дубля нет.
+G.BS.BodyHighlight = G.BS.BodyHighlight ~= false
 
 -- ---------- РОЛИ ----------
 G.BS.RoleSticks  = G.BS.RoleSticks  or 1
@@ -191,25 +192,25 @@ G.BS.InfStamina  = G.BS.InfStamina  or false
 -- клиентом его не наполнить - сервер всё равно не засчитывает
 -- выстрел (проверено на игре). Зато есть кулдаун: он клиентский, и его
 -- можно снять. Config.Combat.WEAPON_COOLDOWN = 0.3.
-G.BS.NoCooldown   = G.BS.NoCooldown ~= false
+-- «Без кулдауна» убрано из GUI по просьбе: по умолчанию выключено.
+G.BS.NoCooldown   = G.BS.NoCooldown == true
 -- СТАТУС ЦЕЛИ в ESP (сбит/раскрыт/оглушён) + ХИТМАРКЕР при попадании
 -- + ЛЕНТА СОБЫТИЙ (раунд, разоблачения, смерти) в углу экрана.
 G.BS.ShowStatus   = G.BS.ShowStatus ~= false
 G.BS.HitMark      = G.BS.HitMark ~= false
 G.BS.HitMarkColor = safeColor(G.BS.HitMarkColor, Color3.new(1, 0.25, 0.25))
 G.BS.HitMarkLife  = tonumber(G.BS.HitMarkLife) or 0.25
-G.BS.EventsOn     = G.BS.EventsOn ~= false
+G.BS.EventsOn     = false   -- HUD-лента удалена
 G.BS.SpinSpeed = tonumber(G.BS.SpinSpeed) or 50
 G.BS.SpinOnlyStill = nil   -- тумблер удалён: спин крутит и на ходу
 -- УСКОРЕНИЕ В ПРЫЖКЕ: при каждом прыжке кратковременный рывок.
 -- Ускоритель по Shift удалён по просьбе. V2 - чтобы старые хэндлеры
 -- (они читают JumpBoost) не срабатывали вместе с новым.
-G.BS.JumpBoostV2   = G.BS.JumpBoostV2 ~= false
+-- Блок прыжка удалён из GUI по просьбе: фичи выключены по умолчанию.
+G.BS.JumpBoostV2   = false
 G.BS.JumpBoostMul  = tonumber(G.BS.JumpBoostMul) or 1.7
 G.BS.JumpBoostTime = tonumber(G.BS.JumpBoostTime) or 0.8
--- СИЛА ПРЫЖКА (высота): отдельный множитель для JumpPower/JumpHeight.
--- По умолчанию 1.5 x — прыжок сразу выше; ползунком до 10 x.
-G.BS.JumpPowerOn   = G.BS.JumpPowerOn ~= false
+G.BS.JumpPowerOn   = false
 G.BS.JumpPowerMul  = tonumber(G.BS.JumpPowerMul) or 1.5
 -- ДОПОЛНИТЕЛЬНЫЕ ВИЗУАЛЫ (модуль G.BS.VIS): трейсеры, скелет, HP,
 -- стрелки за экраном, chams, прицел, круги, подсветка ящиков/монет.
@@ -225,27 +226,27 @@ G.BS.ShotTracerTime   = tonumber(G.BS.ShotTracerTime) or 0.25
 G.BS.CrosshairHitFlash = G.BS.CrosshairHitFlash ~= false
 G.BS.AimLine       = G.BS.AimLine ~= false
 G.BS.AimLineColor  = safeColor(G.BS.AimLineColor, Color3.new(1, 0, 0))
-G.BS.DistCircle    = G.BS.DistCircle or false
-G.BS.DistCircleRadius = tonumber(G.BS.DistCircleRadius) or 30
-G.BS.DistCircleColor  = safeColor(G.BS.DistCircleColor, Color3.new(1, 1, 1))
 G.BS.Skeleton      = G.BS.Skeleton or false
 G.BS.SkeletonThick = tonumber(G.BS.SkeletonThick) or 1
 G.BS.HealthBars    = G.BS.HealthBars ~= false
 G.BS.HealthBarWidth  = tonumber(G.BS.HealthBarWidth) or 40
 G.BS.HealthBarHeight = tonumber(G.BS.HealthBarHeight) or 4
 G.BS.OffArrows     = G.BS.OffArrows ~= false
-G.BS.Chams         = G.BS.Chams or false
-G.BS.ChamsFill     = tonumber(G.BS.ChamsFill) or 0.5
-G.BS.ChamsColor    = safeColor(G.BS.ChamsColor, Color3.new(1, 0, 0))
+-- НОВЫЕ ESP-ВИЗУАЛЫ: линии от низа экрана + аура под вампирами.
+G.BS.Snaplines     = G.BS.Snaplines ~= false
+G.BS.SnapThick     = tonumber(G.BS.SnapThick) or 1
+G.BS.VampAura      = G.BS.VampAura ~= false
+G.BS.Box2D         = G.BS.Box2D or false
+G.BS.LabelSize     = tonumber(G.BS.LabelSize) or 13
 G.BS.CrateESP      = G.BS.CrateESP or false
 G.BS.CrateColor    = safeColor(G.BS.CrateColor, Color3.new(1, 1, 0))
 G.BS.CoinESP       = G.BS.CoinESP or false
 G.BS.CoinColor     = safeColor(G.BS.CoinColor, Color3.new(1, 1, 0))
 G.BS.RoleIcons     = G.BS.RoleIcons ~= false
 G.BS.WeaponESP     = G.BS.WeaponESP ~= false
-G.BS.RoundTimer    = G.BS.RoundTimer ~= false
-G.BS.KillCounter   = G.BS.KillCounter ~= false
-G.BS.CountsESP     = G.BS.CountsESP ~= false
+G.BS.RoundTimer    = false
+G.BS.KillCounter   = false
+G.BS.CountsESP     = false
 -- v11.27: ещё визуалы.
 G.BS.HeadBox       = G.BS.HeadBox ~= false
 G.BS.HeadBoxSize   = tonumber(G.BS.HeadBoxSize) or 22
@@ -255,20 +256,20 @@ G.BS.DmgNumColor   = safeColor(G.BS.DmgNumColor, Color3.new(1, 1, 0))
 G.BS.CornerBoxes   = G.BS.CornerBoxes or false
 G.BS.SoundArrows   = G.BS.SoundArrows ~= false
 G.BS.SoundArrowColor = safeColor(G.BS.SoundArrowColor, Color3.new(0, 1, 0.5))
-G.BS.StaminaBar    = G.BS.StaminaBar ~= false
-G.BS.AmmoBar       = G.BS.AmmoBar ~= false
-G.BS.FPSCounter    = G.BS.FPSCounter ~= false
-G.BS.CoordsTime    = G.BS.CoordsTime ~= false
+G.BS.StaminaBar    = false
+G.BS.AmmoBar       = false
+G.BS.FPSCounter    = false
+G.BS.CoordsTime    = false
 G.BS.Minimap       = G.BS.Minimap or false
 G.BS.MinimapSize   = tonumber(G.BS.MinimapSize) or 160
 G.BS.MinimapSelf   = G.BS.MinimapSelf ~= false
 -- v11.27.1: пинг/скорость, затухание коробок, цифры HP, улики.
-G.BS.PingSpeed     = G.BS.PingSpeed ~= false
+G.BS.PingSpeed     = false
 G.BS.DistFade      = G.BS.DistFade or false
 G.BS.HPBarText     = G.BS.HPBarText ~= false
 G.BS.ClueESP       = G.BS.ClueESP or false
 G.BS.ClueColor     = safeColor(G.BS.ClueColor, Color3.new(0.6, 1, 0.2))
-G.BS.LowHPWarn     = G.BS.LowHPWarn or false
+G.BS.LowHPWarn     = false
 G.BS.LowHPThreshold = tonumber(G.BS.LowHPThreshold) or 30
 G.BS.LowHPColor    = safeColor(G.BS.LowHPColor, Color3.new(1, 0, 0))
 -- МОНЕТЫ (Workspace.CoinPickups). Сбор через ремоут игры. Если точный
@@ -278,11 +279,19 @@ G.BS.CoinAuto      = G.BS.CoinAuto ~= false
 G.BS.CoinLearn     = G.BS.CoinLearn or false
 G.BS.CoinRange     = tonumber(G.BS.CoinRange) or 600
 G.BS.CoinScanEvery = tonumber(G.BS.CoinScanEvery) or 1.0
+-- МАГНИТ МОНЕТ: монеты физически летят к игроку. Работает без ремоута:
+-- двигаем CFrame/M:PivotTo и дёргаем ProximityPrompt, если он есть.
+G.BS.CoinMagnet      = G.BS.CoinMagnet ~= false
+G.BS.CoinMagnetRadius = tonumber(G.BS.CoinMagnetRadius) or 250
+G.BS.CoinMagnetPower  = tonumber(G.BS.CoinMagnetPower) or 0.45
 -- ТЕЛЕПОРТ-ВЫСТРЕЛ ЧЕРЕЗ СТЕНЫ. На время выстрела персонаж окажется
 -- за спиной/над целью (для сервера), потом вернётся. Требует аимлока:
 -- камера должна смотреть на цель, иначе сервер может отклонить выстрел.
-G.BS.GhostShot     = G.BS.GhostShot or false
-G.BS.GhostHold     = tonumber(G.BS.GhostHold) or 0.03
+-- Прострел стен теперь ВСЕГДА включён: отдельного тумблера нет.
+G.BS.GhostShot     = true
+-- 0.12 c: даём серверу получить новый CFrame ДО выстрела, иначе он
+-- видит старую позицию и отклоняет выстрел («прострел не работает»).
+G.BS.GhostHold     = tonumber(G.BS.GhostHold) or 0.12
 -- Сдвиг времени выстрела в ремоуте (аргумент №5) вперёд, чтобы
 -- сервер считал, что WEAPON_COOLDOWN уже прошёл.
 G.BS.ShotTimeHack = G.BS.ShotTimeHack == true
@@ -290,8 +299,7 @@ G.BS.ShotTimeHack = G.BS.ShotTimeHack == true
 G.BS.TargetMark  = G.BS.TargetMark ~= false
 G.BS.TargetMarkColor = safeColor(G.BS.TargetMarkColor, Color3.new(1, 1, 1))
 -- ТОЧКА ПРИЦЕЛИВАНИЯ: метка там, куда реально уходит патрон.
-G.BS.AimDot      = G.BS.AimDot ~= false
-G.BS.AimDotColor = safeColor(G.BS.AimDotColor, Color3.new(1, 0.25, 0.25))
+-- (точка прицеливания удалена вместе с HUD/AIM-мусором)
 -- ЛОГ ПОПАДАНИЙ: печатать каждое событие урона (DamagePopup/CombatFeed).
 G.BS.DmgLog      = G.BS.DmgLog == true
 G.BS.StaminaDebug = G.BS.StaminaDebug or false
@@ -313,6 +321,8 @@ if G.BS.AimFOVDefault ~= 2 then
 end
 G.BS.AimFOVShow    = G.BS.AimFOVShow ~= false
 G.BS.AimFOVColor   = safeColor(G.BS.AimFOVColor, Color3.fromRGB(255, 255, 255))
+G.BS.AimFOVThick   = tonumber(G.BS.AimFOVThick) or 2
+G.BS.AimFOVAlpha   = tonumber(G.BS.AimFOVAlpha) or 0.35
 -- ОТКУДА СЧИТЫВАЕТСЯ НАПРАВЛЕНИЕ ВЫСТРЕЛА:
 --   "camera" (по умолчанию) — от камеры, как стреляет сама игра;
 --   "head"   — от головы персонажа;
@@ -401,15 +411,15 @@ G.BS.MaxInLog    = tonumber(G.BS.MaxInLog) or 400
 -- выстрел, крик. Раньше скрипт их только собирал, теперь рисует
 -- кольцо в точке шума - видно, где стреляли, даже если стрелявшего
 -- не видно.
-G.BS.NoiseMarks = G.BS.NoiseMarks ~= false
+G.BS.NoiseMarks = false
 G.BS.NoiseLife  = tonumber(G.BS.NoiseLife) or 2.2
 -- ОСОБЫЕ РОЛИ ПО ПРЕДМЕТУ (Config.Roles.ROLE_TOOL_MODEL):
 -- Medkit = доктор, MagnifyingGlass = детектив, SeerStaff = сейер,
 -- HolyCross = жрец, Garlic = торговец, SupplyCrate = оружейщик,
 -- Baton/Claw = вампир. Показывать в подписи к ESP.
-G.BS.ShowSpecialRole = G.BS.ShowSpecialRole ~= false
--- HUD: одна строка в углу - своя роль, фаза, патроны, текущая цель.
-G.BS.Hud = G.BS.Hud ~= false
+G.BS.ShowSpecialRole = false
+-- HUD удалён; поле оставлено только чтобы старый конфиг не включал его.
+G.BS.Hud = false
 -- ТАНЕЦ НА ХОДЬБЕ + СПИН. Игровые эмоуты отменяются движением,
 -- поэтому анимацию проигрываем сами (LoadAnimation + высокий приоритет).
 -- Спин и покачивание - свои, поворот модели, ассеты не нужны.
@@ -442,8 +452,8 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 32 then
-    G.BS.CfgV      = 32
+if G.BS.CfgV ~= 34 then
+    G.BS.CfgV      = 34
     -- АИМЛОК РАБОТАЕТ ВСЕГДА, а не только пока зажата ЛКМ
     -- (жалоба: «аймлок не работает, только когда я стреляю»).
     G.BS.AimLockFireOnly = false
@@ -461,18 +471,23 @@ if G.BS.CfgV ~= 32 then
     G.BS.Sway      = false
     G.BS.SwayAmp   = 20
     G.BS.DanceAutoScan = true
-    G.BS.NoiseMarks = true
+    G.BS.NoiseMarks = false
     G.BS.NoiseLife  = 2.2
-    G.BS.ShowSpecialRole = true
-    G.BS.Hud        = true
+    G.BS.ShowSpecialRole = false
+    G.BS.ShowUnknown = false
+    G.BS.MaxDist = 0
+    G.BS.Hud        = false
     G.BS.AimFOV     = 300      -- круг аима (ПОВ), px
     G.BS.AimFOVShow = true
     G.BS.AimChain  = true
     G.BS.AimFreePart = true
-    G.BS.NoCooldown = true
+    G.BS.NoCooldown = false
     G.BS.ShowStatus = true
     G.BS.HitMark    = true
-    G.BS.EventsOn   = true
+    G.BS.EventsOn   = false
+    G.BS.JumpBoostV2 = false
+    G.BS.JumpPowerOn = false
+    G.BS.GhostShot = true
     G.BS.ShotTimeHack = false
     G.BS.TargetMark = true
     G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
@@ -544,8 +559,7 @@ local EVENTS       = {}     -- последние события (последн
 local addEvent               -- добавить строку в ленту (ниже)
 local hitMarkAt   = 0       -- os.clock() последнего реального попадания
 local hitLines    = {}      -- Drawing-линии хитмаркера
-local eventsLabel = nil     -- TextLabel ленты в углу экрана
-local updateHitMark, updateEvents
+local updateHitMark
 local danceDD = nil         -- выпадающий список танцев (создаётся в GUI)
 local refreshDanceDropdown -- наполнение списка найденными анимациями
 local emoteTables = {}      -- таблицы из EmoteSetSlots (список эмоутов)
@@ -605,16 +619,21 @@ local dmgFmt = {}
 local COIN = {
     remote = nil, args = nil, argIdx = nil, argType = nil,
     learned = false, lastScan = 0, seen = {},
+    magnetList = {}, magnetAt = 0, tryAt = {},
 }
 G.BS.Coins = COIN
 
 function COIN.findFolder()
-    local f = workspace:FindFirstChild("CoinPickups")
-    if f then return f end
-    for _, d in ipairs(workspace:GetDescendants()) do
-        if d:IsA("Folder") and d.Name == "CoinPickups" then return d end
-    end
-    return nil
+    if COIN.folder and COIN.folder.Parent then return COIN.folder end
+    -- не сканировать весь workspace каждую секунду: если папки нет,
+    -- повторяем поиск не чаще раза в 5 с.
+    if COIN.folderAt and (os.clock() - COIN.folderAt) < 5 then return nil end
+    COIN.folderAt = os.clock()
+    -- FindFirstChild с recursive=true ищет на стороне движка: без
+    -- Lua-обхода всего workspace (раньше это подвешивало кадр).
+    local f = workspace:FindFirstChild("CoinPickups", true)
+    COIN.folder = f
+    return f
 end
 
 function COIN.findRemote()
@@ -637,7 +656,10 @@ function COIN.findRemote()
         for _, r in ipairs(Remotes:GetChildren()) do check(r) end
     end
     if not found then
-        for _, d in ipairs(game:GetDescendants()) do
+        -- Только ReplicatedStorage: game:GetDescendants() — это десятки
+        -- тысяч объектов и фриз раз в 5 секунд. Нужные ремоуты игры
+        -- лежат в ReplicatedStorage, этого достаточно.
+        for _, d in ipairs(TRS:GetDescendants()) do
             check(d)
             if found then break end
         end
@@ -657,10 +679,19 @@ function COIN.collectOne(coin)
         pcall(function() remote:FireServer() end)
         return true
     elseif COIN.args and COIN.argIdx and COIN.argIdx > 0 and COIN.argIdx <= COIN.args.n then
+        -- Model не имеет .Position: берём позицию пивота/части.
+        local coinPos
+        pcall(function()
+            if coin:IsA("BasePart") then
+                coinPos = coin.Position
+            elseif coin:IsA("Model") then
+                coinPos = coin:GetPivot().Position
+            end
+        end)
         args = {}
         for i = 1, COIN.args.n do
             if i == COIN.argIdx then
-                if COIN.argType == "position" then args[i] = coin.Position
+                if COIN.argType == "position" then args[i] = coinPos or coin
                 elseif COIN.argType == "name" then args[i] = coin.Name
                 else args[i] = coin end
             else
@@ -696,6 +727,103 @@ function COIN.autoTick(now)
     if now - COIN.lastScan < (tonumber(G.BS.CoinScanEvery) or 1.0) then return end
     COIN.lastScan = now
     pcall(COIN.scan)
+end
+
+-- ============================================================
+--  МАГНИТ МОНЕТ: монеты летят к игроку
+-- ============================================================
+local function coinPart(coin)
+    if coin:IsA("BasePart") then return coin end
+    local p = coin.PrimaryPart
+    if p and p.Parent then return p end
+    local ok, found = pcall(function()
+        return coin:FindFirstChildWhichIsA("BasePart", true)
+    end)
+    if ok then return found end
+    return nil
+end
+COIN.coinPart = coinPart
+
+local function coinPivot(coin)
+    if coin:IsA("Model") then
+        local ok, cf = pcall(function() return coin:GetPivot() end)
+        if ok then return cf end
+    end
+    local p = coinPart(coin)
+    if p then
+        local ok, cf = pcall(function() return p.CFrame end)
+        if ok then return cf end
+    end
+    return nil
+end
+
+local function fireCoinPrompts(coin, now)
+    if COIN.tryAt[coin] and now - COIN.tryAt[coin] < 0.9 then return end
+    COIN.tryAt[coin] = now
+    -- 1) если ремоут уже выучен/найден — пробуем штатный сбор
+    pcall(function() COIN.collectOne(coin) end)
+    -- 2) ProximityPrompt: монета уже рядом, значит дистанция проходит.
+    for _, d in ipairs(coin:GetDescendants()) do
+        if d:IsA("ProximityPrompt") and d.Enabled then
+            pcall(function() d:InputHoldBegin() end)
+            local hold = tonumber(d.HoldDuration) or 0
+            task.delay(math.max(0.05, hold + 0.05), function()
+                pcall(function() d:InputHoldEnd() end)
+            end)
+        end
+    end
+end
+
+function COIN.magnetTick(now)
+    if G.BS.CoinMagnet == false then return end
+    local ch = LP and LP.Character
+    local root = ch and ch:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    -- список монет обновляем раз в секунду, а не каждый кадр
+    if now - COIN.magnetAt > 1 then
+        COIN.magnetAt = now
+        COIN.magnetList = {}
+        local folder = COIN.findFolder()
+        if folder then
+            for _, d in ipairs(folder:GetDescendants()) do
+                if d:IsA("Model") and d.Name == "CoinPickup" and d.Parent then
+                    COIN.magnetList[#COIN.magnetList + 1] = d
+                end
+            end
+        end
+    end
+    local radius = tonumber(G.BS.CoinMagnetRadius) or 250
+    local power = math.clamp(tonumber(G.BS.CoinMagnetPower) or 0.45, 0.1, 1)
+    local rp = root.Position
+    for i = 1, #COIN.magnetList do
+        local coin = COIN.magnetList[i]
+        if coin.Parent then
+            local part = coinPart(coin)
+            if part and part.Parent then
+                local delta = rp - part.Position
+                local dist = delta.Magnitude
+                if dist <= radius and dist > 2.5 then
+                    local goal = rp + Vector3.new(
+                        math.sin(i * 1.7) * 1.2,
+                        1.3,
+                        math.cos(i * 1.7) * 1.2)
+                    local cf = coinPivot(coin)
+                    if cf then
+                        local target = CFrame.new(goal)
+                        if coin:IsA("Model") then
+                            pcall(function() coin:PivotTo(cf:Lerp(target, power)) end)
+                        elseif coin:IsA("BasePart") then
+                            pcall(function() coin.CFrame = cf:Lerp(target, power) end)
+                        end
+                    end
+                elseif dist <= 6 then
+                    fireCoinPrompts(coin, now)
+                end
+            end
+        else
+            COIN.magnetList[i] = nil
+        end
+    end
 end
 
 function COIN.scanRemotes()
@@ -938,6 +1066,37 @@ local function drawBox(b, root, cam)
         end
     end
 
+    -- 2D-КОРОБКА: прямоугольник по экранному bounding box. Дешевле 3D
+    -- и лучше читается на расстоянии.
+    if G.BS.Box2D then
+        local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
+        for _, p in ipairs(corners) do
+            if p.X < minX then minX = p.X end
+            if p.X > maxX then maxX = p.X end
+            if p.Y < minY then minY = p.Y end
+            if p.Y > maxY then maxY = p.Y end
+        end
+        local pts = {
+            Vector2.new(minX, minY), Vector2.new(maxX, minY),
+            Vector2.new(maxX, maxY), Vector2.new(minX, maxY),
+        }
+        for i = 1, 4 do
+            local ln = b.lines[i]
+            if ln then
+                ln.From = pts[i]
+                ln.To = pts[i % 4 + 1]
+                ln.Color = b.color or Color3.new(1, 1, 1)
+                ln.Thickness = G.BS.BoxThick
+                ln.Transparency = fade
+                ln.Visible = true
+            end
+        end
+        for i = 5, 12 do
+            if b.lines[i] then b.lines[i].Visible = false end
+        end
+        return
+    end
+
     -- РОЛЕВОЙ СТИЛЬ: ромб для вампиров (если включён CornerBoxes).
     -- Строим ромб по экранному bounding box всех 8 углов, иначе
     -- вершины брались только с верхней грани и ромб «слипался» сверху.
@@ -1053,15 +1212,16 @@ for i = 1, VMAX do
         hpText = vText(),
         arrow = vLine(),
         headBox = vSquare(),
+        snap = vLine(),
+        aura = {},
+        auraOn = false,
     }
 end
 
 local aimLine = vLine()
 local crossLines = { vLine(), vLine(), vLine(), vLine() }
-local centerDot = vCircle()
-local distCircle = vCircle()
 
-local chams = {}
+
 local crateHL = {}
 local coinHL = {}
 local clueHL = {}
@@ -1076,23 +1236,9 @@ local minimapBg = vSquare()
 local minimapBorder = vSquare()
 local minimapDots = {}
 local minimapSelf = vCircle()
-local staminaBg = vSquare()
-local staminaFg = vSquare()
-local ammoBg = vSquare()
-local ammoFg = vSquare()
 local tracerLine = vLine()
 local tracerT0 = 0
 local tracerFrom, tracerTo
-local lowHpTop = vSquare()
-local lowHpBottom = vSquare()
-local lowHpLeft = vSquare()
-local lowHpRight = vSquare()
-local fpsFrames = {}
-local lastFpsT = 0
-local fpsValue = 0
-local lastPingAt = 0
-local pingValue = 0
-local speedValue = 0
 
 local function vProj(cam, pos)
     local ok, sp = pcall(function() return cam:WorldToViewportPoint(pos) end)
@@ -1123,45 +1269,6 @@ end
 
 local function vHideText(t)
     if t then t.Visible = false end
-end
-
--- Стамина игрока: атрибут или NumberValue.
-local function readStamina()
-    local ch = LP and LP.Character
-    if not ch then return nil, nil end
-    local ok, s = pcall(function() return ch:GetAttribute("Stamina") end)
-    if ok and type(s) == "number" then
-        local _, m = pcall(function() return ch:GetAttribute("MaxStamina") end)
-        return s, (type(m) == "number" and m > 0) and m or 100
-    end
-    local v = ch:FindFirstChild("Stamina")
-    if v and v:IsA("NumberValue") then return v.Value, 100 end
-    return nil, nil
-end
-
--- Пинг сервера (мс). Читаем не чаще раза в секунду: GetValue дергает
--- Stats, а нам достаточно обновлять HUD раз в 0.2 с.
-local function readPing(now)
-    if now - lastPingAt < 1 then return pingValue end
-    lastPingAt = now
-    local ok, v = pcall(function()
-        local stats = game:GetService("Stats")
-        return stats.Network.ServerStatsItem["Data Ping"]:GetValue()
-    end)
-    if ok and type(v) == "number" then
-        pingValue = math.floor(v + 0.5)
-    end
-    return pingValue
-end
-
--- Скорость персонажа в studs/s.
-local function readSpeed(root)
-    if not root then return 0 end
-    local ok, v = pcall(function()
-        return root.AssemblyLinearVelocity or root.Velocity
-    end)
-    if ok and v then return math.floor(v.Magnitude + 0.5) end
-    return 0
 end
 
 -- УЛИКИ / КРОВЬ / ПРЕДМЕТЫ. Скан workspace раз в 3 секунды, чтобы не
@@ -1259,21 +1366,21 @@ function VIS.destroy()
         pcall(function() o:Destroy() end)
     end
     for i = 1, #crossLines do rm(crossLines[i]) end
-    rm(aimLine); rm(centerDot); rm(distCircle)
+    rm(aimLine)
     for i = 1, #vpool do
         local p = vpool[i]
         for j = 1, #(p.skeleton or {}) do rm(p.skeleton[j]) end
+        for j = 1, #(p.aura or {}) do rm(p.aura[j]) end
         rm(p.hpBg); rm(p.hpFg); rm(p.hpText); rm(p.arrow); rm(p.headBox)
+        rm(p.snap)
     end
     for i = 1, #dmgNums do rm(dmgNums[i].obj) end
     for i = 1, #soundArrows do rm(soundArrows[i]) end
     for i = 1, #minimapDots do rm(minimapDots[i]) end
     rm(minimapBg); rm(minimapBorder); rm(minimapSelf)
-    rm(staminaBg); rm(staminaFg); rm(ammoBg); rm(ammoFg)
     rm(tracerLine)
     tracerFrom, tracerTo, tracerT0 = nil, nil, 0
-    rm(lowHpTop); rm(lowHpBottom); rm(lowHpLeft); rm(lowHpRight)
-    for _, tbl in pairs({ chams, crateHL, coinHL, clueHL }) do
+    for _, tbl in pairs({ crateHL, coinHL, clueHL }) do
         for _, h in pairs(tbl) do
             pcall(function() h:Destroy() end)
         end
@@ -1283,7 +1390,6 @@ function VIS.destroy()
     dmgNums = {}
     soundArrows = {}
     minimapDots = {}
-    chams = {}
     crateHL = {}
     coinHL = {}
     clueHL = {}
@@ -1321,26 +1427,10 @@ function VIS.update(cam, myRoot, by, locked)
     local cx, cy = vp.X * 0.5, vp.Y * 0.5
     local camPos = cam.CFrame.Position
 
-    -- 0) FPS
+    -- 0) ВРЕМЯ КАДРА
     local nowT = os.clock()
-    if lastFpsT > 0 then
-        local dt = nowT - lastFpsT
-        if dt > 0 then
-            fpsFrames[#fpsFrames + 1] = 1 / dt
-            if #fpsFrames > 30 then table.remove(fpsFrames, 1) end
-            local sum = 0
-            for i = 1, #fpsFrames do sum = sum + fpsFrames[i] end
-            fpsValue = math.floor(sum / #fpsFrames + 0.5)
-        end
-    end
-    lastFpsT = nowT
-    G.BS.FPS = fpsValue
-    G.BS.Ping = readPing(nowT)
-    speedValue = readSpeed(myRoot)
-    G.BS.Speed = speedValue
 
-    -- Без Drawing визуалы рисовать нечем. FPS/пинг/скорость уже
-    -- посчитаны выше — HUD продолжает работать.
+    -- Без Drawing визуалы рисовать нечем.
     if not VDRAW then return end
 
     -- 1) ПРИЦЕЛ
@@ -1363,16 +1453,8 @@ function VIS.update(cam, myRoot, by, locked)
         vSetLine(crossLines[2], Vector2.new(cx + gap, cy), Vector2.new(cx + gap + len, cy), col, 1)
         vSetLine(crossLines[3], Vector2.new(cx, cy - gap - len), Vector2.new(cx, cy - gap), col, 1)
         vSetLine(crossLines[4], Vector2.new(cx, cy + gap), Vector2.new(cx, cy + gap + len), col, 1)
-        if centerDot then
-            centerDot.Position = Vector2.new(cx, cy)
-            centerDot.Radius = 2
-            centerDot.Color = col
-            centerDot.Filled = true
-            centerDot.Visible = true
-        end
     else
         for i = 1, 4 do vHideLine(crossLines[i]) end
-        vHideCircle(centerDot)
     end
 
     -- 2) ЛИНИЯ К ЦЕЛИ (трейсер)
@@ -1414,24 +1496,7 @@ function VIS.update(cam, myRoot, by, locked)
         vHideLine(tracerLine)
     end
 
-    -- 3) КРУГ ДИСТАНЦИИ ВОКРУГ ИГРОКА
-    if G.BS.DistCircle and myRoot then
-        local sp = vProj(cam, myRoot.Position)
-        if sp and sp.Z > 0 then
-            distCircle.Position = Vector2.new(sp.X, sp.Y)
-            distCircle.Radius = tonumber(G.BS.DistCircleRadius) or 30
-            distCircle.Color = safeColor(G.BS.DistCircleColor, Color3.new(1, 1, 1))
-            distCircle.Filled = false
-            distCircle.Thickness = 2
-            distCircle.Visible = true
-        else
-            vHideCircle(distCircle)
-        end
-    else
-        vHideCircle(distCircle)
-    end
-
-    -- 4) СЧЁТЧИКИ
+    -- 3) СЧЁТЧИКИ
     local alive, total = 0, 0
     for plr, e in pairs(by) do
         local ch = e.char
@@ -1452,7 +1517,7 @@ function VIS.update(cam, myRoot, by, locked)
 
     -- 5) ИГРОКИ: скелет, HP, стрелки, chams
     local idx = 0
-    for plr, e in pairs(by) do
+    for _, e in pairs(by) do
         idx = idx + 1
         if idx > VMAX then break end
         local ch = e.char
@@ -1573,6 +1638,52 @@ function VIS.update(cam, myRoot, by, locked)
             vHideSquare(p.headBox)
         end
 
+        -- ЛИНИЯ ОТ НИЗА ЭКРАНА (snapline)
+        if G.BS.Snaplines and root and root.Parent then
+            local sp = vProj(cam, root.Position + Vector3.new(0, 2, 0))
+            if sp and sp.Z > 0 then
+                vSetLine(p.snap,
+                    Vector2.new(vp.X * 0.5, vp.Y),
+                    Vector2.new(sp.X, sp.Y),
+                    color, tonumber(G.BS.SnapThick) or 1)
+            else
+                vHideLine(p.snap)
+            end
+        else
+            vHideLine(p.snap)
+        end
+
+        -- АУРА ПОД ВАМПИРАМИ: настоящее кольцо на земле из 20 отрезков,
+        -- а не экранный круг (старый «круг дистанции» из-за этого и
+        -- выглядел гигантской дугой).
+        if G.BS.VampAura and role == "vampire" and root and root.Parent then
+            local n = 20
+            local prev = nil
+            for k = 0, n do
+                local ang = (k / n) * math.pi * 2
+                local wp = root.Position + Vector3.new(
+                    math.cos(ang) * 3.2, -2.6, math.sin(ang) * 3.2)
+                local sp = vProj(cam, wp)
+                local cur = (sp and sp.Z > 0)
+                    and Vector2.new(sp.X, sp.Y) or nil
+                if k > 0 then
+                    local line = p.aura[k]
+                    if not line then line = vLine(); p.aura[k] = line end
+                    if prev and cur then
+                        vSetLine(line, prev, cur, color, 2)
+                        if line.Transparency then line.Transparency = 0.35 end
+                    else
+                        vHideLine(line)
+                    end
+                end
+                prev = cur
+            end
+            p.auraOn = true
+        elseif p.auraOn then
+            for i = 1, #p.aura do vHideLine(p.aura[i]) end
+            p.auraOn = false
+        end
+
         -- СТРЕЛКА ЗА ЭКРАНОМ
         if G.BS.OffArrows and ch and ch.Parent and root and root.Parent then
             local sp = vProj(cam, root.Position)
@@ -1601,32 +1712,6 @@ function VIS.update(cam, myRoot, by, locked)
             vHideLine(p.arrow)
         end
 
-        -- CHAMS
-        if G.BS.Chams and ch and ch.Parent then
-            local hl = chams[plr]
-            if not hl or not hl.Parent then
-                local ok, h = pcall(function() return Instance.new("Highlight") end)
-                if ok and h then
-                    h.FillColor = color
-                    h.OutlineColor = color
-                    h.FillTransparency = tonumber(G.BS.ChamsFill) or 0.5
-                    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                    h.Adornee = ch
-                    h.Parent = ch
-                    chams[plr] = h
-                    hl = h
-                end
-            end
-            if hl then
-                hl.Enabled = true
-                hl.FillColor = color
-                hl.OutlineColor = color
-                hl.FillTransparency = tonumber(G.BS.ChamsFill) or 0.5
-            end
-        else
-            local hl = chams[plr]
-            if hl then hl.Enabled = false end
-        end
     end
 
     -- 6) ПОДСВЕТКА ЯЩИКОВ
@@ -1753,56 +1838,6 @@ function VIS.update(cam, myRoot, by, locked)
     end
     for i = sIdx + 1, #soundArrows do vHideLine(soundArrows[i]) end
 
-    -- ПОЛОСКА СТАМИНЫ
-    if G.BS.StaminaBar and myRoot and staminaBg and staminaFg then
-        local cur, max = readStamina()
-        if cur and max and max > 0 then
-            local pct = math.clamp(cur / max, 0, 1)
-            local w, h = 200, 6
-            local x = vp.X * 0.5 - w * 0.5
-            local y = vp.Y - 60
-            staminaBg.Position = Vector2.new(x, y)
-            staminaBg.Size = Vector2.new(w, h)
-            staminaBg.Color = Color3.new(0, 0, 0)
-            staminaBg.Filled = true
-            staminaBg.Visible = true
-            staminaFg.Position = Vector2.new(x, y)
-            staminaFg.Size = Vector2.new(math.max(1, w * pct), h)
-            staminaFg.Color = Color3.new(0.2, 0.8, 1)
-            staminaFg.Filled = true
-            staminaFg.Visible = true
-        else
-            vHideSquare(staminaBg); vHideSquare(staminaFg)
-        end
-    else
-        vHideSquare(staminaBg); vHideSquare(staminaFg)
-    end
-
-    -- ПОЛОСКА ПАТРОНОВ
-    if G.BS.AmmoBar and ammoBg and ammoFg then
-        local cur, max = G.BS.ReadAmmo()
-        if cur and max and max > 0 then
-            local pct = math.clamp(cur / max, 0, 1)
-            local w, h = 200, 6
-            local x = vp.X * 0.5 - w * 0.5
-            local y = vp.Y - 74
-            ammoBg.Position = Vector2.new(x, y)
-            ammoBg.Size = Vector2.new(w, h)
-            ammoBg.Color = Color3.new(0, 0, 0)
-            ammoBg.Filled = true
-            ammoBg.Visible = true
-            ammoFg.Position = Vector2.new(x, y)
-            ammoFg.Size = Vector2.new(math.max(1, w * pct), h)
-            ammoFg.Color = Color3.new(1, 0.5, 0)
-            ammoFg.Filled = true
-            ammoFg.Visible = true
-        else
-            vHideSquare(ammoBg); vHideSquare(ammoFg)
-        end
-    else
-        vHideSquare(ammoBg); vHideSquare(ammoFg)
-    end
-
     -- МИНИКАРТА
     if G.BS.Minimap and myRoot and minimapBg then
         local size = tonumber(G.BS.MinimapSize) or 160
@@ -1864,47 +1899,7 @@ function VIS.update(cam, myRoot, by, locked)
         for _, d in pairs(minimapDots) do vHideCircle(d) end
     end
 
-    -- КРАСНАЯ РАМКА ПРИ НИЗКОМ HP
-    if G.BS.LowHPWarn and lowHpTop and lowHpBottom and lowHpLeft and lowHpRight then
-        local ch = LP and LP.Character
-        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-        local pct = (hum and hum.MaxHealth and hum.MaxHealth > 0)
-            and (hum.Health / hum.MaxHealth) or 1
-        local th = (tonumber(G.BS.LowHPThreshold) or 30) / 100
-        if hum and hum.Health > 0 and pct <= th then
-            local tr = math.clamp(0.75 - (pct / math.max(th, 0.01)) * 0.45, 0.3, 0.75)
-            local col = safeColor(G.BS.LowHPColor, Color3.new(1, 0, 0))
-            local edge = 5
-            lowHpTop.Position = Vector2.new(0, 0)
-            lowHpTop.Size = Vector2.new(vp.X, edge)
-            lowHpBottom.Position = Vector2.new(0, vp.Y - edge)
-            lowHpBottom.Size = Vector2.new(vp.X, edge)
-            lowHpLeft.Position = Vector2.new(0, 0)
-            lowHpLeft.Size = Vector2.new(edge, vp.Y)
-            lowHpRight.Position = Vector2.new(vp.X - edge, 0)
-            lowHpRight.Size = Vector2.new(edge, vp.Y)
-            for _, s in ipairs({ lowHpTop, lowHpBottom, lowHpLeft, lowHpRight }) do
-                s.Color = col
-                s.Filled = true
-                s.Transparency = tr
-                s.Visible = true
-            end
-        else
-            vHideSquare(lowHpTop); vHideSquare(lowHpBottom)
-            vHideSquare(lowHpLeft); vHideSquare(lowHpRight)
-        end
-    else
-        vHideSquare(lowHpTop); vHideSquare(lowHpBottom)
-        vHideSquare(lowHpLeft); vHideSquare(lowHpRight)
-    end
-
     -- очистка данных ушедших игроков
-    for plr, hl in pairs(chams) do
-        if not by[plr] then
-            pcall(function() hl:Destroy() end)
-            chams[plr] = nil
-        end
-    end
     for plr in pairs(lastHealth) do
         if not by[plr] then lastHealth[plr] = nil end
     end
@@ -2217,13 +2212,15 @@ local function drawFOV()
     if r < 10 then r = 10 end
     if r > 900 then r = 900 end
     local col = safeColor(G.BS.AimFOVColor, Color3.new(1, 1, 1))
+    local thick = math.clamp(tonumber(G.BS.AimFOVThick) or 2, 1, 6)
+    local alpha = math.clamp(tonumber(G.BS.AimFOVAlpha) or 0.35, 0, 1)
     for i = 1, FOV_N do
         local a1 = (i - 1) / FOV_N * math.pi * 2
         local a2 = i / FOV_N * math.pi * 2
         local from = Vector2.new(cx + math.cos(a1) * r, cy + math.sin(a1) * r)
         local to   = Vector2.new(cx + math.cos(a2) * r, cy + math.sin(a2) * r)
         local seg  = FOVSegs[i]
-        if seg then placeSeg(seg, from, to, 2, col, 0.35) end
+        if seg then placeSeg(seg, from, to, thick, col, alpha) end
     end
 end
 
@@ -2294,7 +2291,7 @@ local function visible(from, part, ch)
     return hit.Instance:IsDescendantOf(ch)
 end
 
-local function lockPart(ch, from)
+local function lockPart(ch)
     local p = ch:FindFirstChild(G.BS.AimPart)
     if p and p:IsA("BasePart") and p.Parent then return p end
     for _, n in ipairs(AIM_PART) do
@@ -2339,7 +2336,7 @@ local function targetPart(plr, cam)
     if not root then return nil end
     local d = (root.Position - cam.CFrame.Position).Magnitude
     if G.BS.AimMaxDist > 0 and d > G.BS.AimMaxDist then return nil end
-    local p = lockPart(ch, cam.CFrame.Position)
+    local p = lockPart(ch)
     if not p then return nil end
     if not G.BS.Penetrate and not visible(cam.CFrame.Position, p, ch) then return nil end
     return p
@@ -2785,54 +2782,9 @@ local ROLE_NAME = {
     none       = "Гражданский",
 }
 
--- ============================================================
---  HUD: своя роль, фаза раунда, патроны, текущая цель
--- ============================================================
--- Одна строка в углу: видно, кто мы, что за фаза, сколько патронов
--- и в кого сейчас целимся - без открытия GUI.
-local hudLabel = nil
-local hudGui = nil
-local lastHud = 0
-
-local function ensureHud()
-    if hudLabel then return true end
-    local okG, gui = pcall(function() return Instance.new("ScreenGui") end)
-    if not okG or not gui then return false end
-    gui.Name                 = "BS_Hud"
-    gui.IgnoreGuiInset       = false
-    gui.ResetOnSpawn         = false
-    gui.DisplayOrder         = 10
-    local okP = pcall(function() gui.Parent = game:GetService("CoreGui") end)
-    if not okP then return false end
-
-    -- ФОН ПОД HUD (по просьбе): полупрозрачная плашка, а не голая строка.
-    local okBg, bg = pcall(function() return Instance.new("Frame") end)
-    if okBg and bg then
-        bg.Name                 = "BS_HudBg"
-        bg.BackgroundColor3     = Color3.fromRGB(8, 8, 12)
-        bg.BackgroundTransparency = 0.45
-        bg.BorderSizePixel      = 0
-        bg.Position             = UDim2.new(0, 4, 0, 4)
-        bg.Size                 = UDim2.fromOffset(660, 46)
-        bg.Parent               = gui
-    end
-
-    local okT, t = pcall(function() return Instance.new("TextLabel") end)
-    if not okT or not t then return false end
-    t.Name             = "BS_HudText"
-    t.BackgroundTransparency = 1
-    t.TextColor3       = Color3.new(0.95, 0.95, 1)
-    t.Size             = UDim2.fromOffset(640, 38)
-    t.Position         = UDim2.new(0, 12, 0, 7)
-    t.Font             = Enum.Font.Code
-    t.TextSize         = 12
-    t.TextWrapped      = true
-    t.TextXAlignment   = Enum.TextXAlignment.Left
-    t.TextYAlignment   = Enum.TextYAlignment.Top
-    t.Parent           = gui
-    hudGui, hudLabel = gui, t
-    return true
-end
+-- HUD удалён по просьбе: в углу больше ничего не рисуется, остаётся
+-- только окно Rayfield. Вся информация о роли/фазе/патронах есть в
+-- ESP-подписях и в консоли ([BS EVT] / [BS ROLE]).
 
 -- ============================================================
 --  ПАТРОНЫ: ЧТЕНИЕ СЧЁТЧИКА
@@ -2934,224 +2886,14 @@ G.BS.ReadAmmo = (function()
     end
 end)()
 
-local function updateHud(now)
-    if not G.BS.Hud then
-        if hudLabel then hudLabel.Visible = false end
-        if hudGui then
-            local bg = hudGui:FindFirstChild("BS_HudBg")
-            if bg then bg.Visible = false end
-        end
-        return
-    end
-    if not ensureHud() then return end
-    if hudGui then
-        local bg = hudGui:FindFirstChild("BS_HudBg")
-        if bg then bg.Visible = true end
-    end
-    if now - lastHud < 0.2 then return end
-    lastHud = now
-
-    local me = ROLE_NAME[string.lower(tostring(G.BS.MyRole or ""))] or "?"
-    local ch = LP and LP.Character
-    local tool = ch and ch:FindFirstChildOfClass("Tool")
-    local myRoot = ch and ch:FindFirstChild("HumanoidRootPart")
-    local chargeCur, chargeMax = G.BS.ReadAmmo()
-    local charges = "?"
-    if type(chargeCur) == "number" then
-        charges = tostring(math.floor(chargeCur + 0.5))
-        if type(chargeMax) == "number" then
-            charges = charges .. "/" .. tostring(math.floor(chargeMax + 0.5))
-        end
-    end
-    local pre = bulletPreShot
-    local tgt = "нет"
-    if pre and pre.part and pre.part.Parent then
-        local root = pre.part.Parent:FindFirstChild("HumanoidRootPart")
-        local d = (root and myRoot and (root.Position - myRoot.Position).Magnitude)
-            or pre.dist
-        tgt = pre.part.Name .. " (" .. math.floor(d + 0.5) .. " st)"
-        if pre.wallPast then tgt = tgt .. " [за стеной]" end
-    end
-    local dn = "?"
-    if G.BS.DanceName then pcall(function() dn = G.BS.DanceName() end) end
-    local roundT = "-"
-    if G.BS.RoundTimer and G.BS.RoundStart then
-        local t = os.clock() - G.BS.RoundStart
-        if t < 0 then t = 0 end
-        roundT = string.format("%d:%02d", math.floor(t / 60), math.floor(t % 60))
-    end
-    local kills = G.BS.KillCounter and (tonumber(G.BS.Kills) or 0) or "-"
-    local fpsTxt = ""
-    if G.BS.FPSCounter then
-        fpsTxt = string.format(" | FPS: %d", tonumber(G.BS.FPS) or 0)
-    end
-    local coordTxt = ""
-    if G.BS.CoordsTime and myRoot then
-        local p = myRoot.Position
-        coordTxt = string.format(" | X:%.0f Y:%.0f Z:%.0f", p.X, p.Y, p.Z)
-    end
-    local timeTxt = ""
-    if G.BS.CoordsTime then
-        timeTxt = string.format(" | %02d:%02d",
-            tonumber(os.date("%H")) or 0, tonumber(os.date("%M")) or 0)
-    end
-    local pingTxt = ""
-    if G.BS.PingSpeed then
-        pingTxt = string.format(" | пинг: %d ms | скор: %d",
-            tonumber(G.BS.Ping) or 0, tonumber(G.BS.Speed) or 0)
-    end
-    local counts
-    if G.BS.CountsESP then
-        counts = string.format("\nвремя: %s | убийства: %s | живых: %d/%d%s%s%s%s",
-            roundT, tostring(kills),
-            tonumber(G.BS.AliveCount) or 0, tonumber(G.BS.PlayerCount) or 0,
-            fpsTxt, pingTxt, coordTxt, timeTxt)
-    else
-        counts = string.format("\nвремя: %s | убийства: %s%s%s%s%s",
-            roundT, tostring(kills), fpsTxt, pingTxt, coordTxt, timeTxt)
-    end
-    local line = string.format(
-        "[BS] роль: %s | фаза: %s | патроны: %s | оружие: %s\nцель: %s | танец: %s%s",
-        me, tostring(G.BS.RoundPhase or "?"), charges,
-        tool and tool.Name or "нет", tgt, dn, counts)
-    hudLabel.Text = line
-    hudLabel.Visible = true
-end
+-- updateHud удалён вместе с HUD.
 
 -- ============================================================
---  ТОЧКА ПРИЦЕЛИВАНИЯ
--- ============================================================
--- Маленькая метка там, куда реально уходит патрон
--- (bulletPreShot.pos). Без неё не видно, куда скрипт наводится на
--- самом деле — особенно важно при подборе опережения: видно, что
--- точка уходит выше/ниже головы бегущего.
-local aimDot = nil
-local function updateAimDot()
-    if not G.BS.AimDot then
-        if aimDot then aimDot.Visible = false end
-        return
-    end
-    local pre = bulletPreShot
-    local cam = workspace.CurrentCamera
-    if not (pre and cam) then
-        if aimDot then aimDot.Visible = false end
-        return
-    end
-    if not aimDot then
-        local ok, d = pcall(function() return Drawing.new("Circle") end)
-        if not ok or not d then return end
-        d.Thickness    = 2
-        d.NumSides     = 16
-        d.Filled       = false
-        d.Transparency = 1
-        aimDot = d
-    end
-    local vp = cam:WorldToViewportPoint(pre.pos)
-    if vp.Z <= 0 then
-        aimDot.Visible = false
-        return
-    end
-    aimDot.Position = Vector2.new(vp.X, vp.Y)
-    aimDot.Radius   = 5
-    aimDot.Color    = safeColor(G.BS.AimDotColor, Color3.new(1, 0.25, 0.25))
-    aimDot.Visible  = true
-end
-
--- ============================================================
---  ЗВУКОВЫЕ МЕТКИ (SoundPing) — радар шума
+--  ЗВУКОВЫЕ МЕТКИ (SoundPing) — данные для стрелок звука
 -- ============================================================
 -- Игра шлёт SoundPing {pos, sound}, когда кто-то выстрелил или
--- закричал (Config.Detection.SOUND_PING_ENABLED, RADIUS 90,
--- DURATION 2.2). Раньше мы эти данные просто собирали в soundMarks и
--- НИЧЕГО не рисовали. Теперь это видимый радар: кольцо расходится и
--- гаснет в точке шума, с подписью типа звука.
-local noiseRings, noiseLabels = {}, {}
-local NOISE_POOL = 14
-
-local function noiseColor(s)
-    local n = string.lower(tostring(s or ""))
-    if string.find(n, "gun", 1, true) or string.find(n, "shot", 1, true)
-        or string.find(n, "fire", 1, true) then
-        return Color3.new(1, 0.35, 0.2)
-    end
-    if string.find(n, "scream", 1, true) or string.find(n, "help", 1, true)
-        or string.find(n, "call", 1, true) then
-        return Color3.new(1, 0.95, 0.25)
-    end
-    return Color3.new(0.8, 0.9, 1)
-end
-
-local function ensureNoisePool()
-    if #noiseRings >= NOISE_POOL then return end
-    if not DRAW_OK then return end
-    for i = #noiseRings + 1, NOISE_POOL do
-        local ok, d = pcall(function() return Drawing.new("Circle") end)
-        if not ok or not d then return end
-        d.Thickness    = 2
-        d.NumSides     = 24
-        d.Filled       = false
-        d.Visible      = false
-        noiseRings[i]  = d
-        local ok2, t = pcall(function() return Drawing.new("Text") end)
-        if ok2 and t then
-            t.Visible = false
-            t.Center  = true
-            t.Size    = 13
-            noiseLabels[i] = t
-        end
-    end
-end
-
-local function updateNoiseMarks()
-    ensureNoisePool()
-    if not G.BS.NoiseMarks then
-        for i = 1, #noiseRings do
-            noiseRings[i].Visible = false
-            if noiseLabels[i] then noiseLabels[i].Visible = false end
-        end
-        return
-    end
-    local cam = workspace.CurrentCamera
-    if not cam then return end
-    local now = os.clock()
-    local life = tonumber(G.BS.NoiseLife) or 2.2
-    for i = #soundMarks, 1, -1 do
-        if now - soundMarks[i].t > life then table.remove(soundMarks, i) end
-    end
-    local n = #soundMarks
-    for i = 1, NOISE_POOL do
-        local ring = noiseRings[i]
-        if not ring then break end
-        local lb = noiseLabels[i]
-        local idx = n - i + 1
-        if idx >= 1 then
-            local m = soundMarks[idx]
-            local age = now - m.t
-            local sp = cam:WorldToViewportPoint(m.pos)
-            if sp.Z > 0 and age <= life then
-                local k = 1 - age / life          -- 1 = свежее
-                ring.Position = Vector2.new(sp.X, sp.Y)
-                ring.Radius   = math.floor(6 + (1 - k) * 30)
-                ring.Color    = noiseColor(m.s)
-                ring.Transparency = k * 0.55
-                ring.Visible  = true
-                if lb then
-                    lb.Position     = Vector2.new(sp.X, sp.Y - 20)
-                    lb.Text         = tostring(m.s or "шум")
-                    lb.Color        = ring.Color
-                    lb.Transparency = k * 0.4
-                    lb.Visible      = true
-                end
-            else
-                ring.Visible = false
-                if lb then lb.Visible = false end
-            end
-        else
-            ring.Visible = false
-            if lb then lb.Visible = false end
-        end
-    end
-end
+-- закричал. Кольца шума убраны вместе с HUD: остались только
+-- стрелки к источнику звука (вкладка ESP).
 
 -- ============================================================
 --  ТАНЕЦ НА ХОДЬБЕ + СПИН
@@ -4528,63 +4270,7 @@ addEvent = function(text)
     print("[BS EVT] " .. text)
 end
 
-local lastEventsDraw = 0
-updateEvents = function(now)
-    if not G.BS.EventsOn then
-        if eventsLabel then eventsLabel.Visible = false end
-        local bg = hudGui and hudGui:FindFirstChild("BS_EventsBg")
-        if bg then bg.Visible = false end
-        return
-    end
-    if now - lastEventsDraw < 0.25 then return end
-    lastEventsDraw = now
-    if not ensureHud() then return end
-    local bg = hudGui and hudGui:FindFirstChild("BS_EventsBg")
-    if not eventsLabel then
-        local ok, t = pcall(function()
-            -- фон под ленту событий
-            local f = Instance.new("Frame")
-            f.Name = "BS_EventsBg"
-            f.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
-            f.BackgroundTransparency = 0.5
-            f.BorderSizePixel = 0
-            f.Position = UDim2.new(0, 4, 0, 54)
-            f.Size = UDim2.fromOffset(660, 108)
-            f.Visible = false
-            f.Parent = hudGui
-
-            local x = Instance.new("TextLabel")
-            x.Name = "BS_Events"
-            x.BackgroundTransparency = 1
-            x.Size = UDim2.fromOffset(640, 100)
-            x.Position = UDim2.new(0, 12, 0, 58)
-            x.Font = Enum.Font.Code
-            x.TextSize = 12
-            x.TextColor3 = Color3.new(0.85, 0.9, 1)
-            x.TextXAlignment = Enum.TextXAlignment.Left
-            x.TextYAlignment = Enum.TextYAlignment.Top
-            x.TextWrapped = true
-            x.Parent = hudGui
-            return x
-        end)
-        if not ok or not t then return end
-        eventsLabel = t
-        bg = hudGui and hudGui:FindFirstChild("BS_EventsBg")
-    end
-    local lines = {}
-    for i = 1, #EVENTS do
-        local p = string.find(EVENTS[i], "|", 1, true)
-        if p then lines[#lines + 1] = string.sub(EVENTS[i], p + 1) end
-    end
-    if #lines == 0 then
-        eventsLabel.Visible = false
-        if bg then bg.Visible = false end
-        return
-    end
-    eventsLabel.Text = table.concat(lines, "\n")
-    eventsLabel.Visible = true
-    if bg then bg.Visible = true end
-end
+-- Лента событий в GUI удалена: всё уходит в консоль через addEvent.
 
 -- ============================================================
 --  БЕЗ КУЛДАУНА ОРУЖИЯ (вместо «бесконечных патронов»)
@@ -4611,47 +4297,6 @@ end
 -- последний аргумент (время выстрела) на ВРЕМЯ СРАЗУ ПОСЛЕ
 -- предыдущего выстрела, сервер посчитает, что прошло больше
 -- WEAPON_COOLDOWN, даже если реально стреляли чаще.
-local cdDumpDone = false
-local function looksLikeCooldown(name)
-    local n = string.lower(tostring(name or ""))
-    return string.find(n, "ready", 1, true) ~= nil
-        or string.find(n, "cooldown", 1, true) ~= nil
-        or string.find(n, "until", 1, true) ~= nil
-        or string.find(n, "next", 1, true) ~= nil
-        or string.find(n, "reload", 1, true) ~= nil
-        or string.find(n, "fire", 1, true) ~= nil
-end
-
-local function clearWeaponCooldown(quiet)
-    local ch = LP and LP.Character
-    if not ch then return end
-    local tool = ch:FindFirstChildOfClass("Tool")
-    if not tool then return end
-    local okA, attrs = pcall(function() return tool:GetAttributes() end)
-    if not (okA and type(attrs) == "table") then return end
-    local list = {}
-    for k in pairs(attrs) do list[#list + 1] = k end
-    table.sort(list)
-
-    if not cdDumpDone and not quiet then
-        cdDumpDone = true
-        local parts = {}
-        for _, k in ipairs(list) do
-            parts[#parts + 1] = k .. "=" .. tostring(attrs[k])
-        end
-        print("[BS CD] оружие " .. tostring(tool.Name) .. ": "
-            .. (#parts > 0 and table.concat(parts, ", ") or "(атрибутов нет)"))
-    end
-    if not G.BS.NoCooldown then return end
-    for _, k in ipairs(list) do
-        local v = attrs[k]
-        if type(v) == "number" and v > 1000000000 and looksLikeCooldown(k) then
-            -- это заведомо метка времени «будущее» (os.time-подобная)
-            pcall(function() tool:SetAttribute(k, 0) end)
-        end
-    end
-end
-
 -- ============================================================
 --  ПАТРОНЫ: ПОПОЛНЕНИЕ ИЗ SUPPLY CACHES
 -- ============================================================
@@ -5803,9 +5448,29 @@ local function computeBulletPreShot()
                 if hit.Distance >= len - 1.2 then return nil end   -- это цель
                 local slack = tonumber(G.BS.OriginSlack) or 13
                 if slack < 1 then slack = 1 end
-                if hit.Distance > slack then return nil end
                 local d = (aimPos - srcPos).Unit
-                return hit.Position + d * 2
+                -- ТОЛЩИНА СТЕНЫ. Раньше вылет ставился на 2 студа за
+                -- поверхностью и при толстой стене оставался ВНУТРИ неё.
+                -- Считаем габарит детали вдоль луча и выносим точку за
+                -- дальнюю грань. Для Terrain/нестандартных деталей — 3 ст.
+                local ext = 1.5
+                local part = hit.Instance
+                if part and part:IsA("BasePart") then
+                    local okS, rel = pcall(function()
+                        return part.CFrame:VectorToObjectSpace(d)
+                    end)
+                    if okS and rel then
+                        ext = 0.5 * (
+                            math.abs(rel.X) * part.Size.X
+                          + math.abs(rel.Y) * part.Size.Y
+                          + math.abs(rel.Z) * part.Size.Z)
+                    end
+                end
+                if ext < 0.25 then ext = 0.25 end
+                if ext > 10 then ext = 10 end
+                local shift = hit.Distance + ext * 2 + 0.5
+                if shift > slack then return nil end
+                return hit.Position + d * (ext * 2 + 0.5)
             end)
             if okW and res then wallPast = res end
         end
@@ -5824,11 +5489,20 @@ local function computeBulletPreShot()
                 return workspace:Raycast(srcPos, toT, WALLRAY)
             end)
             if okG and hitG and hitG.Distance < lenG - 1.2 then
-                local behind = aimPos + toT.Unit * 5
-                ghostPos = behind + Vector3.new(0, 3, 0)
+                -- 4 студа за целью и 2.5 вверх: ближе к цели, чем старые
+                -- 5+3, меньше шанс оказаться внутри стены/пола.
+                local behind = aimPos + toT.Unit * 4
+                ghostPos = behind + Vector3.new(0, 2.5, 0)
                 ghostCFrame = CFrame.lookAt(ghostPos, aimPos)
             end
         end
+    end
+
+    -- Если стену можно обойти сдвигом точки вылета в пределах,
+    -- которые разрешает сервер (OriginSlack), предпочитаем этот путь:
+    -- без телепорта персонажа и без риска анти-чита.
+    if wallPast then
+        ghostPos, ghostCFrame = nil, nil
     end
 
     bulletPreShot = {
@@ -6469,6 +6143,20 @@ local function ncFireWeapon(...)
     end
     if not replaced then return nil end
 
+    -- ДИАГНОСТИКА ПРОСТРЕЛА: раз в секунду пишем, что именно подменили.
+    -- По этому логу видно, сработал ли телепорт/точка за стеной.
+    if pre.wallPast or pre.ghostPos then
+        local tnow = os.clock()
+        if not G.BS._bulletLogAt or tnow - G.BS._bulletLogAt >= 1 then
+            G.BS._bulletLogAt = tnow
+            print(string.format(
+                "[BS BULLET] прострел | ghost=%s | wallPast=%s | %s",
+                tostring(pre.ghostPos ~= nil),
+                tostring(pre.wallPast ~= nil),
+                table.concat(bits, ", ")))
+        end
+    end
+
     G.BS.SilentShots = G.BS.SilentShots + 1
     -- КАЖДЫЕ 25 ВЫСТРЕЛОВ печатаем долю попаданий. Так сразу видно,
     -- работает ли подмена: 0% = выстрелы отклоняются (угол взгляда
@@ -6667,19 +6355,26 @@ local function ncWrapper(self, ...)
                         local root = ch and ch:FindFirstChild("HumanoidRootPart")
                         if root then
                             local oldCFrame = root.CFrame
-                            pcall(function() root.CFrame = pre.ghostCFrame end)
-                            local _, resR = pcall(function()
-                                return NC.orig(self, table.unpack(out, 1, n))
-                            end)
-                            local hold = tonumber(G.BS.GhostHold) or 0.03
-                            if hold > 0 then
-                                task.delay(hold, function()
-                                    pcall(function() root.CFrame = oldCFrame end)
+                            local hold = math.clamp(tonumber(G.BS.GhostHold) or 0.12, 0.03, 0.3)
+                            -- ВАЖНО: не стреляем в том же кадре. Сначала
+                            -- ставим CFrame, ждём репликации на сервер, и
+                            -- только потом отправляем FireWeapon. Иначе
+                            -- сервер видит старую позицию и отклоняет шот.
+                            task.spawn(function()
+                                pcall(function() root.CFrame = pre.ghostCFrame end)
+                                task.wait(hold)
+                                pcall(function()
+                                    NC.orig(self, table.unpack(out, 1, n))
                                 end)
-                            else
+                                task.wait(0.05)
                                 pcall(function() root.CFrame = oldCFrame end)
+                            end)
+                            if G.BS.BulletDebug then
+                                print(string.format(
+                                    "[BS BULLET] прострел: телепорт к цели %s, удержание %.2f c",
+                                    tostring(pre.part and pre.part.Name), hold))
                             end
-                            return resR
+                            return nil
                         end
                     end
                     return NC.orig(self, table.unpack(out, 1, n))
@@ -7006,7 +6701,6 @@ connRemoving = Players.PlayerRemoving:Connect(function(p) remove(p) end)
 --  КАДР
 -- ============================================================
 local lastT = os.clock()
-local lastAmmo = 0
 local conn = RunService.RenderStepped:Connect(function()
     local now = os.clock()
     local dt = math.min(0.1, math.max(0.001, now - lastT))
@@ -7041,21 +6735,20 @@ local conn = RunService.RenderStepped:Connect(function()
     -- круг аима (ПОВ): видно, в каком радиусе скрипт видит цель
     pcall(drawFOV)
 
-    -- точка прицеливания (видно, куда реально летит патрон)
-    if G.BS.AimDot then pcall(updateAimDot) end
-
-    -- хитмаркер (подтверждение попадания) + лента событий
+    -- хитмаркер (подтверждение попадания)
     pcall(updateHitMark, now)
-    pcall(updateEvents, now)
-
-    -- звуковые метки: радар шума (выстрелы, крики)
-    pcall(updateNoiseMarks)
 
     -- танец на ходьбе + покачивание (спин крутит отдельный Heartbeat-коннект)
     pcall(danceTick, dt, now)
 
     -- авто-патроны: рядом с SupplyCrate (телепорт только если включён)
     pcall(function() G.BS.Supply.autoTick(now) end)
+
+    -- магнит монет: 12 раз в секунду, чтобы не грузить кадр
+    if now - (G.BS._coinNext or 0) >= 0.08 then
+        G.BS._coinNext = now
+        pcall(function() G.BS.Coins.magnetTick(now) end)
+    end
 
     -- раз в 4 с ловим анимации, которые игра играет на персонаже:
     -- если станцевать штатным эмоутом, его ID попадёт в список
@@ -7065,12 +6758,6 @@ local conn = RunService.RenderStepped:Connect(function()
         pcall(function() scanPlayingAnims({}, false) end)
         -- новые анимации сразу попадают в выпадающий список
         if #DANCES > before then pcall(refreshDanceDropdown) end
-    end
-
-    -- снятие кулдауна оружия (метки готовности держим в прошлом)
-    if G.BS.NoCooldown and now - lastAmmo >= 0.1 then
-        lastAmmo = now
-        pcall(clearWeaponCooldown, true)
     end
 
     local cam = workspace.CurrentCamera
@@ -7086,9 +6773,6 @@ local conn = RunService.RenderStepped:Connect(function()
         me = LP and LP.Character
         myRoot = me and me:FindFirstChild("HumanoidRootPart")
     end)
-
-    -- HUD: роль / фаза / патроны / цель (внутри — обновление раз в 0.2 с)
-    pcall(updateHud, now)
 
     -- ---------- ESP ----------
     for plr, e in pairs(by) do
@@ -7117,7 +6801,7 @@ local conn = RunService.RenderStepped:Connect(function()
             -- Красим И контур: именно он виден (заливка полупрозрачная).
             e.hl.OutlineColor     = color
             e.hl.FillTransparency = tonumber(G.BS.FillTransparency) or 0.7
-            e.hl.Enabled   = vis
+            e.hl.Enabled   = vis and G.BS.BodyHighlight
             e.gui.Enabled  = vis
 
             if vis then
@@ -7155,6 +6839,9 @@ local conn = RunService.RenderStepped:Connect(function()
                 end
                 local txt = table.concat(parts, "  ")
                 if e.lbl.Text ~= txt then e.lbl.Text = txt end
+                if e.lbl.TextSize ~= G.BS.LabelSize then
+                    e.lbl.TextSize = tonumber(G.BS.LabelSize) or 13
+                end
                 e.lbl.TextColor3 = color
                 e.lbl.Visible = true
 
@@ -7210,14 +6897,13 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.28",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.29",
     ConfigurationSaving = { Enabled = true },
 })
 
 local TAB  = Window:CreateTab("ESP", 4483362458)
 local AIMT = Window:CreateTab("AIM", 1101060692)
 local PLRT = Window:CreateTab("ИГРОК", 1183774348)
-local HUDT = Window:CreateTab("HUD", 1111111111)
 
 -- ЗАЩИТА СОЗДАНИЯ ЭЛЕМЕНТОВ: один упавший Create* не должен
 -- ронять всю вкладку. UI_ERR объявлена выше (в блоке состояния),
@@ -7252,193 +6938,9 @@ end
 local TB = mkTab(TAB,  "ESP")
 local AI = mkTab(AIMT, "AIM")
 local PL = mkTab(PLRT, "ИГРОК")
-local HUD = mkTab(HUDT, "HUD")
 
--- ======================= HUD =======================
-HUD.CreateSection("HUD")
-HUD.CreateToggle({ Name = "HUD (роль, фаза, патроны, цель)", Flag = "BS_Hud",
-    CurrentValue = G.BS.Hud,
-    Callback = function(v)
-        G.BS.Hud = v
-        if not v and hudLabel then hudLabel.Visible = false end
-    end })
-HUD.CreateToggle({ Name = "Статус цели (сбит/раскрыт/оглушён)", Flag = "BS_ShowStatus",
-    CurrentValue = G.BS.ShowStatus,
-    Callback = function(v) G.BS.ShowStatus = v end })
-HUD.CreateToggle({ Name = "Хитмаркер при попадании", Flag = "BS_HitMark",
-    CurrentValue = G.BS.HitMark,
-    Callback = function(v) G.BS.HitMark = v end })
-HUD.CreateColorPicker({ Name = "Цвет хитмаркера", Flag = "BS_HitMarkColor",
-    Color = G.BS.HitMarkColor,
-    Callback = function(c) G.BS.HitMarkColor = c end })
-HUD.CreateToggle({ Name = "Лента событий (раунд/разоблачения)", Flag = "BS_EventsOn",
-    CurrentValue = G.BS.EventsOn,
-    Callback = function(v)
-        G.BS.EventsOn = v
-        if not v and eventsLabel then eventsLabel.Visible = false end
-    end })
-
-HUD.CreateSection("Визуал")
-HUD.CreateToggle({ Name = "Прицел (crosshair)", Flag = "BS_Crosshair",
-    CurrentValue = G.BS.Crosshair ~= false,
-    Callback = function(v) G.BS.Crosshair = v end })
-HUD.CreateSlider({ Name = "Зазор прицела", Flag = "BS_CrosshairGap",
-    Range = {0, 20}, Increment = 1, CurrentValue = G.BS.CrosshairGap or 4,
-    Suffix = " px", Callback = function(v) G.BS.CrosshairGap = v end })
-HUD.CreateSlider({ Name = "Длина прицела", Flag = "BS_CrosshairLen",
-    Range = {4, 40}, Increment = 1, CurrentValue = G.BS.CrosshairLen or 10,
-    Suffix = " px", Callback = function(v) G.BS.CrosshairLen = v end })
-HUD.CreateColorPicker({ Name = "Цвет прицела", Flag = "BS_CrosshairColor",
-    Color = G.BS.CrosshairColor, Callback = function(c) G.BS.CrosshairColor = c end })
-HUD.CreateToggle({ Name = "Отдача прицела при выстреле", Flag = "BS_RecoilCrosshair",
-    CurrentValue = G.BS.RecoilCrosshair ~= false,
-    Callback = function(v) G.BS.RecoilCrosshair = v end })
-HUD.CreateSlider({ Name = "Сила отдачи прицела", Flag = "BS_RecoilAmount",
-    Range = {0, 24}, Increment = 1, CurrentValue = G.BS.RecoilAmount or 8,
-    Suffix = " px", Callback = function(v) G.BS.RecoilAmount = v end })
-HUD.CreateToggle({ Name = "Трейсер выстрела", Flag = "BS_ShotTracer",
-    CurrentValue = G.BS.ShotTracer ~= false,
-    Callback = function(v) G.BS.ShotTracer = v end })
-HUD.CreateColorPicker({ Name = "Цвет трейсера выстрела", Flag = "BS_ShotTracerColor",
-    Color = G.BS.ShotTracerColor, Callback = function(c) G.BS.ShotTracerColor = c end })
-HUD.CreateSlider({ Name = "Время трейсера выстрела", Flag = "BS_ShotTracerTime",
-    Range = {0.05, 1}, Increment = 0.05, CurrentValue = G.BS.ShotTracerTime or 0.25,
-    Suffix = " c", Callback = function(v) G.BS.ShotTracerTime = v end })
-HUD.CreateToggle({ Name = "Вспышка прицела при попадании", Flag = "BS_CrosshairHitFlash",
-    CurrentValue = G.BS.CrosshairHitFlash ~= false,
-    Callback = function(v) G.BS.CrosshairHitFlash = v end })
-HUD.CreateToggle({ Name = "Линия к цели (трейсер)", Flag = "BS_AimLine",
-    CurrentValue = G.BS.AimLine ~= false,
-    Callback = function(v) G.BS.AimLine = v end })
-HUD.CreateColorPicker({ Name = "Цвет трейсера", Flag = "BS_AimLineColor",
-    Color = G.BS.AimLineColor, Callback = function(c) G.BS.AimLineColor = c end })
-HUD.CreateToggle({ Name = "Круг дистанции", Flag = "BS_DistCircle",
-    CurrentValue = G.BS.DistCircle == true,
-    Callback = function(v) G.BS.DistCircle = v end })
-HUD.CreateSlider({ Name = "Радиус круга", Flag = "BS_DistCircleRadius",
-    Range = {10, 100}, Increment = 5, CurrentValue = G.BS.DistCircleRadius or 30,
-    Suffix = " px", Callback = function(v) G.BS.DistCircleRadius = v end })
-HUD.CreateColorPicker({ Name = "Цвет круга", Flag = "BS_DistCircleColor",
-    Color = G.BS.DistCircleColor, Callback = function(c) G.BS.DistCircleColor = c end })
-HUD.CreateToggle({ Name = "Скелет ESP", Flag = "BS_Skeleton",
-    CurrentValue = G.BS.Skeleton == true,
-    Callback = function(v) G.BS.Skeleton = v end })
-HUD.CreateSlider({ Name = "Толщина скелета", Flag = "BS_SkeletonThick",
-    Range = {1, 4}, Increment = 1, CurrentValue = G.BS.SkeletonThick or 1,
-    Callback = function(v) G.BS.SkeletonThick = v end })
-HUD.CreateToggle({ Name = "Полоска HP над головой", Flag = "BS_HealthBars",
-    CurrentValue = G.BS.HealthBars ~= false,
-    Callback = function(v) G.BS.HealthBars = v end })
-HUD.CreateSlider({ Name = "Ширина полоски HP", Flag = "BS_HealthBarWidth",
-    Range = {20, 80}, Increment = 2, CurrentValue = G.BS.HealthBarWidth or 40,
-    Suffix = " px", Callback = function(v) G.BS.HealthBarWidth = v end })
-HUD.CreateSlider({ Name = "Высота полоски HP", Flag = "BS_HealthBarHeight",
-    Range = {2, 10}, Increment = 1, CurrentValue = G.BS.HealthBarHeight or 4,
-    Suffix = " px", Callback = function(v) G.BS.HealthBarHeight = v end })
-HUD.CreateToggle({ Name = "Стрелки к целям за экраном", Flag = "BS_OffArrows",
-    CurrentValue = G.BS.OffArrows ~= false,
-    Callback = function(v) G.BS.OffArrows = v end })
-HUD.CreateToggle({ Name = "Chams (подсветка тела)", Flag = "BS_Chams",
-    CurrentValue = G.BS.Chams == true,
-    Callback = function(v) G.BS.Chams = v end })
-HUD.CreateSlider({ Name = "Прозрачность chams", Flag = "BS_ChamsFill",
-    Range = {0, 1}, Increment = 0.05, CurrentValue = G.BS.ChamsFill or 0.5,
-    Suffix = " x", Callback = function(v) G.BS.ChamsFill = v end })
-HUD.CreateColorPicker({ Name = "Цвет chams", Flag = "BS_ChamsColor",
-    Color = G.BS.ChamsColor, Callback = function(c) G.BS.ChamsColor = c end })
-HUD.CreateToggle({ Name = "Подсветка ящиков", Flag = "BS_CrateESP",
-    CurrentValue = G.BS.CrateESP == true,
-    Callback = function(v) G.BS.CrateESP = v end })
-HUD.CreateColorPicker({ Name = "Цвет ящиков", Flag = "BS_CrateColor",
-    Color = G.BS.CrateColor, Callback = function(c) G.BS.CrateColor = c end })
-HUD.CreateToggle({ Name = "Подсветка монет", Flag = "BS_CoinESP",
-    CurrentValue = G.BS.CoinESP == true,
-    Callback = function(v) G.BS.CoinESP = v end })
-HUD.CreateColorPicker({ Name = "Цвет монет", Flag = "BS_CoinColor",
-    Color = G.BS.CoinColor, Callback = function(c) G.BS.CoinColor = c end })
-HUD.CreateToggle({ Name = "Иконки ролей в ESP", Flag = "BS_RoleIcons",
-    CurrentValue = G.BS.RoleIcons ~= false,
-    Callback = function(v) G.BS.RoleIcons = v end })
-HUD.CreateToggle({ Name = "Оружие в ESP", Flag = "BS_WeaponESP",
-    CurrentValue = G.BS.WeaponESP ~= false,
-    Callback = function(v) G.BS.WeaponESP = v end })
-HUD.CreateToggle({ Name = "Таймер раунда", Flag = "BS_RoundTimer",
-    CurrentValue = G.BS.RoundTimer ~= false,
-    Callback = function(v) G.BS.RoundTimer = v end })
-HUD.CreateToggle({ Name = "Счётчик убийств", Flag = "BS_KillCounter",
-    CurrentValue = G.BS.KillCounter ~= false,
-    Callback = function(v) G.BS.KillCounter = v end })
-HUD.CreateToggle({ Name = "Счётчики живых/всего", Flag = "BS_CountsESP",
-    CurrentValue = G.BS.CountsESP ~= false,
-    Callback = function(v) G.BS.CountsESP = v end })
-HUD.CreateSection("Стиль и подсветка")
-HUD.CreateToggle({ Name = "Рамка вокруг головы", Flag = "BS_HeadBox",
-    CurrentValue = G.BS.HeadBox ~= false,
-    Callback = function(v) G.BS.HeadBox = v end })
-HUD.CreateSlider({ Name = "Размер рамки головы", Flag = "BS_HeadBoxSize",
-    Range = {10, 50}, Increment = 1, CurrentValue = G.BS.HeadBoxSize or 22,
-    Suffix = " px", Callback = function(v) G.BS.HeadBoxSize = v end })
-HUD.CreateColorPicker({ Name = "Цвет рамки головы", Flag = "BS_HeadBoxColor",
-    Color = G.BS.HeadBoxColor, Callback = function(c) G.BS.HeadBoxColor = c end })
-HUD.CreateToggle({ Name = "Цифры урона", Flag = "BS_DamageNumbers",
-    CurrentValue = G.BS.DamageNumbers ~= false,
-    Callback = function(v) G.BS.DamageNumbers = v end })
-HUD.CreateColorPicker({ Name = "Цвет цифр урона", Flag = "BS_DmgNumColor",
-    Color = G.BS.DmgNumColor, Callback = function(c) G.BS.DmgNumColor = c end })
-HUD.CreateToggle({ Name = "Ромб для вампиров", Flag = "BS_CornerBoxes",
-    CurrentValue = G.BS.CornerBoxes == true,
-    Callback = function(v) G.BS.CornerBoxes = v end })
-HUD.CreateToggle({ Name = "Стрелки звука", Flag = "BS_SoundArrows",
-    CurrentValue = G.BS.SoundArrows ~= false,
-    Callback = function(v) G.BS.SoundArrows = v end })
-HUD.CreateColorPicker({ Name = "Цвет стрелок звука", Flag = "BS_SoundArrowColor",
-    Color = G.BS.SoundArrowColor, Callback = function(c) G.BS.SoundArrowColor = c end })
-HUD.CreateToggle({ Name = "Полоска стамины", Flag = "BS_StaminaBar",
-    CurrentValue = G.BS.StaminaBar ~= false,
-    Callback = function(v) G.BS.StaminaBar = v end })
-HUD.CreateToggle({ Name = "Полоска патронов", Flag = "BS_AmmoBar",
-    CurrentValue = G.BS.AmmoBar ~= false,
-    Callback = function(v) G.BS.AmmoBar = v end })
-HUD.CreateSection("Метрики и миникарта")
-HUD.CreateToggle({ Name = "FPS в HUD", Flag = "BS_FPSCounter",
-    CurrentValue = G.BS.FPSCounter ~= false,
-    Callback = function(v) G.BS.FPSCounter = v end })
-HUD.CreateToggle({ Name = "Координаты и время в HUD", Flag = "BS_CoordsTime",
-    CurrentValue = G.BS.CoordsTime ~= false,
-    Callback = function(v) G.BS.CoordsTime = v end })
-HUD.CreateToggle({ Name = "Миникарта", Flag = "BS_Minimap",
-    CurrentValue = G.BS.Minimap == true,
-    Callback = function(v) G.BS.Minimap = v end })
-HUD.CreateSlider({ Name = "Размер миникарты", Flag = "BS_MinimapSize",
-    Range = {100, 300}, Increment = 10, CurrentValue = G.BS.MinimapSize or 160,
-    Suffix = " px", Callback = function(v) G.BS.MinimapSize = v end })
-HUD.CreateToggle({ Name = "Точка игрока на миникарте", Flag = "BS_MinimapSelf",
-    CurrentValue = G.BS.MinimapSelf ~= false,
-    Callback = function(v) G.BS.MinimapSelf = v end })
-HUD.CreateToggle({ Name = "Пинг и скорость в HUD", Flag = "BS_PingSpeed",
-    CurrentValue = G.BS.PingSpeed ~= false,
-    Callback = function(v) G.BS.PingSpeed = v end })
-HUD.CreateToggle({ Name = "Затухание коробок по дистанции", Flag = "BS_DistFade",
-    CurrentValue = G.BS.DistFade == true,
-    Callback = function(v) G.BS.DistFade = v end })
-HUD.CreateToggle({ Name = "Цифры HP на полоске", Flag = "BS_HPBarText",
-    CurrentValue = G.BS.HPBarText ~= false,
-    Callback = function(v) G.BS.HPBarText = v end })
-HUD.CreateToggle({ Name = "Красная рамка при низком HP", Flag = "BS_LowHPWarn",
-    CurrentValue = G.BS.LowHPWarn == true,
-    Callback = function(v) G.BS.LowHPWarn = v end })
-HUD.CreateSlider({ Name = "Порог HP для рамки", Flag = "BS_LowHPThreshold",
-    Range = {5, 60}, Increment = 5, CurrentValue = G.BS.LowHPThreshold or 30,
-    Suffix = " %", Callback = function(v) G.BS.LowHPThreshold = v end })
-HUD.CreateColorPicker({ Name = "Цвет рамки низкого HP", Flag = "BS_LowHPColor",
-    Color = G.BS.LowHPColor, Callback = function(c) G.BS.LowHPColor = c end })
-HUD.CreateToggle({ Name = "Подсветка улик / крови", Flag = "BS_ClueESP",
-    CurrentValue = G.BS.ClueESP == true,
-    Callback = function(v) G.BS.ClueESP = v end })
-HUD.CreateColorPicker({ Name = "Цвет улик", Flag = "BS_ClueColor",
-    Color = G.BS.ClueColor, Callback = function(c) G.BS.ClueColor = c end })
-
--- Кнопок-выключателей больше нет: везде обычные тумблеры Rayfield.
+-- Вкладка HUD и весь самописный HUD УДАЛЕНЫ по просьбе: остаётся только
+-- окно Rayfield. Прицел/хитмаркер переехали во вкладку AIM.
 
 -- Блок «ГЛАВНЫЙ ЦВЕТ (RGB)» удалён по просьбе: rgbColor/hexStr/
 -- hexToRGB/applyMainColor больше не вызываются.
@@ -7461,8 +6963,6 @@ TB.CreateColorPicker({ Name = "Цвет хантеров", Flag = "BS_HunterColo
     Color = G.BS.HunterColor, Callback = function(c) G.BS.HunterColor = c end })
 TB.CreateToggle({ Name = "Только вампиры (остальных скрыть)", Flag = "BS_OnlyVamps",
     CurrentValue = G.BS.OnlyVamps, Callback = function(v) G.BS.OnlyVamps = v end })
-TB.CreateToggle({ Name = "Помечать неизвестных [?]", Flag = "BS_ShowUnknown",
-    CurrentValue = G.BS.ShowUnknown, Callback = function(v) G.BS.ShowUnknown = v end })
 
 TB.CreateSection("Вид")
 TB.CreateToggle({ Name = "Ники", Flag = "BS_Names",
@@ -7471,7 +6971,7 @@ TB.CreateToggle({ Name = "Дистанция", Flag = "BS_ShowDist",
     CurrentValue = G.BS.ShowDist, Callback = function(v) G.BS.ShowDist = v end })
 TB.CreateToggle({ Name = "HP", Flag = "BS_ShowHP",
     CurrentValue = G.BS.ShowHP, Callback = function(v) G.BS.ShowHP = v end })
-TB.CreateToggle({ Name = "3D коробки", Flag = "BS_Boxes",
+TB.CreateToggle({ Name = "Коробки игроков", Flag = "BS_Boxes",
     CurrentValue = G.BS.Boxes,
     Callback = function(v)
         G.BS.Boxes = v
@@ -7480,20 +6980,130 @@ TB.CreateToggle({ Name = "3D коробки", Flag = "BS_Boxes",
             notify("в этом исполнителе нет Drawing — коробки выключены", 4)
         end
     end })
+TB.CreateToggle({ Name = "2D-коробки (плоские)", Flag = "BS_Box2D",
+    CurrentValue = G.BS.Box2D == true,
+    Callback = function(v) G.BS.Box2D = v end })
 TB.CreateSlider({ Name = "Толщина коробки", Flag = "BS_BoxThick",
     Range = {1, 6}, Increment = 1, CurrentValue = G.BS.BoxThick,
     Callback = function(v) G.BS.BoxThick = v end })
-TB.CreateSlider({ Name = "Макс. дистанция ESP (0 = вся)", Flag = "BS_MaxDist",
-    Range = {0, 2000}, Increment = 25, CurrentValue = G.BS.MaxDist,
-    Suffix = " studs", Callback = function(v) G.BS.MaxDist = v end })
+TB.CreateSlider({ Name = "Размер текста ESP", Flag = "BS_LabelSize",
+    Range = {9, 24}, Increment = 1, CurrentValue = G.BS.LabelSize or 13,
+    Suffix = " px", Callback = function(v) G.BS.LabelSize = v end })
+TB.CreateSection("Подсветка тела")
+-- Это существующий Highlight на персонаже (e.hl), а не второй слой.
+-- Отдельной «Chams» больше нет: она вешала второй Highlight и тело
+-- краснело вдвое.
+TB.CreateToggle({ Name = "Подсветка тела (chams)", Flag = "BS_BodyHighlight",
+    CurrentValue = G.BS.BodyHighlight ~= false,
+    Callback = function(v) G.BS.BodyHighlight = v end })
+TB.CreateSlider({ Name = "Прозрачность подсветки тела", Flag = "BS_FillTransparency",
+    Range = {0, 1}, Increment = 0.05, CurrentValue = G.BS.FillTransparency or 0.7,
+    Callback = function(v) G.BS.FillTransparency = v end })
 
+TB.CreateSection("Визуалы игроков")
+TB.CreateToggle({ Name = "Линии от низа экрана (snaplines)", Flag = "BS_Snaplines",
+    CurrentValue = G.BS.Snaplines ~= false,
+    Callback = function(v) G.BS.Snaplines = v end })
+TB.CreateSlider({ Name = "Толщина линий", Flag = "BS_SnapThick",
+    Range = {1, 4}, Increment = 1, CurrentValue = G.BS.SnapThick or 1,
+    Callback = function(v) G.BS.SnapThick = v end })
+TB.CreateToggle({ Name = "Аура под вампирами", Flag = "BS_VampAura",
+    CurrentValue = G.BS.VampAura ~= false,
+    Callback = function(v) G.BS.VampAura = v end })
+TB.CreateToggle({ Name = "Скелет ESP", Flag = "BS_Skeleton",
+    CurrentValue = G.BS.Skeleton == true,
+    Callback = function(v) G.BS.Skeleton = v end })
+TB.CreateSlider({ Name = "Толщина скелета", Flag = "BS_SkeletonThick",
+    Range = {1, 4}, Increment = 1, CurrentValue = G.BS.SkeletonThick or 1,
+    Callback = function(v) G.BS.SkeletonThick = v end })
+TB.CreateToggle({ Name = "Полоска HP над головой", Flag = "BS_HealthBars",
+    CurrentValue = G.BS.HealthBars ~= false,
+    Callback = function(v) G.BS.HealthBars = v end })
+TB.CreateSlider({ Name = "Ширина полоски HP", Flag = "BS_HealthBarWidth",
+    Range = {20, 80}, Increment = 2, CurrentValue = G.BS.HealthBarWidth or 40,
+    Suffix = " px", Callback = function(v) G.BS.HealthBarWidth = v end })
+TB.CreateSlider({ Name = "Высота полоски HP", Flag = "BS_HealthBarHeight",
+    Range = {2, 10}, Increment = 1, CurrentValue = G.BS.HealthBarHeight or 4,
+    Suffix = " px", Callback = function(v) G.BS.HealthBarHeight = v end })
+TB.CreateToggle({ Name = "Цифры HP на полоске", Flag = "BS_HPBarText",
+    CurrentValue = G.BS.HPBarText ~= false,
+    Callback = function(v) G.BS.HPBarText = v end })
+TB.CreateToggle({ Name = "Рамка вокруг головы", Flag = "BS_HeadBox",
+    CurrentValue = G.BS.HeadBox ~= false,
+    Callback = function(v) G.BS.HeadBox = v end })
+TB.CreateSlider({ Name = "Размер рамки головы", Flag = "BS_HeadBoxSize",
+    Range = {10, 50}, Increment = 1, CurrentValue = G.BS.HeadBoxSize or 22,
+    Suffix = " px", Callback = function(v) G.BS.HeadBoxSize = v end })
+TB.CreateColorPicker({ Name = "Цвет рамки головы", Flag = "BS_HeadBoxColor",
+    Color = G.BS.HeadBoxColor, Callback = function(c) G.BS.HeadBoxColor = c end })
+TB.CreateToggle({ Name = "Ромб для вампиров", Flag = "BS_CornerBoxes",
+    CurrentValue = G.BS.CornerBoxes == true,
+    Callback = function(v) G.BS.CornerBoxes = v end })
+TB.CreateToggle({ Name = "Цифры урона", Flag = "BS_DamageNumbers",
+    CurrentValue = G.BS.DamageNumbers ~= false,
+    Callback = function(v) G.BS.DamageNumbers = v end })
+TB.CreateColorPicker({ Name = "Цвет цифр урона", Flag = "BS_DmgNumColor",
+    Color = G.BS.DmgNumColor, Callback = function(c) G.BS.DmgNumColor = c end })
+TB.CreateToggle({ Name = "Стрелки к целям за экраном", Flag = "BS_OffArrows",
+    CurrentValue = G.BS.OffArrows ~= false,
+    Callback = function(v) G.BS.OffArrows = v end })
+TB.CreateToggle({ Name = "Стрелки звука", Flag = "BS_SoundArrows",
+    CurrentValue = G.BS.SoundArrows ~= false,
+    Callback = function(v) G.BS.SoundArrows = v end })
+TB.CreateColorPicker({ Name = "Цвет стрелок звука", Flag = "BS_SoundArrowColor",
+    Color = G.BS.SoundArrowColor, Callback = function(c) G.BS.SoundArrowColor = c end })
 
+TB.CreateSection("Трейсеры")
+TB.CreateToggle({ Name = "Трейсер выстрела", Flag = "BS_ShotTracer",
+    CurrentValue = G.BS.ShotTracer ~= false,
+    Callback = function(v) G.BS.ShotTracer = v end })
+TB.CreateColorPicker({ Name = "Цвет трейсера выстрела", Flag = "BS_ShotTracerColor",
+    Color = G.BS.ShotTracerColor, Callback = function(c) G.BS.ShotTracerColor = c end })
+TB.CreateSlider({ Name = "Время трейсера выстрела", Flag = "BS_ShotTracerTime",
+    Range = {0.05, 1}, Increment = 0.05, CurrentValue = G.BS.ShotTracerTime or 0.25,
+    Suffix = " c", Callback = function(v) G.BS.ShotTracerTime = v end })
+TB.CreateToggle({ Name = "Линия к цели (трейсер)", Flag = "BS_AimLine",
+    CurrentValue = G.BS.AimLine ~= false,
+    Callback = function(v) G.BS.AimLine = v end })
+TB.CreateColorPicker({ Name = "Цвет линии к цели", Flag = "BS_AimLineColor",
+    Color = G.BS.AimLineColor, Callback = function(c) G.BS.AimLineColor = c end })
 
-TB.CreateToggle({ Name = "Особая роль по предмету в подписи", Flag = "BS_ShowSpecialRole",
-    CurrentValue = G.BS.ShowSpecialRole,
-    Callback = function(v) G.BS.ShowSpecialRole = v end })
+TB.CreateSection("Объекты")
+TB.CreateToggle({ Name = "Подсветка ящиков", Flag = "BS_CrateESP",
+    CurrentValue = G.BS.CrateESP == true,
+    Callback = function(v) G.BS.CrateESP = v end })
+TB.CreateColorPicker({ Name = "Цвет ящиков", Flag = "BS_CrateColor",
+    Color = G.BS.CrateColor, Callback = function(c) G.BS.CrateColor = c end })
+TB.CreateToggle({ Name = "Подсветка монет", Flag = "BS_CoinESP",
+    CurrentValue = G.BS.CoinESP == true,
+    Callback = function(v) G.BS.CoinESP = v end })
+TB.CreateColorPicker({ Name = "Цвет монет", Flag = "BS_CoinColor",
+    Color = G.BS.CoinColor, Callback = function(c) G.BS.CoinColor = c end })
+TB.CreateToggle({ Name = "Подсветка улик / крови", Flag = "BS_ClueESP",
+    CurrentValue = G.BS.ClueESP == true,
+    Callback = function(v) G.BS.ClueESP = v end })
+TB.CreateColorPicker({ Name = "Цвет улик", Flag = "BS_ClueColor",
+    Color = G.BS.ClueColor, Callback = function(c) G.BS.ClueColor = c end })
+TB.CreateToggle({ Name = "Иконки ролей в ESP", Flag = "BS_RoleIcons",
+    CurrentValue = G.BS.RoleIcons ~= false,
+    Callback = function(v) G.BS.RoleIcons = v end })
+TB.CreateToggle({ Name = "Оружие в ESP", Flag = "BS_WeaponESP",
+    CurrentValue = G.BS.WeaponESP ~= false,
+    Callback = function(v) G.BS.WeaponESP = v end })
+TB.CreateToggle({ Name = "Затухание коробок по дистанции", Flag = "BS_DistFade",
+    CurrentValue = G.BS.DistFade == true,
+    Callback = function(v) G.BS.DistFade = v end })
 
-
+TB.CreateSection("Миникарта")
+TB.CreateToggle({ Name = "Миникарта", Flag = "BS_Minimap",
+    CurrentValue = G.BS.Minimap == true,
+    Callback = function(v) G.BS.Minimap = v end })
+TB.CreateSlider({ Name = "Размер миникарты", Flag = "BS_MinimapSize",
+    Range = {100, 300}, Increment = 10, CurrentValue = G.BS.MinimapSize or 160,
+    Suffix = " px", Callback = function(v) G.BS.MinimapSize = v end })
+TB.CreateToggle({ Name = "Точка игрока на миникарте", Flag = "BS_MinimapSelf",
+    CurrentValue = G.BS.MinimapSelf ~= false,
+    Callback = function(v) G.BS.MinimapSelf = v end })
 
 -- Секция «Сканер» с кнопками СКАНИРОВАТЬ ИГРУ / ГЛУБОКОЕ СКАНИРОВАНИЕ /
 -- ПРОВЕРКА ОРУЖИЯ / Сканировать при запуске УБРАНА по просьбе (см.
@@ -7557,34 +7167,53 @@ AI.CreateSlider({ Name = "Радиус круга (FOV)", Flag = "BS_AimFOV2",
 AI.CreateToggle({ Name = "Показывать круг аима",
     CurrentValue = G.BS.AimFOVShow ~= false,
     Callback = function(v) G.BS.AimFOVShow = v end })
+AI.CreateColorPicker({ Name = "Цвет круга аима", Flag = "BS_AimFOVColorPick",
+    Color = G.BS.AimFOVColor,
+    Callback = function(c) G.BS.AimFOVColor = c end })
+AI.CreateSlider({ Name = "Толщина круга аима", Flag = "BS_AimFOVThick",
+    Range = {1, 6}, Increment = 1, CurrentValue = G.BS.AimFOVThick or 2,
+    Suffix = " px", Callback = function(v) G.BS.AimFOVThick = v end })
+AI.CreateSlider({ Name = "Прозрачность круга аима", Flag = "BS_AimFOVAlpha",
+    Range = {0, 1}, Increment = 0.05, CurrentValue = G.BS.AimFOVAlpha or 0.35,
+    Callback = function(v) G.BS.AimFOVAlpha = v end })
 
-AI.CreateSection("Бой")
-AI.CreateToggle({
-    Name = "Без кулдауна оружия", Flag = "BS_NoCooldown",
-    CurrentValue = G.BS.NoCooldown,
-    Callback = function(v)
-        G.BS.NoCooldown = v
-        cdDumpDone = false   -- пусть напечатает актуальные атрибуты
-        pcall(clearWeaponCooldown, false)
+AI.CreateSection("Цель и наведение")
+local AIM_PART_LABELS = {
+    ["Голова"] = "Head",
+    ["Корпус"] = "UpperTorso",
+    ["Пояс"] = "HumanoidRootPart",
+    ["Любая ближайшая"] = "",
+}
+local AIM_PART_BACK = {
+    Head = "Голова",
+    UpperTorso = "Корпус",
+    HumanoidRootPart = "Пояс",
+    [""] = "Любая ближайшая",
+}
+AI.CreateDropdown({
+    Name = "Куда целиться",
+    Flag = "BS_AimPartPick",
+    Options = { "Голова", "Корпус", "Пояс", "Любая ближайшая" },
+    CurrentOption = { AIM_PART_BACK[G.BS.AimPart] or "Голова" },
+    MultipleOptions = false,
+    Callback = function(selected)
+        local picked = selected
+        if type(picked) == "table" then picked = picked[1] end
+        G.BS.AimPart = AIM_PART_LABELS[picked] or "Head"
     end,
 })
-AI.CreateButton({ Name = "Показать метки кулдауна (в консоль)",
-    Callback = function()
-        cdDumpDone = false
-        pcall(clearWeaponCooldown, false)
-        notify("Метки кулдауна — смотри [BS CD] в консоли", 4)
-    end })
-AI.CreateToggle({
-    Name = "Время выстрела сдвигать вперёд (обход WEAPON_COOLDOWN)",
-    Flag = "BS_ShotTimeHack",
-    CurrentValue = G.BS.ShotTimeHack,
-    Callback = function(v) G.BS.ShotTimeHack = v end,
-})
-AI.CreateSlider({ Name = "Сдвиг времени выстрела", Flag = "BS_ShotTimeStep",
-    Range = {0.1, 2}, Increment = 0.05,
-    CurrentValue = tonumber(G.BS.ShotTimeStep) or 0.55,
-    Suffix = " c",
-    Callback = function(v) G.BS.ShotTimeStep = v end })
+AI.CreateSlider({ Name = "Опережение цели", Flag = "BS_AimLeadPick",
+    Range = {0, 0.3}, Increment = 0.01,
+    CurrentValue = tonumber(G.BS.AimLead) or 0.08,
+    Suffix = " c", Callback = function(v) G.BS.AimLead = v end })
+AI.CreateSlider({ Name = "Скорость доводки (1 = мгновенно)", Flag = "BS_AimLockSpeedPick",
+    Range = {1, 35}, Increment = 1,
+    CurrentValue = tonumber(G.BS.AimLockSpeed) or 1,
+    Callback = function(v) G.BS.AimLockSpeed = v end })
+AI.CreateSlider({ Name = "Макс. дистанция аима", Flag = "BS_AimMaxDistPick",
+    Range = {50, 300}, Increment = 10,
+    CurrentValue = tonumber(G.BS.AimMaxDist) or 290,
+    Suffix = " st", Callback = function(v) G.BS.AimMaxDist = v end })
 AI.CreateToggle({ Name = "Подсветка текущей цели", Flag = "BS_TargetMark",
     CurrentValue = G.BS.TargetMark,
     Callback = function(v)
@@ -7594,26 +7223,34 @@ AI.CreateToggle({ Name = "Подсветка текущей цели", Flag = "B
 AI.CreateColorPicker({ Name = "Цвет подсветки цели", Flag = "BS_TargetMarkColor",
     Color = G.BS.TargetMarkColor,
     Callback = function(c) G.BS.TargetMarkColor = c end })
-AI.CreateColorPicker({ Name = "Цвет точки прицела", Flag = "BS_AimDotColor",
-    Color = G.BS.AimDotColor,
-    Callback = function(c) G.BS.AimDotColor = c end })
-AI.CreateToggle({ Name = "Точка прицеливания (видно, куда летит)", Flag = "BS_AimDot",
-    CurrentValue = G.BS.AimDot,
-    Callback = function(v)
-        G.BS.AimDot = v
-        if not v and aimDot then aimDot.Visible = false end
-    end })
-AI.CreateToggle({ Name = "Звуковые метки (где стреляли/кричали)", Flag = "BS_NoiseMarks",
-    CurrentValue = G.BS.NoiseMarks,
-    Callback = function(v) G.BS.NoiseMarks = v end })
-AI.CreateToggle({ Name = "Стрельба через стены (телепорт за спину)",
-    Flag = "BS_GhostShot",
-    CurrentValue = G.BS.GhostShot == true,
-    Callback = function(v) G.BS.GhostShot = v end })
-AI.CreateSlider({ Name = "Удержание телепорта (с)", Flag = "BS_GhostHold",
-    Range = {0, 0.2}, Increment = 0.01,
-    CurrentValue = tonumber(G.BS.GhostHold) or 0.03,
-    Suffix = " s", Callback = function(v) G.BS.GhostHold = v end })
+
+AI.CreateSection("Прицел и хитмаркер")
+AI.CreateToggle({ Name = "Свой прицел (crosshair)", Flag = "BS_Crosshair",
+    CurrentValue = G.BS.Crosshair ~= false,
+    Callback = function(v) G.BS.Crosshair = v end })
+AI.CreateSlider({ Name = "Зазор прицела", Flag = "BS_CrosshairGap",
+    Range = {0, 20}, Increment = 1, CurrentValue = G.BS.CrosshairGap or 4,
+    Suffix = " px", Callback = function(v) G.BS.CrosshairGap = v end })
+AI.CreateSlider({ Name = "Длина прицела", Flag = "BS_CrosshairLen",
+    Range = {4, 40}, Increment = 1, CurrentValue = G.BS.CrosshairLen or 10,
+    Suffix = " px", Callback = function(v) G.BS.CrosshairLen = v end })
+AI.CreateColorPicker({ Name = "Цвет прицела", Flag = "BS_CrosshairColor",
+    Color = G.BS.CrosshairColor, Callback = function(c) G.BS.CrosshairColor = c end })
+AI.CreateToggle({ Name = "Отдача прицела при выстреле", Flag = "BS_RecoilCrosshair",
+    CurrentValue = G.BS.RecoilCrosshair ~= false,
+    Callback = function(v) G.BS.RecoilCrosshair = v end })
+AI.CreateSlider({ Name = "Сила отдачи прицела", Flag = "BS_RecoilAmount",
+    Range = {0, 24}, Increment = 1, CurrentValue = G.BS.RecoilAmount or 8,
+    Suffix = " px", Callback = function(v) G.BS.RecoilAmount = v end })
+AI.CreateToggle({ Name = "Вспышка прицела при попадании", Flag = "BS_CrosshairHitFlash",
+    CurrentValue = G.BS.CrosshairHitFlash ~= false,
+    Callback = function(v) G.BS.CrosshairHitFlash = v end })
+AI.CreateToggle({ Name = "Хитмаркер при попадании", Flag = "BS_HitMark",
+    CurrentValue = G.BS.HitMark,
+    Callback = function(v) G.BS.HitMark = v end })
+AI.CreateColorPicker({ Name = "Цвет хитмаркера", Flag = "BS_HitMarkColor",
+    Color = G.BS.HitMarkColor,
+    Callback = function(c) G.BS.HitMarkColor = c end })
 
 -- Секция «Цель» («Кого целить», «Приоритет», «Радиус захвата») и
 -- пикеры «Цвет: захват цели» / «Цвет метки» удалены по просьбе.
@@ -7689,50 +7326,21 @@ PL.CreateButton({
     end,
 })
 
-PL.CreateSection("Прыжок")
-PL.CreateToggle({ Name = "Ускорение в прыжке", Flag = "BS_JumpBoostV2",
-    CurrentValue = G.BS.JumpBoostV2 ~= false,
-    Callback = function(v)
-        G.BS.JumpBoostV2 = v
-        -- НЕ disconnect: иначе после выключения и повторного включения
-        -- рывок больше не заработает до перезапуска скрипта. Если рывок
-        -- сейчас активен - возвращаем базу; иначе WalkSpeed не трогаем.
-        if not v and speedState.active then pcall(speedState.restore) end
-    end })
-PL.CreateSlider({ Name = "Разгон в прыжке", Flag = "BS_JumpBoostMul",
-    Range = {1.1, 10}, Increment = 0.1,
-    CurrentValue = tonumber(G.BS.JumpBoostMul) or 1.7,
-    Suffix = " x", Callback = function(v) G.BS.JumpBoostMul = v end })
-PL.CreateSlider({ Name = "Длительность разгона", Flag = "BS_JumpBoostTime",
-    Range = {0.2, 5}, Increment = 0.1,
-    CurrentValue = tonumber(G.BS.JumpBoostTime) or 0.8,
-    Suffix = " s", Callback = function(v) G.BS.JumpBoostTime = v end })
-PL.CreateToggle({ Name = "Усиленная сила прыжка (высота)", Flag = "BS_JumpPowerOn",
-    CurrentValue = G.BS.JumpPowerOn ~= false,
-    Callback = function(v)
-        G.BS.JumpPowerOn = v
-        -- сразу вернуть естественную высоту, не дожидаясь следующего шага
-        if not v then pcall(speedState.restoreJump) end
-    end })
-PL.CreateSlider({ Name = "Сила прыжка (множитель)", Flag = "BS_JumpPowerMul",
-    Range = {1, 10}, Increment = 0.1,
-    CurrentValue = tonumber(G.BS.JumpPowerMul) or 1.5,
-    Suffix = " x", Callback = function(v) G.BS.JumpPowerMul = v end })
 PL.CreateSection("Монеты")
-PL.CreateToggle({ Name = "Авто-сбор монет", Flag = "BS_CoinAuto",
+PL.CreateToggle({ Name = "Магнит монет (тащит к игроку)", Flag = "BS_CoinMagnet",
+    CurrentValue = G.BS.CoinMagnet ~= false,
+    Callback = function(v) G.BS.CoinMagnet = v end })
+PL.CreateSlider({ Name = "Радиус магнита", Flag = "BS_CoinMagnetRadius",
+    Range = {20, 600}, Increment = 10,
+    CurrentValue = tonumber(G.BS.CoinMagnetRadius) or 250,
+    Suffix = " st", Callback = function(v) G.BS.CoinMagnetRadius = v end })
+PL.CreateSlider({ Name = "Скорость притяжения", Flag = "BS_CoinMagnetPower",
+    Range = {0.1, 1}, Increment = 0.05,
+    CurrentValue = tonumber(G.BS.CoinMagnetPower) or 0.45,
+    Callback = function(v) G.BS.CoinMagnetPower = v end })
+PL.CreateToggle({ Name = "Авто-сбор через ремоут (если найден)", Flag = "BS_CoinAuto",
     CurrentValue = G.BS.CoinAuto ~= false,
     Callback = function(v) G.BS.CoinAuto = v end })
-PL.CreateButton({ Name = "СОБРАТЬ МОНЕТЫ СЕЙЧАС", Callback = function()
-    pcall(function() G.BS.CollectCoins() end)
-    notify("Монеты — смотри [BS COIN] в консоли", 4)
-end })
-PL.CreateButton({ Name = "НАУЧИТЬ СБОР МОНЕТ", Callback = function()
-    pcall(function() G.BS.LearnCoin() end)
-end })
-PL.CreateButton({ Name = "СКАНИРОВАТЬ МОНЕТЫ (в консоль)", Callback = function()
-    pcall(function() G.BS.CoinScan() end)
-    notify("Монеты — смотри [BS COIN] в консоли", 4)
-end })
 
 PL.CreateSection("Танец")
 dance.toggle = PL.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
@@ -7829,17 +7437,6 @@ danceDD = PL.CreateDropdown({
     end,
 })
 
-PL.CreateButton({ Name = "СПИСОК ТАНЦЕВ (в консоль)", Callback = function()
-    pcall(function()
-        print("[BS DANCE] всего танцев: " .. #DANCES)
-        for i = 1, #DANCES do
-            local d = DANCES[i]
-            print("  " .. i .. ") " .. tostring(d.label)
-                .. "  (" .. tostring(d.id or d.emote) .. ")")
-        end
-    end)
-    addEvent("список танцев выведен в консоль")
-end })
 PL.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
     Range = {10, 200}, Increment = 5, CurrentValue = G.BS.SpinSpeed,
     Suffix = " °/с", Callback = function(v)
@@ -7849,39 +7446,7 @@ PL.CreateSlider({ Name = "Скорость спина", Flag = "BS_SpinSpeed",
 -- Тумблер "Спин только стоя" удалён по просьбе: спин крутит и на ходу,
 -- и стоя (движение не мешает - модель просто вращается вокруг корня).
 
-PL.CreateSection("Роли (если скрипт ошибся)")
-local ROLE_HELP2 = "Игра сама сообщает, сколько в раунде вампиров и "
-    .. "хантеров, поэтому скрипт не может пометить больше. Если роль "
-    .. "определилась неверно - выставь её ручно: введи ник и нажми "
-    .. "нужную кнопку."
-PL.CreateParagraph({
-    Name    = ROLE_HELP2,
-    Title   = "Роли",
-    Content = ROLE_HELP2,
-    Text    = ROLE_HELP2,
-})
-PL.CreateInput({ Name = "Ник игрока", Flag = "BS_RoleName",
-    Placeholder = "ник в игре",
-    PlaceholderText = "ник в игре",
-    Callback = function(txt)
-        G.BS.RoleName = txt
-    end })
-PL.CreateButton({ Name = "ВАМПИР этому нику", Callback = function()
-    pcall(ROLES.set, G.BS.RoleName, "vampire")
-end })
-PL.CreateButton({ Name = "ХАНТЕР этому нику", Callback = function()
-    pcall(ROLES.set, G.BS.RoleName, "hunter")
-end })
-PL.CreateButton({ Name = "Снять роль этому нику", Callback = function()
-    pcall(ROLES.set, G.BS.RoleName, nil)
-end })
-PL.CreateButton({ Name = "СВОДКА РОЛЕЙ (в консоль)", Callback = function()
-    pcall(ROLES.summary)
-    notify("Сводка ролей — смотри [BS ROLE] в консоли", 4)
-end })
-PL.CreateButton({ Name = "СБРОСИТЬ ВСЕ РОЛИ", Callback = function()
-    pcall(ROLES.reset)
-end })
+PL.CreateSection("Скрипт")
 PL.CreateButton({ Name = "ОСТАНОВИТЬ СКРИПТ", Callback = function()
     pcall(function() G.BS_Stop() end)
 end })
@@ -7940,16 +7505,10 @@ G.BS_Stop = function()
     bulletPreShot = nil
     if Screen then pcall(function() Screen:Destroy() end) end
     if TargetHL then pcall(function() TargetHL:Destroy() end) end
-    if aimDot then pcall(function() aimDot:Remove() end) end
     if Overlay then pcall(function() Overlay:Destroy() end) end
     -- снять все Drawing/Highlight визуалов (прицел, миникарта, полоски...)
     if G.BS.VIS and G.BS.VIS.destroy then pcall(G.BS.VIS.destroy) end
     -- звуковые метки и HUD тоже снимаем, иначе останутся висеть
-    for i = 1, #noiseRings do pcall(function() noiseRings[i]:Remove() end) end
-    for i = 1, #noiseLabels do pcall(function() noiseLabels[i]:Remove() end) end
-    noiseRings, noiseLabels = {}, {}
-    if hudGui then pcall(function() hudGui:Destroy() end) end
-    hudGui, hudLabel, eventsLabel = nil, nil, nil
     for i = 1, #hitLines do pcall(function() hitLines[i]:Remove() end) end
     hitLines = {}
     EVENTS = {}
@@ -7966,7 +7525,6 @@ G.BS_Stop = function()
     Screen = nil
     Overlay = nil
     TargetHL = nil
-    aimDot = nil
     G.BS.MyRole = "?"
     -- BulletSwap НЕ трогаем: getgenv() живёт между запусками, и если
     -- выставить false, то при повторном запуске клиент айм не включится.
@@ -7995,7 +7553,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.28 остановлен")
+    print("[BS HUB] v11.29 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -8103,13 +7661,13 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.28 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.29 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
     .. " | лома: " .. tostring(G.BS.MeleeAim)
-    .. " | без кулдауна: " .. tostring(G.BS.NoCooldown)
     .. " | патроны: авто=" .. tostring(G.BS.AmmoAuto)
+    .. " | магнит монет: " .. tostring(G.BS.CoinMagnet ~= false)
     .. " | прострел: " .. tostring(G.BS.Penetrate)
     .. " | ошибок GUI=" .. #UI_ERR)
 -- Ошибки создания элементов печатаем одной строкой: по прошлому логу
