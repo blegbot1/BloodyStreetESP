@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.38
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.39
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -251,7 +251,7 @@ G.BS.ShotTracerTime   = tonumber(G.BS.ShotTracerTime) or 0.25
 G.BS.ShotTracerThick  = math.clamp(tonumber(G.BS.ShotTracerThick) or 2, 1, 5)
 G.BS.AimLine       = G.BS.AimLine ~= false
 G.BS.AimLineColor  = safeColor(G.BS.AimLineColor, Color3.new(1, 0, 0))
-G.BS.AimLineThick  = math.clamp(tonumber(G.BS.AimLineThick) or 1, 1, 5)
+G.BS.AimLineThick  = math.clamp(tonumber(G.BS.AimLineThick) or 3, 3, 8)
 G.BS.AimLineAlpha  = math.clamp(tonumber(G.BS.AimLineAlpha) or 1, 0, 1)
 G.BS.SnapFrom      = pickOpt(G.BS.SnapFrom, TRACER_ORIGINS, "Низ экрана")
 G.BS.AimLineFrom   = pickOpt(G.BS.AimLineFrom, TRACER_ORIGINS, "Центр")
@@ -262,13 +262,18 @@ G.BS.HealthBars    = G.BS.HealthBars ~= false
 G.BS.HealthBarWidth  = tonumber(G.BS.HealthBarWidth) or 40
 G.BS.HealthBarHeight = tonumber(G.BS.HealthBarHeight) or 4
 G.BS.OffArrows     = G.BS.OffArrows ~= false
--- НОВЫЕ ESP-ВИЗУАЛЫ: линии от низа экрана + аура под вампирами.
+-- НОВЫЕ ESP-ВИЗУАЛЫ: стрелки к игрокам (snaplines).
 G.BS.Snaplines     = G.BS.Snaplines ~= false
 G.BS.SnapThick     = tonumber(G.BS.SnapThick) or 1
-G.BS.VampAura      = G.BS.VampAura ~= false
--- v11.36: тонкий кружок под КАЖДЫМ игроком (в цвете роли). У вампиров
--- поверх него рисуется аура из двух колец.
-G.BS.FootRing      = G.BS.FootRing ~= false
+-- v11.39: линии к игрокам стали СТРЕЛКАМИ. Толщина своя: старые
+-- сохранённые 1 px не должны перебивать новый красивый дефолт.
+G.BS.SnapArrowThick = math.clamp(tonumber(G.BS.SnapArrowThick) or 3, 2, 8)
+-- v11.39: КОЛЬЦО ПОД ИГРОКОМ И АУРА ВАМПИРА УДАЛЕНЫ по просьбе.
+-- На близкой дистанции кольцо радиусом 2–4 студа занимало пол-экрана
+-- и выглядело как огромный красный круг. Принудительно выключаем, даже
+-- если в getgenv() остались старые true.
+G.BS.VampAura      = false
+G.BS.FootRing      = false
 -- v11.31: скорость цели в подписи и цвет ника по HP.
 G.BS.ShowSpeed     = G.BS.ShowSpeed == true
 G.BS.NameHPColor   = G.BS.NameHPColor == true
@@ -1771,6 +1776,15 @@ for i = 1, VMAX do
         arrow = vLine(),
         headBox = vSquare(),
         snap = vLine(),
+        -- v11.39: стрелка-линия — свечение, тёмная обводка и два уса.
+        snapGlow = vLine(),
+        snapOut = vLine(),
+        snapH1 = vLine(),
+        snapH2 = vLine(),
+        -- стрелка у края экрана (цель за кадром) — тоже с усами.
+        arrowOut = vLine(),
+        arrowH1 = vLine(),
+        arrowH2 = vLine(),
         aura = {},
         auraOn = false,
     }
@@ -1781,6 +1795,11 @@ local hpPrev = {}
 local hpFlash = {}
 
 local aimLine = vLine()
+-- v11.39: линия аимлока тоже стала стрелкой — свечение, обводка, усы.
+local aimGlow = vLine()
+local aimOut = vLine()
+local aimH1 = vLine()
+local aimH2 = vLine()
 -- КОЛЬЦО ЗАХВАТА: показывает, на кого СЕЙЧАС работает аймлок.
 -- Тонкое кольцо вокруг головы + 4 вращающиеся засечки + анимация
 -- захвата (при смене цели кольцо схлопывается на место).
@@ -1859,12 +1878,14 @@ function VIS.destroy()
     end
     for i = 1, #crossLines do rm(crossLines[i]) end
     rm(aimLine)
+    rm(aimGlow); rm(aimOut); rm(aimH1); rm(aimH2)
     for i = 1, #vpool do
         local p = vpool[i]
         for j = 1, #(p.skeleton or {}) do rm(p.skeleton[j]) end
         for j = 1, #(p.aura or {}) do rm(p.aura[j]) end
         rm(p.hpBg); rm(p.hpBorder); rm(p.hpFg); rm(p.hpText); rm(p.arrow); rm(p.headBox)
-        rm(p.snap)
+        rm(p.snap); rm(p.snapGlow); rm(p.snapOut); rm(p.snapH1); rm(p.snapH2)
+        rm(p.arrowOut); rm(p.arrowH1); rm(p.arrowH2)
     end
     for i = 1, #dmgNums do rm(dmgNums[i].obj) end
     for i = 1, #soundArrows do rm(soundArrows[i]) end
@@ -1925,6 +1946,90 @@ local function screenOrigin(kind, cx, cy, vp)
     return Vector2.new(cx, cy)
 end
 
+-- СТРЕЛКА (v11.39). Раньше линии были одиночными штрихами в 1 px —
+-- тонкими и невзрачными. Теперь у стрелки есть свечение, тёмная
+-- обводка, толстый ствол и наконечник из двух «усов». Так сразу
+-- видно, куда смотреть, и не приходится вглядываться в экран.
+local function drawArrowParts(glow, out, shaft, h1, h2, from, to, color, thick, alpha)
+    local function hideAll()
+        vHideLine(glow); vHideLine(out); vHideLine(shaft)
+        vHideLine(h1); vHideLine(h2)
+    end
+    if not from or not to or not shaft then hideAll() return end
+    local dx, dy = to.X - from.X, to.Y - from.Y
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len < 6 then hideAll() return end
+    local ux, uy = dx / len, dy / len
+    local head = math.clamp(len * 0.18, 18, 38)
+    local shaftTo = Vector2.new(to.X - ux * head * 0.85, to.Y - uy * head * 0.85)
+    -- свечение под линией
+    vSetLine(glow, from, shaftTo, color, thick + 8)
+    if glow then glow.Transparency = 0.82 end
+    -- тёмная обводка, чтобы стрелка читалась на любом фоне
+    vSetLine(out, from, shaftTo, Color3.new(0, 0, 0), thick + 3)
+    if out then out.Transparency = 0.5 end
+    -- сам ствол
+    vSetLine(shaft, from, shaftTo, color, thick)
+    if shaft then shaft.Transparency = alpha end
+    -- наконечник
+    local ang = math.atan2(uy, ux)
+    local s1, s2 = ang + math.rad(25), ang - math.rad(25)
+    vSetLine(h1, to,
+        Vector2.new(to.X - math.cos(s1) * head, to.Y - math.sin(s1) * head),
+        color, thick + 1)
+    vSetLine(h2, to,
+        Vector2.new(to.X - math.cos(s2) * head, to.Y - math.sin(s2) * head),
+        color, thick + 1)
+    if h1 then h1.Transparency = alpha end
+    if h2 then h2.Transparency = alpha end
+end
+
+local function drawSnapArrow(p, from, to, color, thick, alpha)
+    drawArrowParts(p.snapGlow, p.snapOut, p.snap, p.snapH1, p.snapH2,
+        from, to, color, thick, alpha)
+end
+
+local function hideSnapArrow(p)
+    vHideLine(p.snap); vHideLine(p.snapGlow); vHideLine(p.snapOut)
+    vHideLine(p.snapH1); vHideLine(p.snapH2)
+end
+
+local function drawAimArrow(from, to, color, thick, alpha)
+    drawArrowParts(aimGlow, aimOut, aimLine, aimH1, aimH2,
+        from, to, color, thick, alpha)
+end
+
+local function hideAimArrow()
+    vHideLine(aimLine); vHideLine(aimGlow); vHideLine(aimOut)
+    vHideLine(aimH1); vHideLine(aimH2)
+end
+
+-- Короткая стрелка у КРАЯ ЭКРАНА (цель за кадром).
+local function drawEdgeArrow(p, tip, ux, uy, color, thick, alpha)
+    local len = 30 + thick * 4
+    local from = Vector2.new(tip.X - ux * len, tip.Y - uy * len)
+    vSetLine(p.arrowOut, from, tip, Color3.new(0, 0, 0), thick + 3)
+    if p.arrowOut then p.arrowOut.Transparency = 0.5 end
+    vSetLine(p.arrow, from, tip, color, thick)
+    if p.arrow then p.arrow.Transparency = alpha end
+    local ang = math.atan2(uy, ux)
+    local hl = 13 + thick * 2
+    local s1, s2 = ang + math.rad(28), ang - math.rad(28)
+    vSetLine(p.arrowH1, tip,
+        Vector2.new(tip.X - math.cos(s1) * hl, tip.Y - math.sin(s1) * hl),
+        color, thick + 1)
+    vSetLine(p.arrowH2, tip,
+        Vector2.new(tip.X - math.cos(s2) * hl, tip.Y - math.sin(s2) * hl),
+        color, thick + 1)
+    if p.arrowH1 then p.arrowH1.Transparency = alpha end
+    if p.arrowH2 then p.arrowH2.Transparency = alpha end
+end
+
+local function hideEdgeArrow(p)
+    vHideLine(p.arrow); vHideLine(p.arrowOut)
+    vHideLine(p.arrowH1); vHideLine(p.arrowH2)
+end
+
 function VIS.update(cam, myRoot, by, locked)
     local vp = cam.ViewportSize
     local cx, cy = vp.X * 0.5, vp.Y * 0.5
@@ -1952,20 +2057,18 @@ function VIS.update(cam, myRoot, by, locked)
     if G.BS.AimLine and lockedPart and myRoot then
         local sp = vProj(cam, lockedPart.Position)
         if sp and sp.Z > 0 then
-            vSetLine(aimLine,
+            -- v11.39: линия аимлока — теперь стрелка к цели.
+            drawAimArrow(
                 screenOrigin(G.BS.AimLineFrom, cx, cy, vp),
                 Vector2.new(sp.X, sp.Y),
                 safeColor(G.BS.AimLineColor, Color3.new(1, 0, 0)),
-                tonumber(G.BS.AimLineThick) or 1)
-            if aimLine then
-                aimLine.Transparency = math.clamp(
-                    tonumber(G.BS.AimLineAlpha) or 1, 0, 1)
-            end
+                math.max(tonumber(G.BS.AimLineThick) or 3, 3),
+                math.clamp(tonumber(G.BS.AimLineAlpha) or 1, 0, 1))
         else
-            vHideLine(aimLine)
+            hideAimArrow()
         end
     else
-        vHideLine(aimLine)
+        hideAimArrow()
     end
 
     -- 2.2) КОЛЬЦО ЗАХВАТА: видно, на кого работает аймлок. Тонкое
@@ -2278,81 +2381,39 @@ function VIS.update(cam, myRoot, by, locked)
             vHideSquare(p.headBox)
         end
 
-        -- ЛИНИЯ ОТ КРАЯ ЭКРАНА (snapline). Откуда идёт и насколько
-        -- прозрачная — из настроек.
-        if G.BS.Snaplines and root and root.Parent then
+        -- СТРЕЛКА К ИГРОКУ (v11.39). Раньше — тонкая линия 1 px,
+        -- которая терялась на фоне. Теперь это заметная стрелка с
+        -- обводкой и наконечником. Себе стрелку не рисуем: игрок и
+        -- так видит свой персонаж.
+        local isLocal = (tPlr == LP)
+        if G.BS.Snaplines ~= false and not isLocal and root and root.Parent then
             local sp = vProj(cam, root.Position + Vector3.new(0, 2, 0))
             if sp and sp.Z > 0 then
-                vSetLine(p.snap,
-                    screenOrigin(G.BS.SnapFrom, vp.X * 0.5, vp.Y * 0.5, vp),
+                drawSnapArrow(p,
+                    screenOrigin(G.BS.SnapFrom, cx, cy, vp),
                     Vector2.new(sp.X, sp.Y),
-                    color, tonumber(G.BS.SnapThick) or 1)
-                if p.snap then
-                    p.snap.Transparency = math.clamp(
-                        tonumber(G.BS.SnapAlpha) or 1, 0, 1)
-                end
+                    color,
+                    tonumber(G.BS.SnapArrowThick) or 3,
+                    math.clamp(tonumber(G.BS.SnapAlpha) or 1, 0, 1))
             else
-                vHideLine(p.snap)
+                hideSnapArrow(p)
             end
         else
-            vHideLine(p.snap)
+            hideSnapArrow(p)
         end
 
-        -- КРУЖОК ПОД ИГРОКОМ (v11.36). У вампиров — два кольца (аура),
-        -- у остальных — одно тонкое кольцо в цвете роли. С лёгким
-        -- «дыханием» радиуса.
-        local wantAura = G.BS.VampAura and role == "vampire"
-        local wantRing = G.BS.FootRing ~= false
-        if (wantAura or wantRing) and root and root.Parent then
-            local pulse = 1 + 0.06 * math.sin(nowT * 2.2)
-            local groundY = root.Position.Y - 2.9
-            local rings = {}
-            if wantAura then
-                rings[1] = { r = 3.5, t = 1, tr = 0.2 }
-                rings[2] = { r = 2.5, t = 2, tr = 0.5 }
-            else
-                rings[1] = { r = 2.2, t = 1, tr = 0.35 }
-            end
-            for ri = 1, #rings do
-                local ring = rings[ri]
-                local n = 22
-                local prev = nil
-                for k = 0, n do
-                    local ang = (k / n) * math.pi * 2
-                    local rad = ring.r * pulse
-                    local wp = Vector3.new(
-                        root.Position.X + math.cos(ang) * rad,
-                        groundY,
-                        root.Position.Z + math.sin(ang) * rad)
-                    local sp = vProj(cam, wp)
-                    local cur = (sp and sp.Z > 0)
-                        and Vector2.new(sp.X, sp.Y) or nil
-                    if k > 0 then
-                        local idx = (ri - 1) * 22 + k
-                        local line = p.aura[idx]
-                        if not line then line = vLine(); p.aura[idx] = line end
-                        if prev and cur then
-                            vSetLine(line, prev, cur, color, ring.t)
-                            if line.Transparency then line.Transparency = ring.tr end
-                        else
-                            vHideLine(line)
-                        end
-                    end
-                    prev = cur
-                end
-            end
-            -- прячем кольцо, если их больше не нужно
-            for j = (#rings) * 22 + 1, 44 do
-                if p.aura[j] then p.aura[j].Visible = false end
-            end
-            p.auraOn = true
-        elseif p.auraOn then
+        -- КОЛЬЦО ПОД ИГРОКОМ И АУРА ВАМПИРА УДАЛЕНЫ (v11.39).
+        -- Причина: на близкой дистанции кольцо радиусом 2–4 студа
+        -- занимало пол-экрана (огромный красный круг вокруг персонажа).
+        if p.auraOn then
             for i = 1, #p.aura do vHideLine(p.aura[i]) end
             p.auraOn = false
         end
 
-        -- СТРЕЛКА ЗА ЭКРАНОМ
-        if G.BS.OffArrows and ch and ch.Parent and root and root.Parent then
+        -- СТРЕЛКА У КРАЯ ЭКРАНА (цель за кадром). v11.39: тоже стала
+        -- полноценной стрелкой с наконечником, а не штрихом в 12 px.
+        if G.BS.OffArrows and not isLocal
+           and ch and ch.Parent and root and root.Parent then
             local sp = vProj(cam, root.Position)
             local onScreen = sp and sp.Z > 0
                 and sp.X >= 0 and sp.X <= vp.X and sp.Y >= 0 and sp.Y <= vp.Y
@@ -2366,17 +2427,18 @@ function VIS.update(cam, myRoot, by, locked)
                 local mag = dir.Magnitude
                 if mag < 0.001 then dir = Vector2.new(0, -1); mag = 1 end
                 local ux, uy = dir.X / mag, dir.Y / mag
-                local margin = 30
+                local margin = 34
                 local reach = math.min(cx, cy) - margin
                 if reach < 10 then reach = 10 end
                 local ax = math.clamp(cx + ux * reach, margin, vp.X - margin)
                 local ay = math.clamp(cy + uy * reach, margin, vp.Y - margin)
-                vSetLine(p.arrow, Vector2.new(ax, ay), Vector2.new(ax + ux * 12, ay + uy * 12), color, 2)
+                drawEdgeArrow(p, Vector2.new(ax, ay), ux, uy, color, 3,
+                    math.clamp(tonumber(G.BS.SnapAlpha) or 1, 0, 1))
             else
-                vHideLine(p.arrow)
+                hideEdgeArrow(p)
             end
         else
-            vHideLine(p.arrow)
+            hideEdgeArrow(p)
         end
 
     end
@@ -7976,7 +8038,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.38",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.39",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -8115,15 +8177,16 @@ TB.CreateToggle({ Name = "Затухание коробок по дистанц�
     CurrentValue = G.BS.DistFade == true,
     Callback = function(v) G.BS.DistFade = v end })
 TB.CreateSection("Визуалы игроков")
-TB.CreateParagraph({ Text = "Дополнительные визуалы над игроками: линии, аура, скелет, полоска HP, рамка головы." })
-TB.CreateToggle({ Name = "Линии от низа экрана (snaplines)", Flag = "BS_Snaplines",
+TB.CreateParagraph({ Text = "Стрелки к игрокам — толстые, со свечением, обводкой и наконечником. Плюс скелет, полоска HP и рамка головы." })
+TB.CreateToggle({ Name = "Стрелки к игрокам (snaplines)", Flag = "BS_Snaplines",
     CurrentValue = G.BS.Snaplines ~= false,
     Callback = function(v) G.BS.Snaplines = v end })
-TB.CreateSlider({ Name = "Толщина линий", Flag = "BS_SnapThick",
-    Range = {1, 4}, Increment = 1, CurrentValue = G.BS.SnapThick or 1,
-    Callback = function(v) G.BS.SnapThick = v end })
+TB.CreateSlider({ Name = "Толщина стрелок", Flag = "BS_SnapArrowThick",
+    Range = {2, 8}, Increment = 1,
+    CurrentValue = tonumber(G.BS.SnapArrowThick) or 3,
+    Suffix = " px", Callback = function(v) G.BS.SnapArrowThick = v end })
 TB.CreateDropdown({
-    Name = "Линии от: откуда",
+    Name = "Стрелки от: откуда",
     Flag = "BS_SnapFromPick",
     Options = TRACER_ORIGINS,
     CurrentOption = { G.BS.SnapFrom },
@@ -8134,16 +8197,10 @@ TB.CreateDropdown({
         if type(picked) == "string" then G.BS.SnapFrom = picked end
     end,
 })
-TB.CreateSlider({ Name = "Прозрачность линий", Flag = "BS_SnapAlpha",
+TB.CreateSlider({ Name = "Прозрачность стрелок", Flag = "BS_SnapAlpha",
     Range = {0, 10}, Increment = 1,
     CurrentValue = math.floor((tonumber(G.BS.SnapAlpha) or 1) * 10 + 0.5),
     Suffix = " /10", Callback = function(v) G.BS.SnapAlpha = v / 10 end })
-TB.CreateToggle({ Name = "Аура под вампирами (2 кольца)", Flag = "BS_VampAura",
-    CurrentValue = G.BS.VampAura ~= false,
-    Callback = function(v) G.BS.VampAura = v end })
-TB.CreateToggle({ Name = "Кружок под игроком (по роли)", Flag = "BS_FootRing",
-    CurrentValue = G.BS.FootRing ~= false,
-    Callback = function(v) G.BS.FootRing = v end })
 TB.CreateToggle({ Name = "Линии между вампирами", Flag = "BS_VampLinks",
     CurrentValue = G.BS.VampLinks == true,
     Callback = function(v) G.BS.VampLinks = v end })
@@ -8216,13 +8273,14 @@ TB.CreateSlider({ Name = "Время трейсера выстрела", Flag = 
 TB.CreateSlider({ Name = "Толщина трейсера выстрела", Flag = "BS_ShotTracerThick",
     Range = {1, 5}, Increment = 1, CurrentValue = G.BS.ShotTracerThick or 2,
     Suffix = " px", Callback = function(v) G.BS.ShotTracerThick = v end })
-TB.CreateToggle({ Name = "Линия к цели (трейсер)", Flag = "BS_AimLine",
+TB.CreateToggle({ Name = "Стрелка к цели (трейсер)", Flag = "BS_AimLine",
     CurrentValue = G.BS.AimLine ~= false,
     Callback = function(v) G.BS.AimLine = v end })
-TB.CreateColorPicker({ Name = "Цвет линии к цели", Flag = "BS_AimLineColor",
+TB.CreateColorPicker({ Name = "Цвет стрелки к цели", Flag = "BS_AimLineColor",
     Color = G.BS.AimLineColor, Callback = function(c) G.BS.AimLineColor = c end })
-TB.CreateSlider({ Name = "Толщина линии к цели", Flag = "BS_AimLineThick",
-    Range = {1, 5}, Increment = 1, CurrentValue = G.BS.AimLineThick or 1,
+TB.CreateSlider({ Name = "Толщина стрелки к цели", Flag = "BS_AimLineThick",
+    Range = {3, 8}, Increment = 1,
+    CurrentValue = math.max(tonumber(G.BS.AimLineThick) or 3, 3),
     Suffix = " px", Callback = function(v) G.BS.AimLineThick = v end })
 TB.CreateSlider({ Name = "Прозрачность линии к цели", Flag = "BS_AimLineAlpha",
     Range = {0, 10}, Increment = 1,
@@ -8802,7 +8860,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.38 остановлен")
+    print("[BS HUB] v11.39 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -8910,7 +8968,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.38 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.39 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
