@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.39
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.40
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -1540,11 +1540,13 @@ local function makeBox()
     return b
 end
 
--- КОРОБКА ESP. Считается по РЕАЛЬНЫМ габаритам персонажа
--- (Model:GetExtentsSize), поэтому рамка облегает игрока ЦЕЛИКОМ,
--- а не только голову. Раньше бралась только голова и корень, и
--- коробка выглядела как маленький квадрат возле головы.
--- Стили: «Рамка» (2D), «Уголки», «3D-коробка» (12 рёбер по проекции).
+-- КОРОБКА ESP. Размер И ЦЕНТР берутся из Model:GetBoundingBox() — это
+-- готовый параллелепипед вокруг ВСЕЙ модели. Раньше были GetExtentsSize
+-- + GetPivot: у многих ригов pivot стоит на голове, поэтому 3D-коробка
+-- рисовалась вокруг головы, а не вокруг тела. GetBoundingBox() возвращает
+-- центр габаритов и их ориентацию, так что коробка облегает игрока
+-- целиком и поворачивается вместе с ним.
+-- Стили: «Рамка» (2D), «Уголки», «3D-коробка» (12 рёбер).
 local function drawBox(b, root, cam)
     if not b or not b.lines then return end
     local camera = cam or workspace.CurrentCamera
@@ -1558,43 +1560,44 @@ local function drawBox(b, root, cam)
         return
     end
     local ch = root.Parent
-    -- ГАБАРИТЫ: вся модель, иначе — запасной вариант голова+корень.
-    -- GetExtentsSize обходит все части, поэтому результат кэшируем
-    -- на секунду (и пересчитываем при смене персонажа).
-    local ctr = root.Position
-    local hw, hh, hd = 1.3, 2.9, 1.1
     local nowB = os.clock()
-    if b.char ~= ch or nowB - (b.sizeAt or 0) > 1 then
+    -- Пересчёт габаритов: при смене персонажа и раз в 0.4 с (не каждый кадр).
+    if b.char ~= ch or nowB - (b.sizeAt or 0) > 0.4 then
         b.char = ch
         b.sizeAt = nowB
+        b.cf = nil
         b.size = nil
-        b.ctr = nil
         if ch and ch:IsA("Model") then
-            local okS, s = pcall(function() return ch:GetExtentsSize() end)
-            if okS and type(s) == "Vector3" and s.Magnitude > 0.1 then
-                b.size = s
-                local okP, p = pcall(function() return ch:GetPivot() end)
-                if okP and p and type(p) == "CFrame" then b.ctr = p.Position end
+            local okB, cfB, szB = pcall(function()
+                local c, s = ch:GetBoundingBox()
+                return c, s
+            end)
+            if okB and typeof(cfB) == "CFrame"
+               and typeof(szB) == "Vector3" and szB.Magnitude > 0.1 then
+                b.cf = cfB
+                b.size = szB
             end
         end
     end
-    if b.size then
-        hw, hh, hd = b.size.X * 0.5, b.size.Y * 0.5, b.size.Z * 0.5
-    end
-    if b.ctr then ctr = b.ctr end
+    local cf = b.cf or CFrame.new(root.Position)
+    -- Запасной вариант, если GetBoundingBox не сработал.
+    local size = b.size or Vector3.new(2.6, 5.8, 2.2)
+    -- Небольшой запас, чтобы углы не резали руки/макушку.
+    local hw = size.X * 0.5 + 0.15
+    local hh = size.Y * 0.5 + 0.15
+    local hd = size.Z * 0.5 + 0.15
     local C = {
-        Vector3.new(-hw, -hh, -hd), Vector3.new(hw, -hh, -hd),
-        Vector3.new(hw, -hh, hd), Vector3.new(-hw, -hh, hd),
-        Vector3.new(-hw, hh, -hd), Vector3.new(hw, hh, -hd),
-        Vector3.new(hw, hh, hd), Vector3.new(-hw, hh, hd),
+        cf * Vector3.new(-hw, -hh, -hd), cf * Vector3.new(hw, -hh, -hd),
+        cf * Vector3.new(hw, -hh, hd), cf * Vector3.new(-hw, -hh, hd),
+        cf * Vector3.new(-hw, hh, -hd), cf * Vector3.new(hw, hh, -hd),
+        cf * Vector3.new(hw, hh, hd), cf * Vector3.new(-hw, hh, hd),
     }
     local proj = {}
-    local allFront = true
     local anyFront = false
     for i = 1, 8 do
-        local sp = camera:WorldToViewportPoint(ctr + C[i])
+        local sp = camera:WorldToViewportPoint(C[i])
         proj[i] = sp
-        if sp.Z > 0 then anyFront = true else allFront = false end
+        if sp.Z > 0 then anyFront = true end
     end
     if not anyFront then
         hideAll()
@@ -1605,7 +1608,7 @@ local function drawBox(b, root, cam)
     if G.BS.DistFade then
         local cpos = camera.CFrame and camera.CFrame.Position
         if cpos then
-            local dist = (ctr - cpos).Magnitude
+            local dist = (cf.Position - cpos).Magnitude
             fade = math.clamp((dist - 70) / 180, 0, 0.85)
         end
     end
@@ -1632,14 +1635,30 @@ local function drawBox(b, root, cam)
         end
     end
 
-    -- 3D-КОРОБКА: 12 рёбер настоящего параллелепипеда персонажа.
-    if style == "3D-коробка" and allFront then
+    -- 3D-КОРОБКА: 12 рёбер настоящего параллелепипеда вокруг ВСЕГО тела.
+    -- Рисуем каждое ребро отдельно: если один из углов ушёл за камеру,
+    -- прячем только это ребро, а не всю коробку (раньше при allFront
+    -- 3D-режим отключался и вместо него рисовалась плоская рамка).
+    -- Дальние рёбра бледнее и тоньше — коробка читается объёмно.
+    if style == "3D-коробка" then
         local idx = { {1,2},{2,3},{3,4},{4,1},{5,6},{6,7},{7,8},{8,5},
                       {1,5},{2,6},{3,7},{4,8} }
         for i = 1, 12 do
+            local ln = b.lines[i]
             local a = proj[idx[i][1]]
             local c = proj[idx[i][2]]
-            setLine(i, Vector2.new(a.X, a.Y), Vector2.new(c.X, c.Y))
+            if ln and a.Z > 0 and c.Z > 0 then
+                local depth = (a.Z + c.Z) * 0.5
+                local far01 = math.clamp((depth - 14) / 70, 0, 1)
+                ln.From = Vector2.new(a.X, a.Y)
+                ln.To = Vector2.new(c.X, c.Y)
+                ln.Color = col
+                ln.Thickness = math.max(1, thick - (far01 > 0.6 and 1 or 0))
+                ln.Transparency = math.clamp(trans + far01 * 0.4, 0, 0.97)
+                ln.Visible = true
+            elseif ln then
+                ln.Visible = false
+            end
         end
         return
     end
@@ -8038,7 +8057,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.39",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.40",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -8138,7 +8157,7 @@ TB.CreateSlider({ Name = "Размер текста ESP", Flag = "BS_LabelSize",
     Suffix = " px", Callback = function(v) G.BS.LabelSize = v end })
 
 TB.CreateSection("Коробки")
-TB.CreateParagraph({ Text = "Плоская рамка вокруг игрока: считается по реальным габаритам модели, 3D-коробки больше нет." })
+TB.CreateParagraph({ Text = "3D-коробка строится по габаритам всей модели: облегает тело целиком, поворачивается вместе с игроком, дальние рёбра бледнее. Есть рамка и уголки." })
 TB.CreateToggle({ Name = "Коробки игроков", Flag = "BS_Boxes2",
     CurrentValue = G.BS.Boxes ~= false,
     Callback = function(v)
@@ -8148,7 +8167,7 @@ TB.CreateToggle({ Name = "Коробки игроков", Flag = "BS_Boxes2",
             notify("в этом исполнителе нет Drawing — коробки выключены", 4)
         end
     end })
--- Коробки теперь ВСЕГДА плоские (3D-коробка убрана по просьбе).
+-- Стиль коробки: «Рамка», «Уголки» или настоящая 3D-коробка по телу.
 TB.CreateSlider({ Name = "Толщина коробки", Flag = "BS_BoxThick",
     Range = {1, 6}, Increment = 1, CurrentValue = G.BS.BoxThick,
     Callback = function(v) G.BS.BoxThick = v end })
@@ -8860,7 +8879,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.39 остановлен")
+    print("[BS HUB] v11.40 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -8968,7 +8987,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.39 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.40 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
