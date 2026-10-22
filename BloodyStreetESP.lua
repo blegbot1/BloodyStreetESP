@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.33
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.34
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -104,6 +104,9 @@ local AIM_PART     = { "Head", "UpperTorso", "HumanoidRootPart", "Torso" }
 -- прибито к низу/центру экрана, из-за чего линии выглядели как
 -- «паутина» из одной точки. Теперь это настраивается отдельно.
 local TRACER_ORIGINS = { "Центр", "Низ экрана", "Верх экрана" }
+-- Стили коробки ESP (v11.34): рамка с зазором по углам, уголки или
+-- ромб для вампиров.
+local BOX_STYLES = { "Рамка", "Уголки", "Ромб (вампиры)" }
 local RGB_TARGETS  = {
     "Метка: захват цели",
     "ESP вампиров",
@@ -145,6 +148,8 @@ G.BS.BodyHighlight = false
 G.BS.BoxPad      = tonumber(G.BS.BoxPad) or 4
 G.BS.BoxAlpha    = math.clamp(tonumber(G.BS.BoxAlpha) or 0, 0, 0.9)
 G.BS.BoxThick    = math.clamp(tonumber(G.BS.BoxThick) or 2, 1, 6)
+-- v11.34: стиль коробки (рамка / уголки / ромб для вампиров).
+G.BS.BoxStyle    = pickOpt(G.BS.BoxStyle, BOX_STYLES, "Рамка")
 G.BS.CornerBoxes = G.BS.CornerBoxes == true
 -- v11.32: мелкие, но полезные настройки ESP.
 G.BS.HideDead       = G.BS.HideDead ~= false   -- прятать ESP мёртвых
@@ -1371,7 +1376,12 @@ local function makeBillboard()
         return g
     end)
     if not ok or not gui then return nil end
-    return gui, gui:FindFirstChild("Lbl") or Instance.new("TextLabel", gui)
+    local lbl = gui:FindFirstChild("Lbl")
+    if not lbl then
+        lbl = Instance.new("TextLabel", gui)
+        lbl.Name = "Lbl"
+    end
+    return gui, lbl
 end
 
 -- 3D-КОРОБКИ. Drawing есть не во всех исполнителях — при отказе
@@ -1390,10 +1400,10 @@ local function makeBox()
     if not DRAW_OK then return nil end
     local b = {}
     b.lines = {}
-    -- 4 линии = 4 стороны прямоугольника. 3D-коробка (12 рёбер)
-    -- убрана по просьбе: на ближней дистанции она разваливалась,
-    -- пересекалась с моделью и закрывала игрока.
-    for i = 1, 4 do
+    -- 8 линий: 4 на «рамку» и 8 на «уголки» (по 2 на угол).
+    -- 3D-коробка (12 рёбер) убрана по просьбе: на ближней дистанции
+    -- она разваливалась, пересекалась с моделью и закрывала игрока.
+    for i = 1, 8 do
         local ok, ln = pcall(function() return Drawing.new("Line") end)
         if not ok or not ln then return nil end
         ln.Visible   = false
@@ -1466,32 +1476,69 @@ local function drawBox(b, root, cam)
     local trans = math.clamp(fade + alpha, 0, 1)
     local col = b.color or Color3.new(1, 1, 1)
     local thick = tonumber(G.BS.BoxThick) or 2
+    local style = G.BS.BoxStyle or "Рамка"
 
-    local pts
-    if b.corner then
-        -- Ромб для вампиров (стиль CornerBoxes).
+    local function setLine(i, a, c)
+        local ln = b.lines[i]
+        if not ln then return end
+        ln.From = a
+        ln.To = c
+        ln.Color = col
+        ln.Thickness = thick
+        ln.Transparency = trans
+        ln.Visible = true
+    end
+    local function hideFrom(i)
+        for k = i, #b.lines do
+            if b.lines[k] then b.lines[k].Visible = false end
+        end
+    end
+
+    -- РОМБ (только для вампиров, если выбран такой стиль)
+    if style == "Ромб (вампиры)" and b.corner then
         local top = Vector2.new((minX + maxX) * 0.5, minY)
         local right = Vector2.new(maxX, (minY + maxY) * 0.5)
         local bottom = Vector2.new((minX + maxX) * 0.5, maxY)
         local left = Vector2.new(minX, (minY + maxY) * 0.5)
-        pts = { top, right, bottom, left }
-    else
-        pts = {
-            Vector2.new(minX, minY), Vector2.new(maxX, minY),
-            Vector2.new(maxX, maxY), Vector2.new(minX, maxY),
+        local dia = { top, right, bottom, left }
+        for i = 1, 4 do setLine(i, dia[i], dia[i % 4 + 1]) end
+        hideFrom(5)
+        return
+    end
+
+    -- УГОЛКИ: по две короткие линии на каждый угол. Не закрывают модель
+    -- и читаются на любом фоне.
+    if style == "Уголки" then
+        local len = math.clamp(math.min(maxX - minX, maxY - minY) * 0.28, 5, 26)
+        local corners = {
+            { Vector2.new(minX, minY), Vector2.new(minX + len, minY), Vector2.new(minX, minY + len) },
+            { Vector2.new(maxX, minY), Vector2.new(maxX - len, minY), Vector2.new(maxX, minY + len) },
+            { Vector2.new(maxX, maxY), Vector2.new(maxX - len, maxY), Vector2.new(maxX, maxY - len) },
+            { Vector2.new(minX, maxY), Vector2.new(minX + len, maxY), Vector2.new(minX, maxY - len) },
         }
-    end
-    for i = 1, 4 do
-        local ln = b.lines[i]
-        if ln then
-            ln.From = pts[i]
-            ln.To = pts[i % 4 + 1]
-            ln.Color = col
-            ln.Thickness = thick
-            ln.Transparency = trans
-            ln.Visible = true
+        for i = 1, 4 do
+            local c = corners[i]
+            setLine(i * 2 - 1, c[1], c[2])
+            setLine(i * 2, c[1], c[3])
         end
+        return
     end
+
+    -- РАМКА: стороны с небольшим зазором по углам — выглядит как
+    -- аккуратная HUD-рамка, а не как дешёвая обводка.
+    local gap = math.clamp(math.min(maxX - minX, maxY - minY) * 0.12, 2, 12)
+    local pts = {
+        Vector2.new(minX + gap, minY), Vector2.new(maxX - gap, minY),
+        Vector2.new(maxX, minY + gap), Vector2.new(maxX, maxY - gap),
+        Vector2.new(maxX - gap, maxY), Vector2.new(minX + gap, maxY),
+        Vector2.new(minX, maxY - gap), Vector2.new(minX, minY + gap),
+    }
+    for i = 1, 4 do
+        local a = pts[(i - 1) * 2 + 1]
+        local c = pts[(i - 1) * 2 + 2]
+        setLine(i, a, c)
+    end
+    hideFrom(5)
 end
 
 local function hideBox(b)
@@ -1556,6 +1603,7 @@ for i = 1, VMAX do
     vpool[i] = {
         skeleton = {},
         hpBg = vSquare(),
+        hpBorder = vSquare(),
         hpFg = vSquare(),
         hpText = vText(),
         arrow = vLine(),
@@ -1565,6 +1613,10 @@ for i = 1, VMAX do
         auraOn = false,
     }
 end
+-- Плавная полоска HP и вспышка при уроне (v11.34).
+local hpSmooth = {}
+local hpPrev = {}
+local hpFlash = {}
 
 local aimLine = vLine()
 local crossLines = {}   -- ПРИЦЕЛ УДАЛЁН (v11.32): лишние линии в центре экрана
@@ -1642,7 +1694,7 @@ function VIS.destroy()
         local p = vpool[i]
         for j = 1, #(p.skeleton or {}) do rm(p.skeleton[j]) end
         for j = 1, #(p.aura or {}) do rm(p.aura[j]) end
-        rm(p.hpBg); rm(p.hpFg); rm(p.hpText); rm(p.arrow); rm(p.headBox)
+        rm(p.hpBg); rm(p.hpBorder); rm(p.hpFg); rm(p.hpText); rm(p.arrow); rm(p.headBox)
         rm(p.snap)
     end
     for i = 1, #dmgNums do rm(dmgNums[i].obj) end
@@ -1860,14 +1912,32 @@ function VIS.update(cam, myRoot, by, locked)
             for i = 1, #p.skeleton do vHideLine(p.skeleton[i]) end
         end
 
-        -- ПОЛОСКА HP
+        -- ПОЛОСКА HP (v11.34, красивая): тёмная подложка, тонкая рамка,
+        -- плавно падающая заливка по здоровью и короткая белая вспышка
+        -- в момент урона. Раньше это был просто зелёный прямоугольник.
         if G.BS.HealthBars and ch and ch.Parent then
             local hum = ch:FindFirstChildOfClass("Humanoid")
             local head = ch:FindFirstChild("Head")
-            if hum and head then
+            if hum and head and hum.Health > 0 then
                 local sp = vProj(cam, head.Position + Vector3.new(0, 0.5, 0))
                 if sp and sp.Z > 0 then
-                    local hpPct = math.clamp(hum.Health / (hum.MaxHealth or 100), 0, 1)
+                    local maxHp = hum.MaxHealth or 100
+                    local hpPct = math.clamp(hum.Health / maxHp, 0, 1)
+                    -- ПЛАВНО: полоска не прыгает, а плавно догоняет HP.
+                    local cur = hpSmooth[tPlr]
+                    if cur == nil then
+                        cur = hpPct
+                    else
+                        cur = cur + (hpPct - cur) * 0.2
+                    end
+                    hpSmooth[tPlr] = cur
+                    -- ВСПЫШКА ПРИ УРОНЕ.
+                    local prevHp = hpPrev[tPlr]
+                    if prevHp ~= nil and hpPct < prevHp - 0.001 then
+                        hpFlash[tPlr] = nowT
+                    end
+                    hpPrev[tPlr] = hpPct
+
                     local w = tonumber(G.BS.HealthBarWidth) or 40
                     local h = tonumber(G.BS.HealthBarHeight) or 4
                     local x = sp.X - w * 0.5
@@ -1877,13 +1947,34 @@ function VIS.update(cam, myRoot, by, locked)
                         p.hpBg.Size = Vector2.new(w, h)
                         p.hpBg.Color = Color3.new(0, 0, 0)
                         p.hpBg.Filled = true
+                        p.hpBg.Transparency = 0.35
                         p.hpBg.Visible = true
                     end
+                    if p.hpBorder then
+                        p.hpBorder.Position = Vector2.new(x - 1, y - 1)
+                        p.hpBorder.Size = Vector2.new(w + 2, h + 2)
+                        p.hpBorder.Color = Color3.new(1, 1, 1)
+                        p.hpBorder.Filled = false
+                        p.hpBorder.Thickness = 1
+                        p.hpBorder.Transparency = 0.45
+                        p.hpBorder.Visible = true
+                    end
                     if p.hpFg then
+                        local barCol
+                        if hpPct > 0.5 then
+                            barCol = Color3.fromRGB(80, 220, 110)
+                        elseif hpPct > 0.25 then
+                            barCol = Color3.fromRGB(255, 205, 70)
+                        else
+                            barCol = Color3.fromRGB(255, 80, 80)
+                        end
+                        local fl = hpFlash[tPlr]
+                        if fl and (nowT - fl) < 0.18 then
+                            barCol = Color3.new(1, 1, 1)
+                        end
                         p.hpFg.Position = Vector2.new(x, y)
-                        p.hpFg.Size = Vector2.new(math.max(1, w * hpPct), h)
-                        p.hpFg.Color = hpPct > 0.5 and Color3.new(0, 1, 0)
-                            or hpPct > 0.25 and Color3.new(1, 1, 0) or Color3.new(1, 0, 0)
+                        p.hpFg.Size = Vector2.new(math.max(1, w * cur), h)
+                        p.hpFg.Color = barCol
                         p.hpFg.Filled = true
                         p.hpFg.Visible = true
                     end
@@ -1894,20 +1985,23 @@ function VIS.update(cam, myRoot, by, locked)
                             p.hpText.Color = Color3.new(1, 1, 1)
                             p.hpText.Center = true
                             p.hpText.Outline = true
-                            p.hpText.Position = Vector2.new(sp.X, y - 2)
+                            p.hpText.Position = Vector2.new(sp.X, y - 3)
                             p.hpText.Visible = true
                         else
                             vHideText(p.hpText)
                         end
                     end
                 else
-                    vHideSquare(p.hpBg); vHideSquare(p.hpFg); vHideText(p.hpText)
+                    vHideSquare(p.hpBg); vHideSquare(p.hpBorder)
+                    vHideSquare(p.hpFg); vHideText(p.hpText)
                 end
             else
-                vHideSquare(p.hpBg); vHideSquare(p.hpFg); vHideText(p.hpText)
+                vHideSquare(p.hpBg); vHideSquare(p.hpBorder)
+                vHideSquare(p.hpFg); vHideText(p.hpText)
             end
         else
-            vHideSquare(p.hpBg); vHideSquare(p.hpFg); vHideText(p.hpText)
+            vHideSquare(p.hpBg); vHideSquare(p.hpBorder)
+            vHideSquare(p.hpFg); vHideText(p.hpText)
         end
 
         -- РАМКА ВОКРУГ ГОЛОВЫ
@@ -2230,14 +2324,31 @@ local function add(plr)
     if not ch then return end
     local gui, lbl = makeBillboard()
     if not gui or not lbl then return end
-    lbl.Size                  = UDim2.new(1, 0, 0, 40)
-    lbl.BackgroundTransparency = 1
-    lbl.TextSize               = 13
-    lbl.Font                   = Enum.Font.Gotham
-    lbl.TextStrokeTransparency = 0.4
-    lbl.Text                   = ""
-    lbl.Visible                = false
-    lbl.Parent                 = gui
+    -- КРАСИВАЯ ПОДПИСЬ (v11.34): тёмная плашка с закруглёнными углами
+    -- и рамкой в цвете роли. Текст сам подстраивается по ширине.
+    lbl.Size                  = UDim2.new(0, 0, 0, 20)
+    lbl.AutomaticSize          = Enum.AutomaticSize.X
+    lbl.AnchorPoint           = Vector2.new(0.5, 0.5)
+    lbl.Position              = UDim2.new(0.5, 0, 0.5, 0)
+    lbl.BackgroundColor3      = Color3.new(0, 0, 0)
+    lbl.BackgroundTransparency = 0.45
+    lbl.BorderSizePixel       = 1
+    lbl.BorderColor3          = Color3.new(1, 1, 1)
+    lbl.TextSize              = 13
+    lbl.Font                  = Enum.Font.GothamMedium
+    lbl.TextStrokeTransparency = 0.5
+    lbl.TextStrokeColor3      = Color3.new(0, 0, 0)
+    lbl.Text                  = ""
+    lbl.Visible               = false
+    lbl.Parent                = gui
+    -- ЗАКРУГЛЁННЫЕ УГЛЫ плашки — выглядит аккуратнее квадратной.
+    pcall(function()
+        if not lbl:FindFirstChildOfClass("UICorner") then
+            local c = Instance.new("UICorner")
+            c.CornerRadius = UDim.new(0, 7)
+            c.Parent = lbl
+        end
+    end)
 
     gui.Adornee = ch
     by[plr] = {
@@ -7504,7 +7615,10 @@ local conn = RunService.RenderStepped:Connect(function()
                 local txt = table.concat(parts, "  ")
                 if e.lbl.Text ~= txt then e.lbl.Text = txt end
                 if e.lbl.TextSize ~= G.BS.LabelSize then
-                    e.lbl.TextSize = tonumber(G.BS.LabelSize) or 13
+                    local ts = tonumber(G.BS.LabelSize) or 13
+                    e.lbl.TextSize = ts
+                    -- Высота плашки под текущий размер текста.
+                    e.lbl.Size = UDim2.new(0, 0, 0, ts + 8)
                 end
                 local labelColor = color
                 if G.BS.NameHPColor and humNow and (humNow.MaxHealth or 0) > 0 then
@@ -7518,13 +7632,18 @@ local conn = RunService.RenderStepped:Connect(function()
                 if e.lbl.TextColor3 ~= labelColor then
                     e.lbl.TextColor3 = labelColor
                 end
+                -- Рамка плашки — в цвете роли: так ESP читается даже
+                -- на светлых стенах.
+                if e.lbl.BorderColor3 ~= color then
+                    e.lbl.BorderColor3 = color
+                end
                 if not e.lbl.Visible then e.lbl.Visible = true end
 
                 if G.BS.Boxes then
                     if not e.box then e.box = makeBox() end
                     if e.box and root then
                         e.box.color = color
-                        e.box.corner = (G.BS.CornerBoxes and role == "vampire") and true or false
+                        e.box.corner = (role == "vampire")
                         drawBox(e.box, root, cam)
                     end
                 elseif e.box then
@@ -7556,7 +7675,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.33",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.34",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -7677,9 +7796,20 @@ TB.CreateSlider({ Name = "Прозрачность коробки", Flag = "BS_B
     Range = {0, 90}, Increment = 5,
     CurrentValue = math.floor((tonumber(G.BS.BoxAlpha) or 0) * 100 + 0.5),
     Suffix = " %", Callback = function(v) G.BS.BoxAlpha = v / 100 end })
-TB.CreateToggle({ Name = "Ромб для вампиров", Flag = "BS_CornerBoxes",
-    CurrentValue = G.BS.CornerBoxes == true,
-    Callback = function(v) G.BS.CornerBoxes = v end })
+-- v11.34: стиль коробки — рамка, уголки или ромб для вампиров.
+-- Старый тумблер «Ромб для вампиров» убран: стиль выбирается здесь.
+TB.CreateDropdown({
+    Name = "Стиль коробки",
+    Flag = "BS_BoxStylePick",
+    Options = BOX_STYLES,
+    CurrentOption = { G.BS.BoxStyle },
+    MultipleOptions = false,
+    Callback = function(selected)
+        local picked = selected
+        if type(picked) == "table" then picked = picked[1] end
+        if type(picked) == "string" then G.BS.BoxStyle = picked end
+    end,
+})
 TB.CreateToggle({ Name = "Затухание коробок по дистанции", Flag = "BS_DistFade",
     CurrentValue = G.BS.DistFade == true,
     Callback = function(v) G.BS.DistFade = v end })
@@ -8345,7 +8475,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.33 остановлен")
+    print("[BS HUB] v11.34 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -8453,7 +8583,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.33 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.34 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
