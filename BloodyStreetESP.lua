@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.41
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.42
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -137,19 +137,20 @@ G.BS.ShowDist    = G.BS.ShowDist    ~= false
 G.BS.ShowHP      = G.BS.ShowHP      ~= false
 G.BS.Boxes       = G.BS.Boxes       ~= false
 G.BS.BoxThick    = G.BS.BoxThick    or 2
+G.BS.BoxMargin   = math.clamp(tonumber(G.BS.BoxMargin) or 0, 0, 10)
 G.BS.MaxDist     = G.BS.MaxDist     or 0
 -- Подсветка тела (Highlight/chams) УДАЛЕНА по просьбе: красный шар
 -- поверх модели закрывал персонажа. Флаги оставлены для совместимости.
 G.BS.FillTransparency = 0.7
 G.BS.BodyHighlight = false
--- КОРОБКИ. Теперь это ВСЕГДА плоский прямоугольник по экранным точкам
--- модели (3D-коробка убрана: на ближней дистанции она разваливалась
--- и закрывала модель). Настраиваются толщина, отступ, прозрачность.
+-- КОРОБКИ. ЖЁСТКИЙ ПРЯМОУГОЛЬНИК по габаритам всей модели (3D-коробка)
+-- или плоский экранный прямоугольник (стиль «Рамка»/«Уголки»).
+-- Размер задаётся размерами модели; BoxMargin — отступ от тела (3D-стиль).
 G.BS.BoxPad      = tonumber(G.BS.BoxPad) or 4
 G.BS.BoxAlpha    = math.clamp(tonumber(G.BS.BoxAlpha) or 0, 0, 0.9)
 G.BS.BoxThick    = math.clamp(tonumber(G.BS.BoxThick) or 2, 1, 6)
 -- v11.34: стиль коробки (рамка / уголки / ромб для вампиров).
-G.BS.BoxStyle    = pickOpt(G.BS.BoxStyle, BOX_STYLES, "Рамка")
+G.BS.BoxStyle    = pickOpt(G.BS.BoxStyle, BOX_STYLES, "3D-коробка")
 G.BS.CornerBoxes = G.BS.CornerBoxes == true
 -- v11.32: мелкие, но полезные настройки ESP.
 G.BS.HideDead       = G.BS.HideDead ~= false   -- прятать ESP мёртвых
@@ -229,11 +230,9 @@ G.BS.JumpBoostMul  = tonumber(G.BS.JumpBoostMul) or 1.7
 G.BS.JumpBoostTime = tonumber(G.BS.JumpBoostTime) or 0.8
 G.BS.JumpPowerOn   = false
 G.BS.JumpPowerMul  = tonumber(G.BS.JumpPowerMul) or 1.5
--- СКОРОСТЬ БЕГА (Speed Boost). Вернули отдельным тумблером: старый
--- ускоритель по Shift был удалён, но пользователь просил вернуть
--- «спид буст». Работает через WalkSpeed, база запоминается автоматически.
-G.BS.SpeedBoost    = G.BS.SpeedBoost == true
-G.BS.SpeedBoostMul = math.clamp(tonumber(G.BS.SpeedBoostMul) or 1.6, 1.1, 3)
+-- СКОРОСТЬ ТОЛЬКО В СПИД-ГЛИТЧЕ (v11.42): буст бега убран по просьбе —
+-- осталась одна механика: прыжок + разгон (WalkSpeed x N) и подброс
+-- вверх при уходе в небо. База запоминается автоматически.
 -- СПИД ГЛИТЧ (v11.36): прыжок + разгон. Прыгнул — персонаж разгоняется
 -- (WalkSpeed x N) и пока летит вверх, его подбрасывает (с удержанием
 -- прыжка улетаешь вверх). Через SpeedGlitchHold разгон затухает.
@@ -630,7 +629,7 @@ if G.BS.CfgV ~= 39 then
     -- v11.36: коробка по габаритам модели, стиль, рамка головы по роли,
     -- спид глитч, сбор монет по всей карте, авто-телепорт к ящику убран.
     G.BS.Boxes         = true
-    G.BS.BoxStyle      = "Рамка"
+    G.BS.BoxStyle      = "3D-коробка"
     G.BS.HeadBoxRole   = true
     G.BS.CoinFarm        = false
     G.BS.CoinFarmGap     = 1.0
@@ -646,8 +645,10 @@ if G.BS.CfgV ~= 39 then
     G.BS.CoinBlink     = false
     G.BS.CoinMagnetRadius = 300
     G.BS.CoinMagnetPower  = 0.55
-    G.BS.SpeedBoost    = false
-    G.BS.SpeedBoostMul = 1.6
+    G.BS.SpeedGlitch     = false
+    G.BS.SpeedGlitchMul  = 2.5
+    G.BS.SpeedGlitchLift = 30
+    G.BS.SpeedGlitchHold = 1.2
     G.BS.AmmoAuto      = true
     G.BS.AmmoAutoTP    = false
     G.BS.AmmoBringCrate = true
@@ -1638,10 +1639,10 @@ local function drawBox(b, root, cam)
     local cf = root.CFrame * CFrame.new(b.offLocal or Vector3.new(0, 0, 0))
     -- Запасной вариант, если GetBoundingBox не сработал.
     local size = b.size or Vector3.new(2.6, 5.8, 2.2)
-    -- Небольшой запас, чтобы углы не резали руки/макушку.
-    local hw = size.X * 0.5 + 0.15
-    local hh = size.Y * 0.5 + 0.15
-    local hd = size.Z * 0.5 + 0.15
+    -- Небольшой запас от модели (настраивается, 3D-стиль).
+    local hw = size.X * 0.5 + (tonumber(G.BS.BoxMargin) or 0)
+    local hh = size.Y * 0.5 + (tonumber(G.BS.BoxMargin) or 0)
+    local hd = size.Z * 0.5 + (tonumber(G.BS.BoxMargin) or 0)
     local C = {
         cf * Vector3.new(-hw, -hh, -hd), cf * Vector3.new(hw, -hh, -hd),
         cf * Vector3.new(hw, -hh, hd), cf * Vector3.new(-hw, -hh, hd),
@@ -5018,20 +5019,6 @@ function speedState.hookJump()
                     end
                 end
             end
-        elseif G.BS.SpeedBoost then
-            -- СПИД БУСТ: постоянное ускорение через WalkSpeed. База —
-            -- естественная скорость персонажа; ветка буста её не
-            -- перезаписывает, иначе множитель накапливался бы.
-            local base = speedState.base
-            if not base or base < 1 then
-                base = tonumber(hum.WalkSpeed) or 16
-                if base < 1 then base = 16 end
-                speedState.base = base
-            end
-            local mul = tonumber(G.BS.SpeedBoostMul) or 1.6
-            if mul < 1.1 then mul = 1.1 elseif mul > 3 then mul = 3 end
-            pcall(function() hum.WalkSpeed = base * mul end)
-            speedState.boosted = true
         else
             -- буст выключили — один раз вернуть естественную скорость
             if speedState.boosted then
@@ -8175,7 +8162,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.41",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.42",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -8292,6 +8279,10 @@ TB.CreateSlider({ Name = "Толщина коробки", Flag = "BS_BoxThick",
 TB.CreateSlider({ Name = "Отступ коробки от модели", Flag = "BS_BoxPad",
     Range = {0, 40}, Increment = 1, CurrentValue = G.BS.BoxPad or 4,
     Suffix = " px", Callback = function(v) G.BS.BoxPad = v end })
+TB.CreateSlider({ Name = "Отступ 3D-коробки (студов)", Flag = "BS_BoxMargin",
+    Range = {0, 5}, Increment = 0.1,
+    CurrentValue = math.floor((tonumber(G.BS.BoxMargin) or 0) * 10 + 0.5) / 10,
+    Suffix = " st", Callback = function(v) G.BS.BoxMargin = v end })
 TB.CreateSlider({ Name = "Прозрачность коробки", Flag = "BS_BoxAlpha",
     Range = {0, 90}, Increment = 5,
     CurrentValue = math.floor((tonumber(G.BS.BoxAlpha) or 0) * 100 + 0.5),
@@ -8759,17 +8750,11 @@ PL.CreateToggle({ Name = "Сбор телепортом к монете (рис�
     CurrentValue = G.BS.CoinBlink == true,
     Callback = function(v) G.BS.CoinBlink = v end })
 
--- v11.32: вернулся СПИД БУСТ (ускорение). Раньше он был только в коде
--- и не выводился в меню, поэтому его и не было «в списке».
+-- v11.42: СПИД БУСТУ больше нет. Осталась одна механика — СПИД ГЛИТЧ:
+-- прыжок + разгон. Раньше был отдельный тумблер «Спид буст» с множителем,
+-- по просьбе убран. Вывод в меню оставлен только под глитч.
 PL.CreateSection("Скорость")
-PL.CreateParagraph({ Title = "Скорость", Content = "Спид буст — постоянное ускорение бега. Спид глитч — прыжок с разгоном: ускоряешься и летишь вверх, пока держишь прыжок." })
-PL.CreateToggle({ Name = "Спид буст (ускорение бега)", Flag = "BS_SpeedBoost",
-    CurrentValue = G.BS.SpeedBoost == true,
-    Callback = function(v) G.BS.SpeedBoost = v end })
-PL.CreateSlider({ Name = "Множитель скорости", Flag = "BS_SpeedBoostMul",
-    Range = {1.1, 3}, Increment = 0.1,
-    CurrentValue = tonumber(G.BS.SpeedBoostMul) or 1.6,
-    Suffix = " x", Callback = function(v) G.BS.SpeedBoostMul = v end })
+PL.CreateParagraph({ Title = "Скорость", Content = "Спид глитч — прыжок с разгоном: ускоряешься и летишь вверх, пока держишь прыжок. Множитель разгона — насколько сильно." })
 PL.CreateToggle({ Name = "Спид глитч (прыжок + разгон)", Flag = "BS_SpeedGlitch",
     CurrentValue = G.BS.SpeedGlitch == true,
     Callback = function(v) G.BS.SpeedGlitch = v end })
@@ -9012,7 +8997,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.41 остановлен")
+    print("[BS HUB] v11.42 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -9120,7 +9105,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.41 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.42 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
