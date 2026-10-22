@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.32
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.33
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -307,9 +307,11 @@ G.BS.CoinBlink     = false
 G.BS.CoinLearn     = true
 G.BS.CoinRange     = tonumber(G.BS.CoinRange) or 600
 G.BS.CoinScanEvery = tonumber(G.BS.CoinScanEvery) or 1.0
--- МАГНИТ МОНЕТ: монеты физически летят к игроку. Работает без ремоута:
--- двигаем CFrame/M:PivotTo и жмём prompt, если он есть.
-G.BS.CoinMagnet      = true
+-- МАГНИТ МОНЕТ УДАЛЁН (v11.33) по просьбе: монеты больше не притягиваются
+-- к игроку. Код остался, но выключен — включить из консоли:
+--   getgenv().BS.CoinMagnet = true
+-- Сбор при этом работает как раньше: prompt / click / touch / ремоут.
+G.BS.CoinMagnet      = false
 G.BS.CoinMagnetRadius = tonumber(G.BS.CoinMagnetRadius) or 300
 G.BS.CoinMagnetPower  = tonumber(G.BS.CoinMagnetPower) or 0.55
 -- ТЕЛЕПОРТ-ВЫСТРЕЛ ЧЕРЕЗ СТЕНЫ. На время выстрела персонаж окажется
@@ -338,6 +340,22 @@ G.BS.ScanOnStart = G.BS.ScanOnStart or false
 
 G.BS.AimLockColor  = safeColor(G.BS.AimLockColor,  Color3.fromRGB(255, 50, 50))
 G.BS.AimMarkColor  = safeColor(G.BS.AimMarkColor,  Color3.fromRGB(255, 200, 0))
+-- v11.33: КРАСИВАЯ МЕТКА ЦЕЛИ. Вместо грубых жёлтых полосок — тонкая
+-- обводка (Highlight), аккуратные уголки в цвете роли и подробная
+-- табличка цели (имя / дистанция / HP / оружие).
+G.BS.TargetMark      = G.BS.TargetMark ~= false      -- обводка Highlight
+G.BS.TargetMarkAlpha = math.clamp(tonumber(G.BS.TargetMarkAlpha) or 0.15, 0, 1)
+G.BS.TargetBrackets  = G.BS.TargetBrackets ~= false  -- уголки вокруг цели
+G.BS.TargetBracketSize  = tonumber(G.BS.TargetBracketSize) or 10
+G.BS.TargetBracketThick = tonumber(G.BS.TargetBracketThick) or 2
+G.BS.TargetBracketRole  = G.BS.TargetBracketRole ~= false -- цвет по роли
+G.BS.TargetBracketColor = safeColor(G.BS.TargetBracketColor, Color3.fromRGB(255, 255, 255))
+G.BS.TargetPulse     = G.BS.TargetPulse == true      -- мягкий пульс
+G.BS.TargetPlate     = G.BS.TargetPlate ~= false    -- табличка под целью
+G.BS.TargetPlateName = G.BS.TargetPlateName ~= false
+G.BS.TargetPlateDist = G.BS.TargetPlateDist ~= false
+G.BS.TargetPlateHP   = G.BS.TargetPlateHP ~= false
+G.BS.TargetPlateWeap = G.BS.TargetPlateWeap == true
 -- Радиус захвата в пикселях. 600 = без ограничения.
 G.BS.AimFOV        = tonumber(G.BS.AimFOV) or 300
 -- v11.18: старый дефолт 160 px был слишком узким — цель впереди, но чуть
@@ -489,7 +507,7 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 37 then
+if G.BS.CfgV ~= 38 then
     -- Старые сохранённые 1/2..34 означали «мгновенно», потому что код
     -- трактовал всё >= 1 как instant. Новая шкала: 1 = плавно,
     -- 35 = мгновенно. Один раз переводим старый дефолт в 35.
@@ -499,7 +517,7 @@ if G.BS.CfgV ~= 37 then
             G.BS.AimLockSpeed = 35
         end
     end
-    G.BS.CfgV      = 37
+    G.BS.CfgV      = 38
     -- АИМЛОК РАБОТАЕТ ВСЕГДА, а не только пока зажата ЛКМ.
     G.BS.AimLockFireOnly = false
     G.BS.AimLockTurn     = true
@@ -552,12 +570,26 @@ if G.BS.CfgV ~= 37 then
     G.BS.BodyHighlight = false
     G.BS.ClueESP       = false
     G.BS.LowHPWarn     = false
-    G.BS.TargetMark    = false
+    -- v11.33: красивая подсветка цели включена (тонкая обводка +
+    -- аккуратные уголки + табличка с подробностями).
+    G.BS.TargetMark       = true
+    G.BS.TargetMarkAlpha  = 0.15
+    G.BS.TargetBrackets   = true
+    G.BS.TargetBracketSize = 10
+    G.BS.TargetBracketThick = 2
+    G.BS.TargetBracketRole = true
+    G.BS.TargetPulse      = true
+    G.BS.TargetPlate      = true
+    G.BS.TargetPlateName  = true
+    G.BS.TargetPlateDist  = true
+    G.BS.TargetPlateHP    = true
+    G.BS.TargetPlateWeap  = false
     G.BS.HideDead      = true
     G.BS.MarkAim       = true
     G.BS.SkelOnlyTarget = false
     G.BS.SkelMinDist   = 12
-    G.BS.CoinMagnet    = true
+    -- v11.33: магнит монет убран из меню и выключен.
+    G.BS.CoinMagnet    = false
     G.BS.CoinAuto      = true
     G.BS.CoinLearn     = true
     G.BS.CoinBlink     = false
@@ -627,8 +659,7 @@ local LOCK_LAST_S, LOCK_UNTIL = nil, 0
 local EVENTS       = {}     -- последние события (последние 8)
 local addEvent               -- добавить строку в ленту (ниже)
 local hitMarkAt   = 0       -- os.clock() последнего реального попадания
-local hitLines    = {}      -- Drawing-линии хитмаркера
-local updateHitMark
+-- ХИТМАРКЕР УДАЛЁН (v11.32): линий и вспышки в центре экрана больше нет.
 local danceDD = nil         -- выпадающий список танцев (создаётся в GUI)
 local refreshDanceDropdown -- наполнение списка найденными анимациями
 local emoteTables = {}      -- таблицы из EmoteSetSlots (список эмоутов)
@@ -1084,7 +1115,9 @@ function COIN.dumpOnce(coin)
 end
 
 function COIN.magnetTick(now)
-    if G.BS.CoinMagnet == false then return end
+    -- v11.33: магнит (двигание монет к игроку) выключен по умолчанию,
+    -- но СБОР продолжает работать: поэтому список монет, исходные
+    -- позиции, prompt и телепорт-сбор считаются всегда.
     local ch = LP and LP.Character
     local root = ch and ch:FindFirstChild("HumanoidRootPart")
     if not root then return end
@@ -1142,10 +1175,10 @@ function COIN.magnetTick(now)
                 end
 
                 -- ВИЗУАЛЬНЫЙ МАГНИТ: монета летит к игроку на нашем
-                -- клиенте. Это только картинка; сбор делает blink ниже.
+                -- клиенте. Выключен по умолчанию (v11.33), но код жив.
                 local delta = rp - part.Position
                 local dist = delta.Magnitude
-                if dist <= radius and dist > 2.5 then
+                if G.BS.CoinMagnet ~= false and dist <= radius and dist > 2.5 then
                     local goal = rp + Vector3.new(
                         math.sin(i * 1.7) * 1.2,
                         1.3,
@@ -2384,8 +2417,10 @@ end
 local Overlay = nil
 local FOVSegs  = {}
 local FOV_N    = 48
--- MarkLines/NameLabel удалены (v11.32): жёлтые уголки метки цели и
--- подпись под ними больше не рисуются.
+-- v11.33: красивая метка цели. 8 отрезков (4 угла по 2 линии) +
+-- табличка с подробностями (имя / дистанция / HP / оружие).
+local TSegs    = {}
+local TPlate   = nil
 
 local function mkSeg(parent)
     local s = Instance.new("Frame")
@@ -2409,8 +2444,27 @@ local function ensureOverlay()
     Overlay.DisplayOrder   = 1
     Overlay.Parent         = game:GetService("CoreGui")
     for i = 1, FOV_N do FOVSegs[i] = mkSeg(Overlay) end
-    -- УГОЛКИ МЕТКИ ЦЕЛИ УДАЛЕНЫ (v11.32): это были «3 жёлтые полоски»
-    -- в центре экрана. Цель аима теперь помечается звездой в подписи ESP.
+    -- v11.33: уголки красивой метки цели (тонкие, в цвете роли).
+    for i = 1, 8 do TSegs[i] = mkSeg(Overlay) end
+    -- ТАБЛИЧКА ЦЕЛИ: тёмный фон, тонкая рамка, аккуратный текст.
+    TPlate = Instance.new("TextLabel")
+    TPlate.Name                     = "BS_TargetPlate"
+    TPlate.BackgroundColor3         = Color3.new(0, 0, 0)
+    TPlate.BackgroundTransparency   = 0.35
+    TPlate.BorderSizePixel          = 1
+    TPlate.BorderColor3             = Color3.new(1, 1, 1)
+    TPlate.TextColor3               = Color3.new(1, 1, 1)
+    TPlate.TextStrokeTransparency   = 0.35
+    TPlate.TextStrokeColor3         = Color3.new(0, 0, 0)
+    TPlate.Font                     = Enum.Font.GothamSemibold
+    TPlate.TextSize                 = 12
+    TPlate.Text                     = ""
+    TPlate.AnchorPoint              = Vector2.new(0.5, 0)
+    TPlate.AutomaticSize            = Enum.AutomaticSize.X
+    TPlate.Size                     = UDim2.new(0, 0, 0, 18)
+    TPlate.ZIndex                   = 63
+    TPlate.Visible                  = false
+    TPlate.Parent                   = Overlay
     return Overlay
 end
 
@@ -2432,6 +2486,10 @@ local function hideOverlay()
     for i = 1, FOV_N do
         if FOVSegs[i] then FOVSegs[i].Visible = false end
     end
+    for i = 1, 8 do
+        if TSegs[i] then TSegs[i].Visible = false end
+    end
+    if TPlate then TPlate.Visible = false end
 end
 
 local function drawFOV()
@@ -2473,11 +2531,121 @@ local function drawFOV()
     end
 end
 
--- МЕТКА ЦЕЛИ УДАЛЕНА (v11.32): жёлтые уголки вокруг головы и подпись
--- под ними больше не рисуются. Кто выбран аимом — видно по звезде
--- в подписи ESP (G.BS.MarkAim) и по линии к цели.
+-- ЦВЕТ ЦЕЛИ ПО РОЛИ. Используется и уголками, и табличкой.
+local function roleColorOf(plr)
+    local e = plr and by[plr]
+    local role = e and e.role
+    if role == "vampire" then
+        return safeColor(G.BS.VampColor, Color3.new(1, 0, 0))
+    elseif role == "hunter" then
+        return safeColor(G.BS.HunterColor, Color3.new(0, 0.7, 1))
+    end
+    return safeColor(G.BS.PlayerColor, Color3.new(1, 1, 1))
+end
+
+-- КРАСИВАЯ МЕТКА ЦЕЛИ (v11.33). Вместо грубых жёлтых полосок:
+--  - тонкая обводка Highlight на персонаже (TargetMark);
+--  - аккуратные уголки в цвете роли, размер зависит от дистанции;
+--  - табличка под целью: имя, дистанция, HP (в процентах) и оружие.
 local function drawTarget(plr)
-    return
+    ensureOverlay()
+    local function hideAll()
+        for i = 1, 8 do
+            if TSegs[i] then TSegs[i].Visible = false end
+        end
+        if TPlate then TPlate.Visible = false end
+    end
+    if not plr or not plr.Parent then hideAll() return end
+    local ch = plr.Character
+    if not ch or not ch.Parent then hideAll() return end
+    local cam = workspace.CurrentCamera
+    local root = ch:FindFirstChild("HumanoidRootPart")
+    local head = ch:FindFirstChild("Head")
+    if not cam or not root or not root.Parent or not head or not head.Parent then
+        hideAll()
+        return
+    end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then hideAll() return end
+    local sp = cam:WorldToViewportPoint(head.Position)
+    if sp.Z <= 0 then hideAll() return end
+
+    local dist = (root.Position - cam.CFrame.Position).Magnitude
+    local col = roleColorOf(plr)
+    if G.BS.TargetBracketRole == false then
+        col = safeColor(G.BS.TargetBracketColor, Color3.new(1, 1, 1))
+    end
+    -- МЯГКИЙ ПУЛЬС: метка слегка «дышит», но не мигает.
+    local alpha = 0
+    if G.BS.TargetPulse then
+        alpha = 0.12 + 0.22 * (0.5 + 0.5 * math.sin(os.clock() * 4))
+    end
+
+    -- УГОЛКИ. Размер пропорционален дистанции: вблизи компактно,
+    -- издалека крупно, чтобы цель было видно.
+    if G.BS.TargetBrackets ~= false then
+        local base = tonumber(G.BS.TargetBracketSize) or 10
+        local scale = math.clamp(900 / math.max(dist, 8), 0.6, 3.2)
+        local s = base * scale
+        local thick = math.clamp(tonumber(G.BS.TargetBracketThick) or 2, 1, 6)
+        local hx = s * 0.8
+        local hy = s
+        local x, y = sp.X, sp.Y
+        local function P(px, py) return Vector2.new(px, py) end
+        local corners = {
+            -- левый верхний
+            { P(x - hx - s, y - hy), P(x - hx, y - hy), P(x - hx, y - hy + s) },
+            -- правый верхний
+            { P(x + hx, y - hy), P(x + hx + s, y - hy), P(x + hx, y - hy + s) },
+            -- правый нижний
+            { P(x + hx, y + hy), P(x + hx + s, y + hy), P(x + hx, y + hy - s) },
+            -- левый нижний
+            { P(x - hx - s, y + hy), P(x - hx, y + hy), P(x - hx, y + hy - s) },
+        }
+        for i = 1, 4 do
+            local c = corners[i]
+            placeSeg(TSegs[i * 2 - 1], c[1], c[2], thick, col, alpha)
+            placeSeg(TSegs[i * 2], c[2], c[3], thick, col, alpha)
+        end
+    else
+        for i = 1, 8 do
+            if TSegs[i] then TSegs[i].Visible = false end
+        end
+    end
+
+    -- ТАБЛИЧКА: подробности о цели (имя / дистанция / HP / оружие).
+    if G.BS.TargetPlate ~= false and TPlate then
+        local parts = {}
+        if G.BS.TargetPlateName ~= false then parts[#parts + 1] = plr.DisplayName end
+        if G.BS.TargetPlateDist ~= false then
+            parts[#parts + 1] = string.format("%d st", math.floor(dist + 0.5))
+        end
+        if G.BS.TargetPlateHP ~= false and hum then
+            local maxHp = hum.MaxHealth or 0
+            if maxHp > 0 then
+                parts[#parts + 1] = string.format("HP %d%%",
+                    math.floor(hum.Health / maxHp * 100 + 0.5))
+            else
+                parts[#parts + 1] = "HP " .. math.floor(hum.Health + 0.5)
+            end
+        end
+        if G.BS.TargetPlateWeap then
+            local tool = ch:FindFirstChildOfClass("Tool")
+            if tool then parts[#parts + 1] = tool.Name end
+        end
+        local txt = table.concat(parts, "  |  ")
+        if txt ~= "" then
+            TPlate.Text = txt
+            TPlate.TextColor3 = col
+            TPlate.BorderColor3 = col
+            TPlate.Position = UDim2.new(0, sp.X, 0, sp.Y + 14)
+            TPlate.Visible = true
+        else
+            TPlate.Visible = false
+        end
+    elseif TPlate then
+        TPlate.Visible = false
+    end
 end
 
 -- ============================================================
@@ -4448,12 +4616,9 @@ local function playerStatus(plr)
 end
 
 -- ============================================================
---  ХИТМАРКЕР: УДАЛЁН (v11.32) по просьбе — лишняя вспышка в центре
---  экрана. Функция оставлена как заглушка, чтобы не ломать вызовы.
+--  ХИТМАРКЕР УДАЛЁН (v11.32) по просьбе — лишняя вспышка в центре
+--  экрана. Код выстрела и урона остался (цифры урона, трейсер).
 -- ============================================================
-updateHitMark = function(now)
-    return
-end
 
 -- ============================================================
 --  ЛЕНТА СОБЫТИЙ
@@ -5041,10 +5206,12 @@ G.BS.Supply = SUPPLY
 end
 
 -- ============================================================
---  ПОДСВЕТКА ТЕКУЩЕЙ ЦЕЛИ
+--  ПОДСВЕТКА ТЕКУЩЕЙ ЦЕЛИ (тонкая обводка, без заливки)
 -- ============================================================
 -- Показывает, в кого именно сейчас наводится аим. Без неё легко
 -- не понять, что скрипт выбрал соседа, а не того, кто по курсу.
+-- Заливки нет (FillTransparency = 1) — это аккуратный контур, а не
+-- тот красный шар, из-за которого подсветку тела убрали.
 local TargetHL = nil
 local function updateTargetMark()
     if not G.BS.TargetMark then
@@ -5069,6 +5236,8 @@ local function updateTargetMark()
     end
     TargetHL.Adornee      = ch
     TargetHL.OutlineColor = safeColor(G.BS.TargetMarkColor, Color3.new(1, 1, 1))
+    local ot = math.clamp(tonumber(G.BS.TargetMarkAlpha) or 0.15, 0, 1)
+    if TargetHL.OutlineTransparency ~= ot then TargetHL.OutlineTransparency = ot end
     TargetHL.Enabled      = true
 end
 
@@ -7200,9 +7369,6 @@ local conn = RunService.RenderStepped:Connect(function()
     -- круг аима (ПОВ): видно, в каком радиусе скрипт видит цель
     pcall(drawFOV)
 
-    -- хитмаркер (подтверждение попадания)
-    pcall(updateHitMark, now)
-
     -- танец на ходьбе + покачивание (спин крутит отдельный Heartbeat-коннект)
     pcall(danceTick, dt, now)
 
@@ -7245,6 +7411,8 @@ local conn = RunService.RenderStepped:Connect(function()
     else
         locked = nil
     end
+    -- Красивая метка цели: уголки + табличка с подробностями.
+    pcall(drawTarget, locked)
 
     -- ---------- ESP ----------
     for plr, e in pairs(by) do
@@ -7388,7 +7556,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.32",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.33",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -7438,6 +7606,7 @@ local PL = mkTab(PLRT, "ИГРОК")
 
 -- ======================= ESP =======================
 TB.CreateSection("Цели и роли")
+TB.CreateParagraph("Кого видно в ESP и в каком цвете. Цвет роли меняет подпись, коробку, линии и метку цели.")
 TB.CreateToggle({ Name = "ESP игроков", Flag = "BS_PlayerESP",
     CurrentValue = G.BS.PlayerESP, Callback = function(v) G.BS.PlayerESP = v end })
 TB.CreateColorPicker({ Name = "Цвет игроков", Flag = "BS_PlayerColor",
@@ -7453,7 +7622,8 @@ TB.CreateColorPicker({ Name = "Цвет хантеров", Flag = "BS_HunterColo
 TB.CreateToggle({ Name = "Только вампиры (остальных скрыть)", Flag = "BS_OnlyVamps",
     CurrentValue = G.BS.OnlyVamps, Callback = function(v) G.BS.OnlyVamps = v end })
 
-TB.CreateSection("Подписи и коробки")
+TB.CreateSection("Подписи")
+TB.CreateParagraph("Что пишется над игроком. Порядок строк: роль, оружие, ник, дистанция, HP, скорость, статус.")
 TB.CreateToggle({ Name = "Ники", Flag = "BS_Names",
     CurrentValue = G.BS.Names, Callback = function(v) G.BS.Names = v end })
 TB.CreateToggle({ Name = "Дистанция", Flag = "BS_ShowDist",
@@ -7481,6 +7651,12 @@ TB.CreateToggle({ Name = "Цель аима: звезда в подписи", Fl
 TB.CreateToggle({ Name = "Статус (сбит / раскрыт)", Flag = "BS_ShowStatus",
     CurrentValue = G.BS.ShowStatus ~= false,
     Callback = function(v) G.BS.ShowStatus = v end })
+TB.CreateSlider({ Name = "Размер текста ESP", Flag = "BS_LabelSize",
+    Range = {9, 24}, Increment = 1, CurrentValue = G.BS.LabelSize or 13,
+    Suffix = " px", Callback = function(v) G.BS.LabelSize = v end })
+
+TB.CreateSection("Коробки")
+TB.CreateParagraph("Плоская рамка вокруг игрока: считается по реальным габаритам модели, 3D-коробки больше нет.")
 TB.CreateToggle({ Name = "Коробки игроков", Flag = "BS_Boxes",
     CurrentValue = G.BS.Boxes,
     Callback = function(v)
@@ -7504,10 +7680,11 @@ TB.CreateSlider({ Name = "Прозрачность коробки", Flag = "BS_B
 TB.CreateToggle({ Name = "Ромб для вампиров", Flag = "BS_CornerBoxes",
     CurrentValue = G.BS.CornerBoxes == true,
     Callback = function(v) G.BS.CornerBoxes = v end })
-TB.CreateSlider({ Name = "Размер текста ESP", Flag = "BS_LabelSize",
-    Range = {9, 24}, Increment = 1, CurrentValue = G.BS.LabelSize or 13,
-    Suffix = " px", Callback = function(v) G.BS.LabelSize = v end })
+TB.CreateToggle({ Name = "Затухание коробок по дистанции", Flag = "BS_DistFade",
+    CurrentValue = G.BS.DistFade == true,
+    Callback = function(v) G.BS.DistFade = v end })
 TB.CreateSection("Визуалы игроков")
+TB.CreateParagraph("Дополнительные визуалы над игроками: линии, аура, скелет, полоска HP, рамка головы.")
 TB.CreateToggle({ Name = "Линии от низа экрана (snaplines)", Flag = "BS_Snaplines",
     CurrentValue = G.BS.Snaplines ~= false,
     Callback = function(v) G.BS.Snaplines = v end })
@@ -7628,6 +7805,7 @@ TB.CreateDropdown({
 })
 
 TB.CreateSection("Объекты")
+TB.CreateParagraph("Подсветка ящиков и монет на карте, иконки ролей и оружие в подписи ESP.")
 TB.CreateToggle({ Name = "Подсветка ящиков", Flag = "BS_CrateESP",
     CurrentValue = G.BS.CrateESP == true,
     Callback = function(v) G.BS.CrateESP = v end })
@@ -7645,11 +7823,9 @@ TB.CreateToggle({ Name = "Иконки ролей в ESP", Flag = "BS_RoleIcons"
 TB.CreateToggle({ Name = "Оружие в ESP", Flag = "BS_WeaponESP",
     CurrentValue = G.BS.WeaponESP ~= false,
     Callback = function(v) G.BS.WeaponESP = v end })
-TB.CreateToggle({ Name = "Затухание коробок по дистанции", Flag = "BS_DistFade",
-    CurrentValue = G.BS.DistFade == true,
-    Callback = function(v) G.BS.DistFade = v end })
 
 TB.CreateSection("Миникарта")
+TB.CreateParagraph("Мини-карта в углу экрана: кто и где относительно тебя.")
 TB.CreateToggle({ Name = "Миникарта", Flag = "BS_Minimap",
     CurrentValue = G.BS.Minimap == true,
     Callback = function(v) G.BS.Minimap = v end })
@@ -7813,19 +7989,54 @@ AI.CreateToggle({ Name = "Свободная часть тела (не в сте
     CurrentValue = G.BS.AimFreePart ~= false,
     Callback = function(v) G.BS.AimFreePart = v end })
 
-AI.CreateSection("Метка цели")
--- Осталась только тонкая рамка вокруг текущей цели (без заливки).
-AI.CreateToggle({ Name = "Подсветка текущей цели", Flag = "BS_TargetMark",
-    CurrentValue = G.BS.TargetMark,
+AI.CreateSection("Метка цели (красивая)")
+AI.CreateParagraph("Подсветка той цели, в которую целится аим: тонкая обводка, аккуратные уголки и табличка с подробностями.")
+AI.CreateToggle({ Name = "Обводка цели (Highlight)", Flag = "BS_TargetMark",
+    CurrentValue = G.BS.TargetMark ~= false,
     Callback = function(v)
         G.BS.TargetMark = v
         if not v and TargetHL then TargetHL.Enabled = false end
     end })
-AI.CreateColorPicker({ Name = "Цвет подсветки цели", Flag = "BS_TargetMarkColor",
+AI.CreateColorPicker({ Name = "Цвет обводки", Flag = "BS_TargetMarkColor",
     Color = G.BS.TargetMarkColor,
     Callback = function(c) G.BS.TargetMarkColor = c end })
--- Жёлтые уголки метки УДАЛЕНЫ (v11.32) — это были «3 жёлтые полоски».
--- Кто выбран целью — видно по звезде в подписи ESP и по линии к цели.
+AI.CreateSlider({ Name = "Прозрачность обводки", Flag = "BS_TargetMarkAlpha",
+    Range = {0, 10}, Increment = 1,
+    CurrentValue = math.floor((tonumber(G.BS.TargetMarkAlpha) or 0.15) * 10 + 0.5),
+    Suffix = " /10", Callback = function(v) G.BS.TargetMarkAlpha = v / 10 end })
+AI.CreateToggle({ Name = "Уголки вокруг цели", Flag = "BS_TargetBrackets",
+    CurrentValue = G.BS.TargetBrackets ~= false,
+    Callback = function(v) G.BS.TargetBrackets = v end })
+AI.CreateSlider({ Name = "Размер уголков", Flag = "BS_TargetBracketSize",
+    Range = {4, 30}, Increment = 1, CurrentValue = G.BS.TargetBracketSize or 10,
+    Callback = function(v) G.BS.TargetBracketSize = v end })
+AI.CreateSlider({ Name = "Толщина уголков", Flag = "BS_TargetBracketThick",
+    Range = {1, 6}, Increment = 1, CurrentValue = G.BS.TargetBracketThick or 2,
+    Suffix = " px", Callback = function(v) G.BS.TargetBracketThick = v end })
+AI.CreateToggle({ Name = "Цвет уголков по роли", Flag = "BS_TargetBracketRole",
+    CurrentValue = G.BS.TargetBracketRole ~= false,
+    Callback = function(v) G.BS.TargetBracketRole = v end })
+AI.CreateColorPicker({ Name = "Свой цвет уголков", Flag = "BS_TargetBracketColor",
+    Color = G.BS.TargetBracketColor,
+    Callback = function(c) G.BS.TargetBracketColor = c end })
+AI.CreateToggle({ Name = "Мягкий пульс метки", Flag = "BS_TargetPulse",
+    CurrentValue = G.BS.TargetPulse == true,
+    Callback = function(v) G.BS.TargetPulse = v end })
+AI.CreateToggle({ Name = "Табличка цели (имя / HP / дистанция)", Flag = "BS_TargetPlate",
+    CurrentValue = G.BS.TargetPlate ~= false,
+    Callback = function(v) G.BS.TargetPlate = v end })
+AI.CreateToggle({ Name = "В таблице: ник", Flag = "BS_TargetPlateName",
+    CurrentValue = G.BS.TargetPlateName ~= false,
+    Callback = function(v) G.BS.TargetPlateName = v end })
+AI.CreateToggle({ Name = "В таблице: дистанция", Flag = "BS_TargetPlateDist",
+    CurrentValue = G.BS.TargetPlateDist ~= false,
+    Callback = function(v) G.BS.TargetPlateDist = v end })
+AI.CreateToggle({ Name = "В таблице: HP", Flag = "BS_TargetPlateHP",
+    CurrentValue = G.BS.TargetPlateHP ~= false,
+    Callback = function(v) G.BS.TargetPlateHP = v end })
+AI.CreateToggle({ Name = "В таблице: оружие", Flag = "BS_TargetPlateWeap",
+    CurrentValue = G.BS.TargetPlateWeap == true,
+    Callback = function(v) G.BS.TargetPlateWeap = v end })
 
 -- ПРИЦЕЛ и ХИТМАРКЕР УДАЛЕНЫ (v11.32) по просьбе: в центре экрана
 -- больше нет ни прицела, ни вспышки при попадании.
@@ -7851,8 +8062,9 @@ AI.CreateColorPicker({ Name = "Цвет подсветки цели", Flag = "BS
 -- в одной вкладке ИГРОК. Список танцев - выпадающий (не кнопки
 -- «следующий/предыдущий»).
 PL.CreateSection("Патроны")
+PL.CreateParagraph("Пополнение патронов из ящиков. По умолчанию скрипт идёт к ящику только когда патроны закончились (порог 0).")
 PL.CreateButton({
-    Name = "ПОПОЛНИТЬ ПАТРОНЫ (ближайший ящик)",
+    Name = "Пополнить патроны (ближайший ящик)",
     Callback = function()
         pcall(function() G.BS.Supply.refill({ forceTP = true, bringCrate = true }) end)
     end,
@@ -7902,20 +8114,11 @@ PL.CreateButton({
 })
 
 PL.CreateSection("Монеты")
--- Магнит и авто-сбор работают ВСЕГДА (тумблер «Авто-сбор монет»
--- удалён по просьбе). Телепорт-сбор к серверной позиции монеты —
--- отдельный риск-тумблер, по умолчанию выключен.
-PL.CreateToggle({ Name = "Магнит монет (тащит к игроку)", Flag = "BS_CoinMagnet",
-    CurrentValue = G.BS.CoinMagnet ~= false,
-    Callback = function(v) G.BS.CoinMagnet = v end })
-PL.CreateSlider({ Name = "Радиус магнита", Flag = "BS_CoinMagnetRadius",
-    Range = {20, 600}, Increment = 10,
-    CurrentValue = tonumber(G.BS.CoinMagnetRadius) or 250,
-    Suffix = " st", Callback = function(v) G.BS.CoinMagnetRadius = v end })
-PL.CreateSlider({ Name = "Скорость притяжения", Flag = "BS_CoinMagnetPower",
-    Range = {0.1, 1}, Increment = 0.05,
-    CurrentValue = tonumber(G.BS.CoinMagnetPower) or 0.45,
-    Callback = function(v) G.BS.CoinMagnetPower = v end })
+-- Магнит монет УДАЛЁН (v11.33) по просьбе: монеты больше не летят к
+-- игроку. Сбор работает как раньше — prompt / click / touch / ремоут,
+-- то есть монету нужно подобрать, подойдя к ней.
+-- Телепорт-сбор к серверной позиции монеты — отдельный риск-тумблер.
+PL.CreateParagraph("Сбор монет: подойди к монете — скрипт сам нажмёт prompt. Телепорт-сбор — по желанию, ниже.")
 PL.CreateToggle({ Name = "Сбор телепортом к монете (риск)", Flag = "BS_CoinBlink",
     CurrentValue = G.BS.CoinBlink ~= false,
     Callback = function(v) G.BS.CoinBlink = v end })
@@ -8142,7 +8345,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.32 остановлен")
+    print("[BS HUB] v11.33 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -8250,7 +8453,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.32 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.33 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
