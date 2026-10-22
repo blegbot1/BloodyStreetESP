@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.34
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.35
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -350,7 +350,14 @@ G.BS.AimMarkColor  = safeColor(G.BS.AimMarkColor,  Color3.fromRGB(255, 200, 0))
 -- табличка цели (имя / дистанция / HP / оружие).
 G.BS.TargetMark      = G.BS.TargetMark ~= false      -- обводка Highlight
 G.BS.TargetMarkAlpha = math.clamp(tonumber(G.BS.TargetMarkAlpha) or 0.15, 0, 1)
-G.BS.TargetBrackets  = G.BS.TargetBrackets ~= false  -- уголки вокруг цели
+-- КОЛЬЦО ЗАХВАТА (v11.34): главный индикатор «на кого работает аимлок».
+G.BS.TargetRing      = G.BS.TargetRing ~= false
+G.BS.TargetRingSize  = tonumber(G.BS.TargetRingSize) or 26
+G.BS.TargetRingThick = tonumber(G.BS.TargetRingThick) or 1
+G.BS.TargetTicks     = G.BS.TargetTicks ~= false
+G.BS.TargetTickSpeed = tonumber(G.BS.TargetTickSpeed) or 1.1
+G.BS.TargetLockAnim  = G.BS.TargetLockAnim ~= false
+G.BS.TargetBrackets  = G.BS.TargetBrackets == true  -- доп. уголки (выкл. по умолчанию)
 G.BS.TargetBracketSize  = tonumber(G.BS.TargetBracketSize) or 10
 G.BS.TargetBracketThick = tonumber(G.BS.TargetBracketThick) or 2
 G.BS.TargetBracketRole  = G.BS.TargetBracketRole ~= false -- цвет по роли
@@ -575,11 +582,17 @@ if G.BS.CfgV ~= 38 then
     G.BS.BodyHighlight = false
     G.BS.ClueESP       = false
     G.BS.LowHPWarn     = false
-    -- v11.33: красивая подсветка цели включена (тонкая обводка +
-    -- аккуратные уголки + табличка с подробностями).
+    -- v11.33/v11.34: подсветка цели — тонкая обводка + кольцо захвата
+    -- с засечками + табличка с подробностями.
     G.BS.TargetMark       = true
     G.BS.TargetMarkAlpha  = 0.15
-    G.BS.TargetBrackets   = true
+    G.BS.TargetRing       = true
+    G.BS.TargetRingSize   = 26
+    G.BS.TargetRingThick  = 1
+    G.BS.TargetTicks      = true
+    G.BS.TargetTickSpeed  = 1.1
+    G.BS.TargetLockAnim   = true
+    G.BS.TargetBrackets   = false
     G.BS.TargetBracketSize = 10
     G.BS.TargetBracketThick = 2
     G.BS.TargetBracketRole = true
@@ -1619,6 +1632,13 @@ local hpPrev = {}
 local hpFlash = {}
 
 local aimLine = vLine()
+-- КОЛЬЦО ЗАХВАТА: показывает, на кого СЕЙЧАС работает аймлок.
+-- Тонкое кольцо вокруг головы + 4 вращающиеся засечки + анимация
+-- захвата (при смене цели кольцо схлопывается на место).
+local targetRing = vCircle()
+local targetTicks = { vLine(), vLine(), vLine(), vLine() }
+local ringKey = nil
+local ringAt = 0
 local crossLines = {}   -- ПРИЦЕЛ УДАЛЁН (v11.32): лишние линии в центре экрана
 
 
@@ -1703,6 +1723,8 @@ function VIS.destroy()
     for i = 1, #minimapDots do rm(minimapDots[i]) end
     rm(minimapBg); rm(minimapBorder); rm(minimapSelf)
     rm(tracerLine)
+    rm(targetRing)
+    for i = 1, 4 do rm(targetTicks[i]) end
     tracerFrom, tracerTo, tracerT0 = nil, nil, 0
     for _, tbl in pairs({ crateHL, coinHL }) do
         for _, h in pairs(tbl) do
@@ -1795,6 +1817,79 @@ function VIS.update(cam, myRoot, by, locked)
         end
     else
         vHideLine(aimLine)
+    end
+
+    -- 2.2) КОЛЬЦО ЗАХВАТА: видно, на кого работает аймлок. Тонкое
+    -- кольцо вокруг головы, 4 вращающиеся засечки и короткая анимация
+    -- при смене цели.
+    if G.BS.TargetRing ~= false and lockedPart and locked then
+        local eT = by[locked]
+        local roleT = eT and eT.role
+        local colT
+        if roleT == "vampire" then
+            colT = safeColor(G.BS.VampColor, Color3.new(1, 0, 0))
+        elseif roleT == "hunter" then
+            colT = safeColor(G.BS.HunterColor, Color3.new(0, 0.7, 1))
+        else
+            colT = safeColor(G.BS.PlayerColor, Color3.new(1, 1, 1))
+        end
+        local spT = vProj(cam, lockedPart.Position)
+        if spT and spT.Z > 0 then
+            local distT = (lockedPart.Position - cam.CFrame.Position).Magnitude
+            local r = (tonumber(G.BS.TargetRingSize) or 26)
+                * (0.7 + math.clamp(distT / 90, 0, 1.3))
+            -- АНИМАЦИЯ ЗАХВАТА: кольцо схлопывается на цель.
+            if ringKey ~= locked then
+                ringKey = locked
+                ringAt = nowT
+            end
+            local age = nowT - ringAt
+            local k = 1
+            if G.BS.TargetLockAnim ~= false and age < 0.28 then
+                k = 1 + (1 - age / 0.28) * 0.9
+            end
+            -- Короткая белая вспышка в момент захвата.
+            local ringCol = colT
+            if age < 0.16 then
+                ringCol = colT:Lerp(Color3.new(1, 1, 1), 1 - age / 0.16)
+            end
+            if targetRing then
+                targetRing.Position = Vector2.new(spT.X, spT.Y)
+                targetRing.Size = Vector2.new(r * 2 * k, r * 2 * k)
+                targetRing.Color = ringCol
+                targetRing.Thickness = tonumber(G.BS.TargetRingThick) or 1
+                targetRing.Filled = false
+                targetRing.Transparency = 0.2
+                targetRing.Visible = true
+            end
+            if G.BS.TargetTicks ~= false then
+                local spd = tonumber(G.BS.TargetTickSpeed) or 1.1
+                local ang0 = nowT * spd
+                for i = 1, 4 do
+                    local a = ang0 + (i - 1) * math.pi / 2
+                    local ca, sa = math.cos(a), math.sin(a)
+                    local inner = r * k * 1.16
+                    local outer = r * k * 1.42
+                    local l = targetTicks[i]
+                    if l then
+                        l.From = Vector2.new(spT.X + ca * inner, spT.Y + sa * inner)
+                        l.To = Vector2.new(spT.X + ca * outer, spT.Y + sa * outer)
+                        l.Color = ringCol
+                        l.Thickness = 1
+                        l.Transparency = 0.15
+                        l.Visible = true
+                    end
+                end
+            else
+                for i = 1, 4 do vHideLine(targetTicks[i]) end
+            end
+        else
+            vHideCircle(targetRing)
+            for i = 1, 4 do vHideLine(targetTicks[i]) end
+        end
+    else
+        vHideCircle(targetRing)
+        for i = 1, 4 do vHideLine(targetTicks[i]) end
     end
 
     -- 2.5) ТРЕЙСЕР ВЫСТРЕЛА (от ствола до попадания)
@@ -7675,7 +7770,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.34",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.35",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -8119,8 +8214,27 @@ AI.CreateToggle({ Name = "Свободная часть тела (не в сте
     CurrentValue = G.BS.AimFreePart ~= false,
     Callback = function(v) G.BS.AimFreePart = v end })
 
-AI.CreateSection("Метка цели (красивая)")
-AI.CreateParagraph("Подсветка той цели, в которую целится аим: тонкая обводка, аккуратные уголки и табличка с подробностями.")
+AI.CreateSection("Цель аима (на кого работает аимлок)")
+AI.CreateParagraph("Кольцо захвата вокруг головы цели, тонкая обводка и табличка с подробностями. Всё это показывает, на кого СЕЙЧАС целится аимлок.")
+AI.CreateToggle({ Name = "Кольцо захвата", Flag = "BS_TargetRing",
+    CurrentValue = G.BS.TargetRing ~= false,
+    Callback = function(v) G.BS.TargetRing = v end })
+AI.CreateSlider({ Name = "Размер кольца", Flag = "BS_TargetRingSize",
+    Range = {10, 60}, Increment = 1, CurrentValue = G.BS.TargetRingSize or 26,
+    Suffix = " px", Callback = function(v) G.BS.TargetRingSize = v end })
+AI.CreateSlider({ Name = "Толщина кольца", Flag = "BS_TargetRingThick",
+    Range = {1, 4}, Increment = 1, CurrentValue = G.BS.TargetRingThick or 1,
+    Suffix = " px", Callback = function(v) G.BS.TargetRingThick = v end })
+AI.CreateToggle({ Name = "Вращающиеся засечки", Flag = "BS_TargetTicks",
+    CurrentValue = G.BS.TargetTicks ~= false,
+    Callback = function(v) G.BS.TargetTicks = v end })
+AI.CreateSlider({ Name = "Скорость засечек", Flag = "BS_TargetTickSpeed",
+    Range = {0, 40}, Increment = 1,
+    CurrentValue = math.floor((tonumber(G.BS.TargetTickSpeed) or 1.1) * 10 + 0.5),
+    Suffix = " x0.1", Callback = function(v) G.BS.TargetTickSpeed = v / 10 end })
+AI.CreateToggle({ Name = "Анимация захвата (схлопывание)", Flag = "BS_TargetLockAnim",
+    CurrentValue = G.BS.TargetLockAnim ~= false,
+    Callback = function(v) G.BS.TargetLockAnim = v end })
 AI.CreateToggle({ Name = "Обводка цели (Highlight)", Flag = "BS_TargetMark",
     CurrentValue = G.BS.TargetMark ~= false,
     Callback = function(v)
@@ -8134,8 +8248,8 @@ AI.CreateSlider({ Name = "Прозрачность обводки", Flag = "BS_T
     Range = {0, 10}, Increment = 1,
     CurrentValue = math.floor((tonumber(G.BS.TargetMarkAlpha) or 0.15) * 10 + 0.5),
     Suffix = " /10", Callback = function(v) G.BS.TargetMarkAlpha = v / 10 end })
-AI.CreateToggle({ Name = "Уголки вокруг цели", Flag = "BS_TargetBrackets",
-    CurrentValue = G.BS.TargetBrackets ~= false,
+AI.CreateToggle({ Name = "Доп. уголки вокруг цели", Flag = "BS_TargetBrackets",
+    CurrentValue = G.BS.TargetBrackets == true,
     Callback = function(v) G.BS.TargetBrackets = v end })
 AI.CreateSlider({ Name = "Размер уголков", Flag = "BS_TargetBracketSize",
     Range = {4, 30}, Increment = 1, CurrentValue = G.BS.TargetBracketSize or 10,
@@ -8475,7 +8589,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.34 остановлен")
+    print("[BS HUB] v11.35 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -8583,7 +8697,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.34 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.35 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
