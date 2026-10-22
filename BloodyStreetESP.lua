@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.37
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.38
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -7976,7 +7976,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.37",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.38",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -8026,7 +8026,7 @@ local PL = mkTab(PLRT, "ИГРОК")
 
 -- ======================= ESP =======================
 TB.CreateSection("Цели и роли")
-TB.CreateParagraph("Кого видно в ESP и в каком цвете. Цвет роли меняет подпись, коробку, линии и метку цели.")
+TB.CreateParagraph({ Text = "Кого видно в ESP и в каком цвете. Цвет роли меняет подпись, коробку, линии и метку цели." })
 TB.CreateToggle({ Name = "ESP игроков", Flag = "BS_PlayerESP",
     CurrentValue = G.BS.PlayerESP, Callback = function(v) G.BS.PlayerESP = v end })
 TB.CreateColorPicker({ Name = "Цвет игроков", Flag = "BS_PlayerColor",
@@ -8043,7 +8043,7 @@ TB.CreateToggle({ Name = "Только вампиры (остальных скр
     CurrentValue = G.BS.OnlyVamps, Callback = function(v) G.BS.OnlyVamps = v end })
 
 TB.CreateSection("Подписи")
-TB.CreateParagraph("Что пишется над игроком. Порядок строк: роль, оружие, ник, дистанция, HP, скорость, статус.")
+TB.CreateParagraph({ Text = "Что пишется над игроком. Порядок строк: роль, оружие, ник, дистанция, HP, скорость, статус." })
 TB.CreateToggle({ Name = "Ники", Flag = "BS_Names",
     CurrentValue = G.BS.Names, Callback = function(v) G.BS.Names = v end })
 TB.CreateToggle({ Name = "Дистанция", Flag = "BS_ShowDist",
@@ -8076,7 +8076,7 @@ TB.CreateSlider({ Name = "Размер текста ESP", Flag = "BS_LabelSize",
     Suffix = " px", Callback = function(v) G.BS.LabelSize = v end })
 
 TB.CreateSection("Коробки")
-TB.CreateParagraph("Плоская рамка вокруг игрока: считается по реальным габаритам модели, 3D-коробки больше нет.")
+TB.CreateParagraph({ Text = "Плоская рамка вокруг игрока: считается по реальным габаритам модели, 3D-коробки больше нет." })
 TB.CreateToggle({ Name = "Коробки игроков", Flag = "BS_Boxes2",
     CurrentValue = G.BS.Boxes ~= false,
     Callback = function(v)
@@ -8115,7 +8115,7 @@ TB.CreateToggle({ Name = "Затухание коробок по дистанц�
     CurrentValue = G.BS.DistFade == true,
     Callback = function(v) G.BS.DistFade = v end })
 TB.CreateSection("Визуалы игроков")
-TB.CreateParagraph("Дополнительные визуалы над игроками: линии, аура, скелет, полоска HP, рамка головы.")
+TB.CreateParagraph({ Text = "Дополнительные визуалы над игроками: линии, аура, скелет, полоска HP, рамка головы." })
 TB.CreateToggle({ Name = "Линии от низа экрана (snaplines)", Flag = "BS_Snaplines",
     CurrentValue = G.BS.Snaplines ~= false,
     Callback = function(v) G.BS.Snaplines = v end })
@@ -8242,7 +8242,7 @@ TB.CreateDropdown({
 })
 
 TB.CreateSection("Объекты")
-TB.CreateParagraph("Подсветка ящиков и монет на карте, иконки ролей и оружие в подписи ESP.")
+TB.CreateParagraph({ Text = "Подсветка ящиков и монет на карте, иконки ролей и оружие в подписи ESP." })
 TB.CreateToggle({ Name = "Подсветка ящиков", Flag = "BS_CrateESP",
     CurrentValue = G.BS.CrateESP == true,
     Callback = function(v) G.BS.CrateESP = v end })
@@ -8262,7 +8262,7 @@ TB.CreateToggle({ Name = "Оружие в ESP", Flag = "BS_WeaponESP",
     Callback = function(v) G.BS.WeaponESP = v end })
 
 TB.CreateSection("Миникарта")
-TB.CreateParagraph("Мини-карта в углу экрана: кто и где относительно тебя.")
+TB.CreateParagraph({ Text = "Мини-карта в углу экрана: кто и где относительно тебя." })
 TB.CreateToggle({ Name = "Миникарта", Flag = "BS_Minimap",
     CurrentValue = G.BS.Minimap == true,
     Callback = function(v) G.BS.Minimap = v end })
@@ -8427,7 +8427,7 @@ AI.CreateToggle({ Name = "Свободная часть тела (не в сте
     Callback = function(v) G.BS.AimFreePart = v end })
 
 AI.CreateSection("Цель аима (на кого работает аимлок)")
-AI.CreateParagraph("Кольцо захвата вокруг головы цели, тонкая обводка и табличка с подробностями. Всё это показывает, на кого СЕЙЧАС целится аимлок.")
+AI.CreateParagraph({ Text = "Кольцо захвата вокруг головы цели, тонкая обводка и табличка с подробностями. Всё это показывает, на кого СЕЙЧАС целится аимлок." })
 AI.CreateToggle({ Name = "Кольцо захвата", Flag = "BS_TargetRing",
     CurrentValue = G.BS.TargetRing ~= false,
     Callback = function(v) G.BS.TargetRing = v end })
@@ -8506,7 +8506,7 @@ AI.CreateToggle({ Name = "В таблице: оружие", Flag = "BS_TargetPla
 -- в одной вкладке ИГРОК. Список танцев - выпадающий (не кнопки
 -- «следующий/предыдущий»).
 PL.CreateSection("Патроны")
-PL.CreateParagraph("Авто-пополнение из ящиков. По умолчанию скрипт идёт к ящику только когда патроны закончились (порог 0).")
+PL.CreateParagraph({ Text = "Авто-пополнение из ящиков. По умолчанию скрипт идёт к ящику только когда патроны закончились (порог 0)." })
 PL.CreateToggle({
     Name = "Авто-пополнение рядом с ящиком",
     Flag = "BS_AmmoAuto",
@@ -8542,7 +8542,7 @@ PL.CreateSection("Монеты")
 -- игроку. Сбор работает как раньше — prompt / click / touch / ремоут.
 -- v11.36: AFK-ФАРМ — скрипт сам собирает монеты по всей карте и
 -- подхватывает их заново, когда игра сбрасывает новые.
-PL.CreateParagraph("AFK-фарм: скрипт сам обходит монеты по всей карте и собирает их, пока игра сбрасывает новые. В консоли — счётчик каждые 10 монет.")
+PL.CreateParagraph({ Text = "AFK-фарм: скрипт сам обходит монеты по всей карте и собирает их, пока игра сбрасывает новые. В консоли — счётчик каждые 10 монет." })
 PL.CreateToggle({ Name = "AFK фарм монет", Flag = "BS_CoinFarm",
     CurrentValue = G.BS.CoinFarm ~= false,
     Callback = function(v)
@@ -8567,7 +8567,7 @@ PL.CreateToggle({ Name = "Сбор телепортом к монете (рис�
 -- v11.32: вернулся СПИД БУСТ (ускорение). Раньше он был только в коде
 -- и не выводился в меню, поэтому его и не было «в списке».
 PL.CreateSection("Скорость")
-PL.CreateParagraph("Спид буст — постоянное ускорение бега. Спид глитч — прыжок с разгоном: ускоряешься и летишь вверх, пока держишь прыжок.")
+PL.CreateParagraph({ Text = "Спид буст — постоянное ускорение бега. Спид глитч — прыжок с разгоном: ускоряешься и летишь вверх, пока держишь прыжок." })
 PL.CreateToggle({ Name = "Спид буст (ускорение бега)", Flag = "BS_SpeedBoost",
     CurrentValue = G.BS.SpeedBoost == true,
     Callback = function(v) G.BS.SpeedBoost = v end })
@@ -8802,7 +8802,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.37 остановлен")
+    print("[BS HUB] v11.38 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -8910,7 +8910,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.37 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.38 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
