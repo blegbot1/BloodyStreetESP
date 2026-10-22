@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.36
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.37
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -323,8 +323,11 @@ G.BS.LowHPColor    = safeColor(G.BS.LowHPColor, Color3.new(1, 0, 0))
 G.BS.CoinAuto      = true
 G.BS.CoinBlink     = false
 G.BS.CoinLearn     = true
--- v11.36: сбор монет ПО ВСЕЙ КАРТЕ (prompt/click у всех монет).
-G.BS.CoinMapWide   = G.BS.CoinMapWide ~= false
+-- v11.36: AFK-ФАРМ МОНЕТ. Скрипт сам собирает монеты по всей карте и
+-- подбирает их заново, когда игра сбрасывает новые. Тумблер в меню.
+G.BS.CoinFarm      = G.BS.CoinFarm ~= false
+G.BS.CoinFarmGap   = math.clamp(tonumber(G.BS.CoinFarmGap) or 1.0, 0.2, 10)
+G.BS.CoinFarmRange = tonumber(G.BS.CoinFarmRange) or 700
 G.BS.CoinRange     = tonumber(G.BS.CoinRange) or 600
 G.BS.CoinScanEvery = tonumber(G.BS.CoinScanEvery) or 1.0
 -- МАГНИТ МОНЕТ УДАЛЁН (v11.33) по просьбе: монеты больше не притягиваются
@@ -623,7 +626,9 @@ if G.BS.CfgV ~= 39 then
     G.BS.Boxes         = true
     G.BS.BoxStyle      = "Рамка"
     G.BS.HeadBoxRole   = true
-    G.BS.CoinMapWide   = true
+    G.BS.CoinFarm        = true
+    G.BS.CoinFarmGap     = 1.0
+    G.BS.CoinFarmRange   = 700
     G.BS.SpeedGlitch     = false
     G.BS.SpeedGlitchMul  = 2.5
     G.BS.SpeedGlitchLift = 30
@@ -771,6 +776,9 @@ local COIN = {
     -- удалённые монеты не держались в памяти.
     origin = setmetatable({}, { __mode = "k" }),
     originCF = setmetatable({}, { __mode = "k" }),
+    -- v11.36: состояние AFK-фарма монет (куда монету уже жали).
+    farmState = setmetatable({}, { __mode = "k" }),
+    farmCount = 0,
     fns = {}, blinkBusy = false, blinkAt = 0,
 }
 G.BS.Coins = COIN
@@ -783,9 +791,17 @@ function COIN.findFolder()
     COIN.folderAt = os.clock()
     -- FindFirstChild с recursive=true ищет на стороне движка: без
     -- Lua-обхода всего workspace (раньше это подвешивало кадр).
-    local f = workspace:FindFirstChild("CoinPickups", true)
-    COIN.folder = f
-    return f
+    -- Имена папки у разных карт разные — пробуем несколько.
+    local names = { "CoinPickups", "Coins", "CoinPickup", "Pickups", "CoinSpawner" }
+    for _, n in ipairs(names) do
+        local f = workspace:FindFirstChild(n, true)
+        if f then
+            COIN.folder = f
+            return f
+        end
+    end
+    COIN.folder = nil
+    return nil
 end
 
 function COIN.findRemote()
@@ -893,11 +909,15 @@ end
 -- иначе ссылка превратится в nil.
 function COIN.autoTick(now)
     if G.BS.CoinAuto == false then return end
-    if now - COIN.lastScan < (tonumber(G.BS.CoinScanEvery) or 1.0) then return end
+    -- AFK-фарм: сканируем чаще, чтобы успевать за сбрасываемыми
+    -- монетами (иначе между монетами остаются пустые секунды).
+    local every = tonumber(G.BS.CoinScanEvery) or 1.0
+    if G.BS.CoinFarm ~= false then every = math.min(every, 0.5) end
+    if now - COIN.lastScan < every then return end
     COIN.lastScan = now
     pcall(COIN.scan)
     -- v11.36: сбор по всей карте.
-    if G.BS.CoinMapWide ~= false then
+    if G.BS.CoinFarm ~= false then
         pcall(COIN.collectAll, now)
     end
 end
@@ -1013,24 +1033,41 @@ local function fireCoinPrompts(coin)
     return fired
 end
 
--- СБОР МОНЕТ ПО ВСЕЙ КАРТЕ (v11.36). Prompt и Click срабатывают у
--- любой монеты, поэтому скрипт жмёт их у ВСЕХ монет на карте, а не
--- только у тех, что оказались рядом с игроком. Пауза между попытками
--- по одной монете — 2 секунды, чтобы не долбить сервер.
+-- СБОР МОНЕТ ПО ВСЕЙ КАРТЕ + AFK-ФАРМ (v11.36).
+-- Важный момент: игра часто НЕ удаляет собранную монету, а
+-- ПЕРЕСТАВЛЯЕТ её на новое место (сброс). Из-за паузы в пару секунд
+-- фарм «зависал» на одной и той же монете. Теперь: если монета
+-- сместилась — считаем её новой и берём сразу.
 function COIN.collectAll(now)
     local folder = COIN.findFolder()
     if not folder then return 0 end
     local n = 0
     local okAll, list = pcall(function() return folder:GetDescendants() end)
     if not okAll or type(list) ~= "table" then return 0 end
+    local gap = tonumber(G.BS.CoinFarmGap) or 1.0
+    if gap < 0.2 then gap = 0.2 elseif gap > 10 then gap = 10 end
     for i = 1, #list do
         local coin = list[i]
         if coin and coin:IsA("Model") and coin.Name == "CoinPickup" and coin.Parent then
-            local last = COIN.seen[coin]
-            if not last or (now - last) >= 2 then
-                COIN.seen[coin] = now
+            local part = coinPart(coin)
+            local pos = part and part.Parent and part.Position or nil
+            local st = COIN.farmState[coin]
+            local take = true
+            if st and pos and st.pos and (pos - st.pos).Magnitude < 3 then
+                -- та же самая монета на том же месте — ждём паузу
+                take = (now - st.at) >= gap
+            end
+            if take then
+                COIN.farmState[coin] = { at = now, pos = pos }
                 local ok, fired = pcall(fireCoinPrompts, coin)
-                if ok and fired then n = n + 1 end
+                if ok and fired then
+                    n = n + 1
+                    COIN.farmCount = (COIN.farmCount or 0) + 1
+                    local c = COIN.farmCount
+                    if c % 10 == 0 then
+                        print("[BS COIN] AFK-фарм: собрано " .. c)
+                    end
+                end
             end
         end
     end
@@ -1043,7 +1080,10 @@ end
 -- и возвращаемся. За один раз — одна монета, иначе персонажа будет
 -- швырять между точками.
 function COIN.blinkCollect(coin, now)
-    if G.BS.CoinBlink == false then return false end
+    -- Телепорт-сбор включается тумблером «Сбор телепортом к монете»
+    -- ИЛИ активным AFK-фармом: без телепорта сервер не засчитывает
+    -- монету, до которой игрок не дошёл.
+    if G.BS.CoinBlink == false and G.BS.CoinFarm == false then return false end
     if COIN.blinkBusy or G.BS._tpBusy then return false end
     local ch = LP and LP.Character
     local hum = ch and ch:FindFirstChildOfClass("Humanoid")
@@ -1060,6 +1100,11 @@ function COIN.blinkCollect(coin, now)
     end
     local originCF = COIN.originCF[coin] or CFrame.new(origin)
     local radius = tonumber(G.BS.CoinMagnetRadius) or 250
+    -- AFK-фарм работает по всей карте: радиус телепорта больше.
+    if G.BS.CoinFarm ~= false then
+        local fr = tonumber(G.BS.CoinFarmRange) or 700
+        if fr > radius then radius = fr end
+    end
     local dist = (origin - root.Position).Magnitude
     if dist > radius + 30 then return false end
     if now - (COIN.blinkAt or 0) < 0.75 then return false end
@@ -1236,6 +1281,15 @@ function COIN.magnetTick(now)
                     COIN.origin[coin] = cf0 and cf0.Position or part.Position
                     COIN.originCF[coin] = cf0
                 end
+                -- МОНЕТУ ПЕРЕСТАВИЛИ (сброс на новое место): обновляем
+                -- исходную позицию, иначе скрипт бежит туда, где монеты
+                -- уже нет, и фарм стоит.
+                local o0 = COIN.origin[coin]
+                if o0 and (part.Position - o0).Magnitude > 3 then
+                    local cf0 = coinPivot(coin)
+                    COIN.origin[coin] = cf0 and cf0.Position or part.Position
+                    COIN.originCF[coin] = cf0
+                end
                 local serverPos = COIN.origin[coin]
                 local serverDist = (serverPos - rp).Magnitude
                 if serverDist <= 20 then COIN.nearPlayer = true end
@@ -1285,8 +1339,11 @@ function COIN.magnetTick(now)
         end
     end
 
-    -- Сбор телепортом — по ближайшей серверной монете, не чаще 0.75 c.
-    if G.BS.CoinAuto ~= false and G.BS.CoinBlink ~= false
+    -- AFK-ФАРМ (v11.36): скрипт сам бегает/телепортируется к монетам и
+    -- собирает их по кругу, пока игра сбрасывает новые. Поэтому
+    -- телепорт-сбор работает и при включённом фарме.
+    if G.BS.CoinAuto ~= false
+       and (G.BS.CoinBlink ~= false or G.BS.CoinFarm ~= false)
        and bestCoin and bestDist and bestDist > 12 then
         pcall(COIN.blinkCollect, bestCoin, now)
     end
@@ -7919,7 +7976,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.36",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.37",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -8483,12 +8540,26 @@ PL.CreateSlider({
 PL.CreateSection("Монеты")
 -- Магнит монет УДАЛЁН (v11.33) по просьбе: монеты больше не летят к
 -- игроку. Сбор работает как раньше — prompt / click / touch / ремоут.
--- v11.36: добавлен сбор монет ПО ВСЕЙ КАРТЕ — скрипт жмёт prompt у
--- всех монет, а не только у тех, что рядом.
-PL.CreateParagraph("Сбор монет: по умолчанию скрипт собирает монеты ПО ВСЕЙ КАРТЕ. Телепорт-сбор к серверной позиции — по желанию.")
-PL.CreateToggle({ Name = "Собирать монеты по всей карте", Flag = "BS_CoinMapWide",
-    CurrentValue = G.BS.CoinMapWide ~= false,
-    Callback = function(v) G.BS.CoinMapWide = v end })
+-- v11.36: AFK-ФАРМ — скрипт сам собирает монеты по всей карте и
+-- подхватывает их заново, когда игра сбрасывает новые.
+PL.CreateParagraph("AFK-фарм: скрипт сам обходит монеты по всей карте и собирает их, пока игра сбрасывает новые. В консоли — счётчик каждые 10 монет.")
+PL.CreateToggle({ Name = "AFK фарм монет", Flag = "BS_CoinFarm",
+    CurrentValue = G.BS.CoinFarm ~= false,
+    Callback = function(v)
+        G.BS.CoinFarm = v
+        if v then
+            G.BS.Coins.farmCount = 0
+        end
+        notify(v and "AFK-фарм монет: включён" or "AFK-фарм монет: выключен", 3)
+    end })
+PL.CreateSlider({ Name = "Пауза между попытками", Flag = "BS_CoinFarmGap",
+    Range = {0.2, 5}, Increment = 0.1,
+    CurrentValue = tonumber(G.BS.CoinFarmGap) or 1.0,
+    Suffix = " c", Callback = function(v) G.BS.CoinFarmGap = v end })
+PL.CreateSlider({ Name = "Радиус фарма", Flag = "BS_CoinFarmRange",
+    Range = {100, 1200}, Increment = 50,
+    CurrentValue = tonumber(G.BS.CoinFarmRange) or 700,
+    Suffix = " st", Callback = function(v) G.BS.CoinFarmRange = v end })
 PL.CreateToggle({ Name = "Сбор телепортом к монете (риск)", Flag = "BS_CoinBlink",
     CurrentValue = G.BS.CoinBlink ~= false,
     Callback = function(v) G.BS.CoinBlink = v end })
@@ -8731,7 +8802,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.36 остановлен")
+    print("[BS HUB] v11.37 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -8839,7 +8910,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.36 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.37 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
