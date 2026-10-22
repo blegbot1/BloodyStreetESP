@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.40
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.41
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -197,8 +197,7 @@ G.BS.AimFreePart     = G.BS.AimFreePart ~= false
 -- Раньше стояло 0 (без ограничения), и скрипт спокойно выбирал цель
 -- в 404 студах - такие выстрелы в принципе не могли попасть.
 G.BS.AimMaxDist      = tonumber(G.BS.AimMaxDist) or 290
-if G.BS.AimMaxDist == 0 then G.BS.AimMaxDist = 290 end
-if G.BS.AimMaxDist == 300 then G.BS.AimMaxDist = 290 end
+if G.BS.AimMaxDist <= 0 then G.BS.AimMaxDist = 290 end
 if G.BS.AimMaxDist > 300 then G.BS.AimMaxDist = 300 end
 G.BS.RGBTarget       = pickOpt(G.BS.RGBTarget, RGB_TARGETS, RGB_TARGETS[1])
 
@@ -330,7 +329,9 @@ G.BS.CoinBlink     = false
 G.BS.CoinLearn     = true
 -- v11.36: AFK-ФАРМ МОНЕТ. Скрипт сам собирает монеты по всей карте и
 -- подбирает их заново, когда игра сбрасывает новые. Тумблер в меню.
-G.BS.CoinFarm      = G.BS.CoinFarm ~= false
+-- По умолчанию ВЫКЛЮЧЕН: фарм постоянно телепортирует персонажа к монетам,
+-- и включать такое без явного согласия опасно. Тумблер в меню.
+G.BS.CoinFarm      = G.BS.CoinFarm == true
 G.BS.CoinFarmGap   = math.clamp(tonumber(G.BS.CoinFarmGap) or 1.0, 0.2, 10)
 G.BS.CoinFarmRange = tonumber(G.BS.CoinFarmRange) or 700
 G.BS.CoinRange     = tonumber(G.BS.CoinRange) or 600
@@ -631,7 +632,7 @@ if G.BS.CfgV ~= 39 then
     G.BS.Boxes         = true
     G.BS.BoxStyle      = "Рамка"
     G.BS.HeadBoxRole   = true
-    G.BS.CoinFarm        = true
+    G.BS.CoinFarm        = false
     G.BS.CoinFarmGap     = 1.0
     G.BS.CoinFarmRange   = 700
     G.BS.SpeedGlitch     = false
@@ -723,6 +724,15 @@ local function aliasOf(v)
     if s == "" then return nil end
     if string.find(s, "vamp", 1, true) then return "vampire" end
     if string.find(s, "hunt", 1, true) then return "hunter" end
+    -- Мирные роли игры (доктор, детектив, провидец...) — это люди.
+    -- Без этого «Противники по роли» считали их отдельной ролью и
+    -- аимлок мог бить по своим.
+    if s == "doctor" or s == "detective" or s == "seer"
+       or s == "medic" or s == "civilian" or s == "citizen"
+       or s == "survivor" or s == "crew" or s == "human"
+       or s == "innocent" or s == "villager" then
+        return "human"
+    end
     if string.find(s, "none", 1, true) then return "none" end
     if string.find(s, "civil", 1, true) then return "human" end
     return nil
@@ -797,10 +807,12 @@ function COIN.findFolder()
     -- FindFirstChild с recursive=true ищет на стороне движка: без
     -- Lua-обхода всего workspace (раньше это подвешивало кадр).
     -- Имена папки у разных карт разные — пробуем несколько.
-    local names = { "CoinPickups", "Coins", "CoinPickup", "Pickups", "CoinSpawner" }
+    -- "CoinPickup" здесь больше нет: так называется сама модель монеты,
+    -- и FindFirstChild мог закэшировать одну монету вместо папки.
+    local names = { "CoinPickups", "Coins", "Pickups", "CoinSpawner" }
     for _, n in ipairs(names) do
         local f = workspace:FindFirstChild(n, true)
-        if f then
+        if f and not (f:IsA("Model") and f.Name == "CoinPickup") then
             COIN.folder = f
             return f
         end
@@ -848,8 +860,9 @@ function COIN.collectOne(coin)
     local args
     if COIN.args and COIN.argIdx == 0 then
         -- игра сама определяет монету (например, по касанию) —
-        -- просто повторяем вызов без аргументов
-        pcall(function() remote:FireServer() end)
+        -- повторяем вызов с теми же аргументами, что запомнили.
+        local n = tonumber(COIN.args.n) or 0
+        pcall(function() remote:FireServer(table.unpack(COIN.args, 1, n)) end)
         return true
     elseif COIN.args and COIN.argIdx and COIN.argIdx > 0 and COIN.argIdx <= COIN.args.n then
         -- Model не имеет .Position: берём позицию пивота/части.
@@ -896,13 +909,20 @@ function COIN.scan()
     end
     if not (COIN.remote or COIN.learned) then return 0 end
     local n = 0
+    -- Собираем только то, что рядом: remote на каждую монету карты —
+    -- это сотни вызовов и гарантированный спам серверу.
+    local ch = LP and LP.Character
+    local myRoot = ch and ch:FindFirstChild("HumanoidRootPart")
     for _, coin in ipairs(folder:GetDescendants()) do
         if coin:IsA("Model") and coin.Name == "CoinPickup" then
             local now = os.clock()
             local last = COIN.seen[coin]
             if not last or (now - last) >= 5 then
                 COIN.seen[coin] = now
-                if COIN.collectOne(coin) then n = n + 1 end
+                local part = coinPart(coin)
+                local near = part and myRoot
+                    and (part.Position - myRoot.Position).Magnitude <= 14
+                if near and COIN.collectOne(coin) then n = n + 1 end
             end
         end
     end
@@ -1051,6 +1071,11 @@ function COIN.collectAll(now)
     if not okAll or type(list) ~= "table" then return 0 end
     local gap = tonumber(G.BS.CoinFarmGap) or 1.0
     if gap < 0.2 then gap = 0.2 elseif gap > 10 then gap = 10 end
+    -- Ближний сбор: prompt/click/touch срабатывают только рядом с игроком.
+    -- Раньше fireCoinPrompts вызывался для КАЖДОЙ монеты карты — это
+    -- тысячи вызовов в секунду и гарантированный спам серверу.
+    local ch = LP and LP.Character
+    local myRoot = ch and ch:FindFirstChild("HumanoidRootPart")
     for i = 1, #list do
         local coin = list[i]
         if coin and coin:IsA("Model") and coin.Name == "CoinPickup" and coin.Parent then
@@ -1058,7 +1083,13 @@ function COIN.collectAll(now)
             local pos = part and part.Parent and part.Position or nil
             local st = COIN.farmState[coin]
             local take = true
-            if st and pos and st.pos and (pos - st.pos).Magnitude < 3 then
+            if not (part and pos and myRoot) then
+                take = false
+            elseif (pos - myRoot.Position).Magnitude > 14 then
+                -- Далёкие монеты собирает телепорт (blinkCollect), не prompt.
+                take = false
+            end
+            if take and st and pos and st.pos and (pos - st.pos).Magnitude < 3 then
                 -- та же самая монета на том же месте — ждём паузу
                 take = (now - st.at) >= gap
             end
@@ -1270,6 +1301,10 @@ function COIN.magnetTick(now)
         end
     end
     local radius = tonumber(G.BS.CoinMagnetRadius) or 250
+    -- AFK-фарм ищет монеты по всей карте, а не только в радиусе магнита.
+    if G.BS.CoinFarm == true then
+        radius = math.max(radius, tonumber(G.BS.CoinFarmRange) or 700)
+    end
     local power = math.clamp(tonumber(G.BS.CoinMagnetPower) or 0.45, 0.1, 1)
     local rp = root.Position
     local bestCoin, bestDist
@@ -1526,12 +1561,23 @@ end
 
 local function makeBox()
     if not DRAW_OK then return nil end
+    -- Если Drawing.new уже падал, не пытаемся создавать 12 линий каждый
+    -- кадр: это быстро упирается в лимит объектов исполнителя.
+    if os.clock() < (G.BS._boxRetryAt or 0) then return nil end
     local b = {}
     b.lines = {}
     -- 12 линий: 4 — рамка, 8 — уголки, 12 — 3D-коробка (по рёбрам).
     for i = 1, 12 do
         local ok, ln = pcall(function() return Drawing.new("Line") end)
-        if not ok or not ln then return nil end
+        if not ok or not ln then
+            -- Не бросаем уже созданные линии: иначе при каждом кадре
+            -- создаются новые Drawing и упираются в лимит исполнителя.
+            for j = 1, i - 1 do
+                if b.lines[j] then pcall(function() b.lines[j]:Remove() end) end
+            end
+            G.BS._boxRetryAt = os.clock() + 5
+            return nil
+        end
         ln.Visible   = false
         ln.Thickness = tonumber(G.BS.BoxThick) or 2
         ln.Color     = Color3.new(1, 1, 1)
@@ -1561,12 +1607,14 @@ local function drawBox(b, root, cam)
     end
     local ch = root.Parent
     local nowB = os.clock()
-    -- Пересчёт габаритов: при смене персонажа и раз в 0.4 с (не каждый кадр).
+    -- Пересчёт ГАБАРИТОВ: при смене персонажа и раз в 0.4 с. Позицию и
+    -- поворот берём с корня КАЖДЫЙ кадр: раньше кэшировался весь CFrame,
+    -- и коробка дёргалась рывками 2.5 раза в секунду.
     if b.char ~= ch or nowB - (b.sizeAt or 0) > 0.4 then
         b.char = ch
         b.sizeAt = nowB
-        b.cf = nil
         b.size = nil
+        b.offLocal = nil
         if ch and ch:IsA("Model") then
             local okB, cfB, szB = pcall(function()
                 local c, s = ch:GetBoundingBox()
@@ -1574,12 +1622,20 @@ local function drawBox(b, root, cam)
             end)
             if okB and typeof(cfB) == "CFrame"
                and typeof(szB) == "Vector3" and szB.Magnitude > 0.1 then
-                b.cf = cfB
                 b.size = szB
+                -- Смещение центра габаритов от HumanoidRootPart в локальных
+                -- координатах. Позиция обновляется каждый кадр, поэтому
+                -- коробка плавно едет за игроком и не отстаёт.
+                local okO, off = pcall(function()
+                    return root.CFrame:PointToObjectSpace(cfB.Position)
+                end)
+                if okO and typeof(off) == "Vector3" then
+                    b.offLocal = off
+                end
             end
         end
     end
-    local cf = b.cf or CFrame.new(root.Position)
+    local cf = root.CFrame * CFrame.new(b.offLocal or Vector3.new(0, 0, 0))
     -- Запасной вариант, если GetBoundingBox не сработал.
     local size = b.size or Vector3.new(2.6, 5.8, 2.2)
     -- Небольшой запас, чтобы углы не резали руки/макушку.
@@ -2126,7 +2182,8 @@ function VIS.update(cam, myRoot, by, locked)
             end
             if targetRing then
                 targetRing.Position = Vector2.new(spT.X, spT.Y)
-                targetRing.Size = Vector2.new(r * 2 * k, r * 2 * k)
+                -- ВАЖНО: у Drawing Circle нет свойства Size, только Radius.
+                targetRing.Radius = r * k
                 targetRing.Color = ringCol
                 targetRing.Thickness = tonumber(G.BS.TargetRingThick) or 1
                 targetRing.Filled = false
@@ -2218,6 +2275,7 @@ function VIS.update(cam, myRoot, by, locked)
         local root = ch and ch:FindFirstChild("HumanoidRootPart")
         local p = vpool[idx]
         local role = e.role
+        local show = (e.vis ~= false)
         local color
         if role == "vampire" then color = safeColor(G.BS.VampColor, Color3.new(1, 0, 0))
         elseif role == "hunter" then color = safeColor(G.BS.HunterColor, Color3.new(0, 0.7, 1))
@@ -2229,7 +2287,7 @@ function VIS.update(cam, myRoot, by, locked)
         --  - по желанию — только у цели аима;
         --  - мёртвые не рисуются.
         local skelOn = false
-        if G.BS.Skeleton and ch and ch.Parent then
+        if G.BS.Skeleton and show and ch and ch.Parent then
             local humS = ch:FindFirstChildOfClass("Humanoid")
             local alive = (not humS) or humS.Health > 0
             local far = true
@@ -2256,7 +2314,9 @@ function VIS.update(cam, myRoot, by, locked)
             local pts = {}
             for i = 1, 7 do
                 local sp = parts[i] and vProj(cam, parts[i].Position)
-                pts[i] = sp and Vector2.new(sp.X, sp.Y) or nil
+                -- Точки за камерой дают зеркальные координаты и рисуют
+                -- линии через весь экран — их просто не соединяем.
+                pts[i] = (sp and sp.Z > 0) and Vector2.new(sp.X, sp.Y) or nil
             end
             local links = {{1,2},{2,3},{2,4},{2,5},{3,6},{3,7}}
             local thick = tonumber(G.BS.SkeletonThick) or 1
@@ -2281,7 +2341,7 @@ function VIS.update(cam, myRoot, by, locked)
         -- ПОЛОСКА HP (v11.34, красивая): тёмная подложка, тонкая рамка,
         -- плавно падающая заливка по здоровью и короткая белая вспышка
         -- в момент урона. Раньше это был просто зелёный прямоугольник.
-        if G.BS.HealthBars and ch and ch.Parent then
+        if G.BS.HealthBars and show and ch and ch.Parent then
             local hum = ch:FindFirstChildOfClass("Humanoid")
             local head = ch:FindFirstChild("Head")
             if hum and head and hum.Health > 0 then
@@ -2371,7 +2431,7 @@ function VIS.update(cam, myRoot, by, locked)
         end
 
         -- РАМКА ВОКРУГ ГОЛОВЫ
-        if G.BS.HeadBox and ch and ch.Parent then
+        if G.BS.HeadBox and show and ch and ch.Parent then
             local head = ch:FindFirstChild("Head")
             if head then
                 local sp = vProj(cam, head.Position)
@@ -2405,7 +2465,7 @@ function VIS.update(cam, myRoot, by, locked)
         -- обводкой и наконечником. Себе стрелку не рисуем: игрок и
         -- так видит свой персонаж.
         local isLocal = (tPlr == LP)
-        if G.BS.Snaplines ~= false and not isLocal and root and root.Parent then
+        if G.BS.Snaplines ~= false and show and not isLocal and root and root.Parent then
             local sp = vProj(cam, root.Position + Vector3.new(0, 2, 0))
             if sp and sp.Z > 0 then
                 drawSnapArrow(p,
@@ -2431,7 +2491,7 @@ function VIS.update(cam, myRoot, by, locked)
 
         -- СТРЕЛКА У КРАЯ ЭКРАНА (цель за кадром). v11.39: тоже стала
         -- полноценной стрелкой с наконечником, а не штрихом в 12 px.
-        if G.BS.OffArrows and not isLocal
+        if G.BS.OffArrows and show and not isLocal
            and ch and ch.Parent and root and root.Parent then
             local sp = vProj(cam, root.Position)
             local onScreen = sp and sp.Z > 0
@@ -2441,7 +2501,19 @@ function VIS.update(cam, myRoot, by, locked)
                 if sp and sp.Z > 0 then
                     dir = Vector2.new(sp.X - cx, sp.Y - cy)
                 else
-                    dir = Vector2.new(root.Position.X - camPos.X, root.Position.Z - camPos.Z)
+                    -- За камерой WorldToViewportPoint даёт зеркальные X/Y.
+                    -- Берём точку в системе координат камеры: X — вправо,
+                    -- -Y — вниз экрана. Иначе стрелка у края показывала
+                    -- в случайную сторону (например, вверх, когда цель
+                    -- стоит за спиной).
+                    local okL, rel = pcall(function()
+                        return cam.CFrame:PointToObjectSpace(root.Position)
+                    end)
+                    if okL and rel then
+                        dir = Vector2.new(rel.X, -rel.Y)
+                    else
+                        dir = Vector2.new(0, 1)
+                    end
                 end
                 local mag = dir.Magnitude
                 if mag < 0.001 then dir = Vector2.new(0, -1); mag = 1 end
@@ -2460,6 +2532,24 @@ function VIS.update(cam, myRoot, by, locked)
             hideEdgeArrow(p)
         end
 
+    end
+
+    -- Гасим слоты пула, которые остались от ушедших игроков. Раньше
+    -- при уменьшении числа игроков их HP-бары, стрелки и скелет
+    -- застывали на экране навсегда.
+    local usedSlots = math.min(idx, VMAX)
+    for k = usedSlots + 1, #vpool do
+        local pOld = vpool[k]
+        if pOld then
+            vHideSquare(pOld.hpBg); vHideSquare(pOld.hpBorder)
+            vHideSquare(pOld.hpFg); vHideText(pOld.hpText)
+            vHideSquare(pOld.headBox)
+            hideSnapArrow(pOld)
+            hideEdgeArrow(pOld)
+            if pOld.skeleton then
+                for i = 1, #pOld.skeleton do vHideLine(pOld.skeleton[i]) end
+            end
+        end
     end
 
     -- 5.5) ЛИНИИ МЕЖДУ ВАМПИРАМИ. Помогают читать группу: видно, кто
@@ -3104,7 +3194,11 @@ end
 local function isEnemy(plr)
     local e = by[plr]
     if not e then return true end
-    local me = string.lower(tostring(G.BS.MyRole or "?"))
+    -- Свою роль приводим к тем же именам, что и роли других игроков:
+    -- RoleAssigned может хранить "doctor"/"detective", а e.role — только
+    -- vampire/hunter/human, и сравнение строк давало «все враги».
+    local me = aliasOf(G.BS.MyRole)
+    if me == "none" then me = "human" end
     -- ВАЖНО: G.BS.AimTargets — это СТРОКА из AIM_TARGETS, а не индекс.
     -- Раньше тут было AIM_TARGETS[G.BS.AimTargets], то есть поиск по
     -- строке в массиве -> всегда nil -> фильтр не работал и аим бил
@@ -3119,7 +3213,7 @@ local function isEnemy(plr)
     elseif t == "Противники по роли" then
         -- Своя роль ещё не известна (начало раунда / Mystery): не
         -- отсекаем всех подряд, иначе аимлок молчит, хотя игрок впереди.
-        if me == "?" then return true end
+        if not me then return true end
         if e.role and e.role ~= me then return true end
         return e.role == nil
     end
@@ -4854,6 +4948,10 @@ function speedState.stop()
         pcall(function() speedState.jumpConn:Disconnect() end)
     end
     speedState.jumpConn = nil
+    if speedState.charConn then
+        pcall(function() speedState.charConn:Disconnect() end)
+    end
+    speedState.charConn = nil
     speedState.jumpHum = nil
     speedState.restore()
     speedState.restoreJump()
@@ -5044,7 +5142,12 @@ function speedState.hookJump()
         end)
     end
     if LP.Character then bind(LP.Character) end
-    LP.CharacterAdded:Connect(bind)
+    -- Соединение храним, чтобы stop() мог его снять. Раньше каждый
+    -- повторный запуск добавлял ещё один CharacterAdded.
+    if speedState.charConn then
+        pcall(function() speedState.charConn:Disconnect() end)
+    end
+    speedState.charConn = LP.CharacterAdded:Connect(bind)
 end
 
 -- ============================================================
@@ -5630,6 +5733,10 @@ function SUPPLY.autoTick(now)
         if gs and gs.MenuIsOpen then menuOpen = true end
     end)
     if menuOpen then return end
+
+    -- Троттлинг ставим ДО поиска ящика: если ReadAmmo не читается,
+    -- раньше supplyNearest вызывался каждый кадр и сканировал PlayerGui.
+    SUPPLY.lastAuto = now
 
     local cur, max = G.BS.ReadAmmo()
     local known = type(cur) == "number" and type(max) == "number" and max > 0
@@ -6857,6 +6964,13 @@ end
 -- FindFirstChildOfClass, ...) — это снова namecall и рекурсия. Поэтому
 -- все нужные Instance кэшируем снаружи, в refreshHookTargets().
 local function refreshHookTargets()
+    -- Remotes мог не существовать в момент запуска (скрипт вставили до
+    -- загрузки карты). Раньше он разрешался один раз, и хуки навсегда
+    -- оставались с nil-адресами. Теперь пробуем найти его заново.
+    if not (Remotes and Remotes.Parent) then
+        local okR, r = pcall(findRemotes)
+        if okR and r then Remotes = r end
+    end
     if Remotes then
         NC.fw = Remotes:FindFirstChild("FireWeapon")
         NC.ue = Remotes:FindFirstChild("UseEnergy")
@@ -7948,6 +8062,10 @@ local conn = RunService.RenderStepped:Connect(function()
                     :Lerp(Color3.new(1, 1, 1), pulse)
             end
 
+            -- ВАЖНО: VIS.update рисует HP, скелет, стрелки и рамку головы
+            -- отдельно от подписи. Передаём ему видимость, иначе у скрытых
+            -- (мёртвых / выключенных ролью) оставались все эти элементы.
+            e.vis = vis
             if e.gui.Enabled ~= vis then e.gui.Enabled = vis end
 
             if vis then
@@ -8057,7 +8175,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.40",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.41",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -8107,7 +8225,7 @@ local PL = mkTab(PLRT, "ИГРОК")
 
 -- ======================= ESP =======================
 TB.CreateSection("Цели и роли")
-TB.CreateParagraph({ Text = "Кого видно в ESP и в каком цвете. Цвет роли меняет подпись, коробку, линии и метку цели." })
+TB.CreateParagraph({ Title = "Цели и роли", Content = "Кого видно в ESP и в каком цвете. Цвет роли меняет подпись, коробку, линии и метку цели." })
 TB.CreateToggle({ Name = "ESP игроков", Flag = "BS_PlayerESP",
     CurrentValue = G.BS.PlayerESP, Callback = function(v) G.BS.PlayerESP = v end })
 TB.CreateColorPicker({ Name = "Цвет игроков", Flag = "BS_PlayerColor",
@@ -8124,7 +8242,7 @@ TB.CreateToggle({ Name = "Только вампиры (остальных скр
     CurrentValue = G.BS.OnlyVamps, Callback = function(v) G.BS.OnlyVamps = v end })
 
 TB.CreateSection("Подписи")
-TB.CreateParagraph({ Text = "Что пишется над игроком. Порядок строк: роль, оружие, ник, дистанция, HP, скорость, статус." })
+TB.CreateParagraph({ Title = "Подписи", Content = "Что пишется над игроком. Порядок строк: роль, оружие, ник, дистанция, HP, скорость, статус." })
 TB.CreateToggle({ Name = "Ники", Flag = "BS_Names",
     CurrentValue = G.BS.Names, Callback = function(v) G.BS.Names = v end })
 TB.CreateToggle({ Name = "Дистанция", Flag = "BS_ShowDist",
@@ -8157,9 +8275,9 @@ TB.CreateSlider({ Name = "Размер текста ESP", Flag = "BS_LabelSize",
     Suffix = " px", Callback = function(v) G.BS.LabelSize = v end })
 
 TB.CreateSection("Коробки")
-TB.CreateParagraph({ Text = "3D-коробка строится по габаритам всей модели: облегает тело целиком, поворачивается вместе с игроком, дальние рёбра бледнее. Есть рамка и уголки." })
+TB.CreateParagraph({ Title = "Коробки", Content = "3D-коробка строится по габаритам всей модели: облегает тело целиком, поворачивается вместе с игроком, дальние рёбра бледнее. Есть рамка и уголки." })
 TB.CreateToggle({ Name = "Коробки игроков", Flag = "BS_Boxes2",
-    CurrentValue = G.BS.Boxes ~= false,
+    CurrentValue = DRAW_OK and G.BS.Boxes ~= false,
     Callback = function(v)
         G.BS.Boxes = v
         if v and not DRAW_OK then
@@ -8196,7 +8314,7 @@ TB.CreateToggle({ Name = "Затухание коробок по дистанц�
     CurrentValue = G.BS.DistFade == true,
     Callback = function(v) G.BS.DistFade = v end })
 TB.CreateSection("Визуалы игроков")
-TB.CreateParagraph({ Text = "Стрелки к игрокам — толстые, со свечением, обводкой и наконечником. Плюс скелет, полоска HP и рамка головы." })
+TB.CreateParagraph({ Title = "Стрелки и скелет", Content = "Стрелки к игрокам — толстые, со свечением, обводкой и наконечником. Плюс скелет, полоска HP и рамка головы." })
 TB.CreateToggle({ Name = "Стрелки к игрокам (snaplines)", Flag = "BS_Snaplines",
     CurrentValue = G.BS.Snaplines ~= false,
     Callback = function(v) G.BS.Snaplines = v end })
@@ -8319,7 +8437,7 @@ TB.CreateDropdown({
 })
 
 TB.CreateSection("Объекты")
-TB.CreateParagraph({ Text = "Подсветка ящиков и монет на карте, иконки ролей и оружие в подписи ESP." })
+TB.CreateParagraph({ Title = "Подсветка", Content = "Подсветка ящиков и монет на карте, иконки ролей и оружие в подписи ESP." })
 TB.CreateToggle({ Name = "Подсветка ящиков", Flag = "BS_CrateESP",
     CurrentValue = G.BS.CrateESP == true,
     Callback = function(v) G.BS.CrateESP = v end })
@@ -8339,7 +8457,7 @@ TB.CreateToggle({ Name = "Оружие в ESP", Flag = "BS_WeaponESP",
     Callback = function(v) G.BS.WeaponESP = v end })
 
 TB.CreateSection("Миникарта")
-TB.CreateParagraph({ Text = "Мини-карта в углу экрана: кто и где относительно тебя." })
+TB.CreateParagraph({ Title = "Мини-карта", Content = "Мини-карта в углу экрана: кто и где относительно тебя." })
 TB.CreateToggle({ Name = "Миникарта", Flag = "BS_Minimap",
     CurrentValue = G.BS.Minimap == true,
     Callback = function(v) G.BS.Minimap = v end })
@@ -8504,7 +8622,7 @@ AI.CreateToggle({ Name = "Свободная часть тела (не в сте
     Callback = function(v) G.BS.AimFreePart = v end })
 
 AI.CreateSection("Цель аима (на кого работает аимлок)")
-AI.CreateParagraph({ Text = "Кольцо захвата вокруг головы цели, тонкая обводка и табличка с подробностями. Всё это показывает, на кого СЕЙЧАС целится аимлок." })
+AI.CreateParagraph({ Title = "Метка цели", Content = "Кольцо захвата вокруг головы цели, тонкая обводка и табличка с подробностями. Всё это показывает, на кого СЕЙЧАС целится аимлок." })
 AI.CreateToggle({ Name = "Кольцо захвата", Flag = "BS_TargetRing",
     CurrentValue = G.BS.TargetRing ~= false,
     Callback = function(v) G.BS.TargetRing = v end })
@@ -8583,7 +8701,7 @@ AI.CreateToggle({ Name = "В таблице: оружие", Flag = "BS_TargetPla
 -- в одной вкладке ИГРОК. Список танцев - выпадающий (не кнопки
 -- «следующий/предыдущий»).
 PL.CreateSection("Патроны")
-PL.CreateParagraph({ Text = "Авто-пополнение из ящиков. По умолчанию скрипт идёт к ящику только когда патроны закончились (порог 0)." })
+PL.CreateParagraph({ Title = "Патроны", Content = "Авто-пополнение из ящиков. По умолчанию скрипт идёт к ящику только когда патроны закончились (порог 0)." })
 PL.CreateToggle({
     Name = "Авто-пополнение рядом с ящиком",
     Flag = "BS_AmmoAuto",
@@ -8619,9 +8737,9 @@ PL.CreateSection("Монеты")
 -- игроку. Сбор работает как раньше — prompt / click / touch / ремоут.
 -- v11.36: AFK-ФАРМ — скрипт сам собирает монеты по всей карте и
 -- подхватывает их заново, когда игра сбрасывает новые.
-PL.CreateParagraph({ Text = "AFK-фарм: скрипт сам обходит монеты по всей карте и собирает их, пока игра сбрасывает новые. В консоли — счётчик каждые 10 монет." })
+PL.CreateParagraph({ Title = "AFK-фарм", Content = "Скрипт сам собирает монеты по всей карте и подхватывает новые, когда игра их сбрасывает. По умолчанию выключен: при включении персонаж телепортируется к монетам. В консоли — счётчик каждые 10 монет." })
 PL.CreateToggle({ Name = "AFK фарм монет", Flag = "BS_CoinFarm",
-    CurrentValue = G.BS.CoinFarm ~= false,
+    CurrentValue = G.BS.CoinFarm == true,
     Callback = function(v)
         G.BS.CoinFarm = v
         if v then
@@ -8638,13 +8756,13 @@ PL.CreateSlider({ Name = "Радиус фарма", Flag = "BS_CoinFarmRange",
     CurrentValue = tonumber(G.BS.CoinFarmRange) or 700,
     Suffix = " st", Callback = function(v) G.BS.CoinFarmRange = v end })
 PL.CreateToggle({ Name = "Сбор телепортом к монете (риск)", Flag = "BS_CoinBlink",
-    CurrentValue = G.BS.CoinBlink ~= false,
+    CurrentValue = G.BS.CoinBlink == true,
     Callback = function(v) G.BS.CoinBlink = v end })
 
 -- v11.32: вернулся СПИД БУСТ (ускорение). Раньше он был только в коде
 -- и не выводился в меню, поэтому его и не было «в списке».
 PL.CreateSection("Скорость")
-PL.CreateParagraph({ Text = "Спид буст — постоянное ускорение бега. Спид глитч — прыжок с разгоном: ускоряешься и летишь вверх, пока держишь прыжок." })
+PL.CreateParagraph({ Title = "Скорость", Content = "Спид буст — постоянное ускорение бега. Спид глитч — прыжок с разгоном: ускоряешься и летишь вверх, пока держишь прыжок." })
 PL.CreateToggle({ Name = "Спид буст (ускорение бега)", Flag = "BS_SpeedBoost",
     CurrentValue = G.BS.SpeedBoost == true,
     Callback = function(v) G.BS.SpeedBoost = v end })
@@ -8832,10 +8950,25 @@ G.BS_Stop = function()
     if Screen then pcall(function() Screen:Destroy() end) end
     if TargetHL then pcall(function() TargetHL:Destroy() end) end
     if Overlay then pcall(function() Overlay:Destroy() end) end
+    -- Rayfield: уничтожаем окно. Без этого Rayfield остаётся truthy,
+    -- повторный запуск не загружает библиотеку заново и появляются
+    -- дубли вкладок со старыми колбэками. Destroy откладываем, чтобы
+    -- не ломать текущий клик по кнопке меню.
+    local rfOld = Rayfield
+    Rayfield = nil
+    if rfOld then
+        task.defer(function() pcall(function() rfOld:Destroy() end) end)
+    end
     -- снять все Drawing/Highlight визуалов (прицел, миникарта, полоски...)
     if G.BS.VIS and G.BS.VIS.destroy then pcall(G.BS.VIS.destroy) end
-    -- звуковые метки и HUD тоже снимаем, иначе останутся висеть
-    for i = 1, #hitLines do pcall(function() hitLines[i]:Remove() end) end
+    -- звуковые метки и HUD тоже снимаем, иначе останутся висеть.
+    -- hitLines нигде не создаётся, поэтому #hitLines на nil ронял stop()
+    -- и вся очистка ниже (хуки, скорость, танец) не выполнялась.
+    if type(hitLines) == "table" then
+        for i = #hitLines, 1, -1 do
+            pcall(function() hitLines[i]:Remove() end)
+        end
+    end
     hitLines = {}
     EVENTS = {}
     -- танец: снимаем свой трек; AutoRotate вернёт SPIN.releaseAll
@@ -8879,7 +9012,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.40 остановлен")
+    print("[BS HUB] v11.41 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -8987,7 +9120,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.40 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.41 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
