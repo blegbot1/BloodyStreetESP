@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.31
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.32
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -100,6 +100,10 @@ end
 local AIM_TARGETS  = { "Противники по роли", "Только вампиров", "Только людей", "Все" }
 local AIM_PRIORITY = { "Ближе к прицелу", "Ближе по расстоянию", "Больше HP" }
 local AIM_PART     = { "Head", "UpperTorso", "HumanoidRootPart", "Torso" }
+-- Откуда начинать экранные трейсеры. Раньше начало было жёстко
+-- прибито к низу/центру экрана, из-за чего линии выглядели как
+-- «паутина» из одной точки. Теперь это настраивается отдельно.
+local TRACER_ORIGINS = { "Центр", "Низ экрана", "Верх экрана" }
 local RGB_TARGETS  = {
     "Метка: захват цели",
     "ESP вампиров",
@@ -131,14 +135,23 @@ G.BS.ShowHP      = G.BS.ShowHP      ~= false
 G.BS.Boxes       = G.BS.Boxes       ~= false
 G.BS.BoxThick    = G.BS.BoxThick    or 2
 G.BS.MaxDist     = G.BS.MaxDist     or 0
--- Прозрачность заливки подсветки тела: 0 = тело залито цветом роли,
--- 1 = заливки нет (остаётся только контур). Контур красится всегда.
--- Меняется на ходу: getgenv().BS.FillTransparency = 0.4
-G.BS.FillTransparency = tonumber(G.BS.FillTransparency) or 0.7
--- Единый переключатель подсветки тела. Раньше рядом с ней была отдельная
--- «Chams», которая вешала ВТОРОЙ Highlight на того же игрока — тело
--- краснело вдвое. Теперь chams = существующий e.hl, дубля нет.
-G.BS.BodyHighlight = G.BS.BodyHighlight ~= false
+-- Подсветка тела (Highlight/chams) УДАЛЕНА по просьбе: красный шар
+-- поверх модели закрывал персонажа. Флаги оставлены для совместимости.
+G.BS.FillTransparency = 0.7
+G.BS.BodyHighlight = false
+-- КОРОБКИ. Теперь это ВСЕГДА плоский прямоугольник по экранным точкам
+-- модели (3D-коробка убрана: на ближней дистанции она разваливалась
+-- и закрывала модель). Настраиваются толщина, отступ, прозрачность.
+G.BS.BoxPad      = tonumber(G.BS.BoxPad) or 4
+G.BS.BoxAlpha    = math.clamp(tonumber(G.BS.BoxAlpha) or 0, 0, 0.9)
+G.BS.BoxThick    = math.clamp(tonumber(G.BS.BoxThick) or 2, 1, 6)
+G.BS.CornerBoxes = G.BS.CornerBoxes == true
+-- v11.32: мелкие, но полезные настройки ESP.
+G.BS.HideDead       = G.BS.HideDead ~= false   -- прятать ESP мёртвых
+G.BS.HPPercent      = G.BS.HPPercent == true   -- HP в процентах
+G.BS.MarkAim        = G.BS.MarkAim ~= false    -- звёздочка у цели аима
+G.BS.SkelOnlyTarget = G.BS.SkelOnlyTarget == true
+G.BS.SkelMinDist    = tonumber(G.BS.SkelMinDist) or 12
 
 -- ---------- РОЛИ ----------
 G.BS.RoleSticks  = G.BS.RoleSticks  or 1
@@ -197,12 +210,9 @@ G.BS.InfStamina  = G.BS.InfStamina  or false
 -- можно снять. Config.Combat.WEAPON_COOLDOWN = 0.3.
 -- «Без кулдауна» убрано из GUI по просьбе: по умолчанию выключено.
 G.BS.NoCooldown   = G.BS.NoCooldown == true
--- СТАТУС ЦЕЛИ в ESP (сбит/раскрыт/оглушён) + ХИТМАРКЕР при попадании
--- + ЛЕНТА СОБЫТИЙ (раунд, разоблачения, смерти) в углу экрана.
+-- СТАТУС ЦЕЛИ в ESP (сбит/раскрыт/оглушён). Хитмаркер и лента
+-- событий удалены: в центре экрана больше нет лишних вспышек.
 G.BS.ShowStatus   = G.BS.ShowStatus ~= false
-G.BS.HitMark      = G.BS.HitMark ~= false
-G.BS.HitMarkColor = safeColor(G.BS.HitMarkColor, Color3.new(1, 0.25, 0.25))
-G.BS.HitMarkLife  = tonumber(G.BS.HitMarkLife) or 0.25
 G.BS.EventsOn     = false   -- HUD-лента удалена
 G.BS.SpinSpeed = tonumber(G.BS.SpinSpeed) or 50
 G.BS.SpinOnlyStill = nil   -- тумблер удалён: спин крутит и на ходу
@@ -215,20 +225,25 @@ G.BS.JumpBoostMul  = tonumber(G.BS.JumpBoostMul) or 1.7
 G.BS.JumpBoostTime = tonumber(G.BS.JumpBoostTime) or 0.8
 G.BS.JumpPowerOn   = false
 G.BS.JumpPowerMul  = tonumber(G.BS.JumpPowerMul) or 1.5
+-- СКОРОСТЬ БЕГА (Speed Boost). Вернули отдельным тумблером: старый
+-- ускоритель по Shift был удалён, но пользователь просил вернуть
+-- «спид буст». Работает через WalkSpeed, база запоминается автоматически.
+G.BS.SpeedBoost    = G.BS.SpeedBoost == true
+G.BS.SpeedBoostMul = math.clamp(tonumber(G.BS.SpeedBoostMul) or 1.6, 1.1, 3)
 -- ДОПОЛНИТЕЛЬНЫЕ ВИЗУАЛЫ (модуль G.BS.VIS): трейсеры, скелет, HP,
--- стрелки за экраном, chams, прицел, круги, подсветка ящиков/монет.
-G.BS.Crosshair     = G.BS.Crosshair ~= false
-G.BS.CrosshairGap  = tonumber(G.BS.CrosshairGap) or 4
-G.BS.CrosshairLen  = tonumber(G.BS.CrosshairLen) or 10
-G.BS.CrosshairColor = safeColor(G.BS.CrosshairColor, Color3.new(1, 1, 1))
-G.BS.RecoilCrosshair = G.BS.RecoilCrosshair ~= false
-G.BS.RecoilAmount = tonumber(G.BS.RecoilAmount) or 8
+-- Прицел и хитмаркер УДАЛЕНЫ по просьбе. Остались только трейсеры
+-- и информативные ESP-элементы.
 G.BS.ShotTracer       = G.BS.ShotTracer ~= false
 G.BS.ShotTracerColor  = safeColor(G.BS.ShotTracerColor, Color3.new(1, 0.4, 0))
 G.BS.ShotTracerTime   = tonumber(G.BS.ShotTracerTime) or 0.25
-G.BS.CrosshairHitFlash = G.BS.CrosshairHitFlash ~= false
+G.BS.ShotTracerThick  = math.clamp(tonumber(G.BS.ShotTracerThick) or 2, 1, 5)
 G.BS.AimLine       = G.BS.AimLine ~= false
 G.BS.AimLineColor  = safeColor(G.BS.AimLineColor, Color3.new(1, 0, 0))
+G.BS.AimLineThick  = math.clamp(tonumber(G.BS.AimLineThick) or 1, 1, 5)
+G.BS.AimLineAlpha  = math.clamp(tonumber(G.BS.AimLineAlpha) or 1, 0, 1)
+G.BS.SnapFrom      = pickOpt(G.BS.SnapFrom, TRACER_ORIGINS, "Низ экрана")
+G.BS.AimLineFrom   = pickOpt(G.BS.AimLineFrom, TRACER_ORIGINS, "Центр")
+G.BS.SnapAlpha     = math.clamp(tonumber(G.BS.SnapAlpha) or 1, 0, 1)
 G.BS.Skeleton      = G.BS.Skeleton or false
 G.BS.SkeletonThick = tonumber(G.BS.SkeletonThick) or 1
 G.BS.HealthBars    = G.BS.HealthBars ~= false
@@ -244,7 +259,6 @@ G.BS.ShowSpeed     = G.BS.ShowSpeed == true
 G.BS.NameHPColor   = G.BS.NameHPColor == true
 -- v11.31: линии между вампирами (видно, кто рядом с кем).
 G.BS.VampLinks     = G.BS.VampLinks == true
-G.BS.Box2D         = G.BS.Box2D or false
 G.BS.LabelSize     = tonumber(G.BS.LabelSize) or 13
 G.BS.CrateESP      = G.BS.CrateESP or false
 G.BS.CrateColor    = safeColor(G.BS.CrateColor, Color3.new(1, 1, 0))
@@ -261,7 +275,6 @@ G.BS.HeadBoxSize   = tonumber(G.BS.HeadBoxSize) or 22
 G.BS.HeadBoxColor  = safeColor(G.BS.HeadBoxColor, Color3.new(1, 0, 0))
 G.BS.DamageNumbers = G.BS.DamageNumbers ~= false
 G.BS.DmgNumColor   = safeColor(G.BS.DmgNumColor, Color3.new(1, 1, 0))
-G.BS.CornerBoxes   = G.BS.CornerBoxes or false
 -- СТРЕЛКИ ЗВУКА УДАЛЕНЫ (по просьбе): вместе с меню убран и рендер.
 G.BS.SoundArrows   = false
 G.BS.SoundArrowColor = safeColor(G.BS.SoundArrowColor, Color3.new(0, 1, 0.5))
@@ -276,29 +289,29 @@ G.BS.MinimapSelf   = G.BS.MinimapSelf ~= false
 G.BS.PingSpeed     = false
 G.BS.DistFade      = G.BS.DistFade or false
 G.BS.HPBarText     = G.BS.HPBarText ~= false
-G.BS.ClueESP       = G.BS.ClueESP or false
+-- Подсветка улик и пульс низкого HP удалены вместе с подсветкой тела.
+G.BS.ClueESP       = false
 G.BS.ClueColor     = safeColor(G.BS.ClueColor, Color3.new(0.6, 1, 0.2))
-G.BS.LowHPWarn     = G.BS.LowHPWarn == true
-G.BS.LowHPThreshold = tonumber(G.BS.LowHPThreshold) or 30
+G.BS.LowHPWarn     = false
+G.BS.LowHPThreshold = 30
 G.BS.LowHPColor    = safeColor(G.BS.LowHPColor, Color3.new(1, 0, 0))
 -- МОНЕТЫ (Workspace.CoinPickups). Магнит двигает монеты к игроку.
 -- АВТО-ОБУЧЕНИЕ: пока ремоут сбора не выучен, скрипт сам запоминает
 -- первый FireServer с монетой, когда монета рядом. Ручная кнопка не нужна.
-G.BS.CoinAuto      = G.BS.CoinAuto ~= false
+-- Авто-сбор (prompt/ремоут) теперь ВСЕГДА включён и без тумблера:
+-- пользователь просил убрать переключатель, чтобы монеты просто
+-- притягивались и собирались. Телепорт-сбор к серверной позиции монеты
+-- остаётся отдельным тумблером (по умолчанию выключен).
+G.BS.CoinAuto      = true
+G.BS.CoinBlink     = false
 G.BS.CoinLearn     = true
 G.BS.CoinRange     = tonumber(G.BS.CoinRange) or 600
 G.BS.CoinScanEvery = tonumber(G.BS.CoinScanEvery) or 1.0
 -- МАГНИТ МОНЕТ: монеты физически летят к игроку. Работает без ремоута:
--- двигаем CFrame/M:PivotTo и дёргаем ProximityPrompt, если он есть.
-G.BS.CoinMagnet      = G.BS.CoinMagnet ~= false
-G.BS.CoinMagnetRadius = tonumber(G.BS.CoinMagnetRadius) or 250
-G.BS.CoinMagnetPower  = tonumber(G.BS.CoinMagnetPower) or 0.45
--- СБОР ТЕЛЕПОРТОМ: монета физически остаётся на сервере там, где лежала
--- (PivotTo двигает её только у нас). Чтобы ProximityPrompt засчитался,
--- персонаж на мгновение переносится к ИСХОДНОЙ позиции монеты, жмёт
--- prompt/click/touch и возвращается. Это единственный надёжный способ
--- без серверного ремоута.
-G.BS.CoinBlink       = G.BS.CoinBlink ~= false
+-- двигаем CFrame/M:PivotTo и жмём prompt, если он есть.
+G.BS.CoinMagnet      = true
+G.BS.CoinMagnetRadius = tonumber(G.BS.CoinMagnetRadius) or 300
+G.BS.CoinMagnetPower  = tonumber(G.BS.CoinMagnetPower) or 0.55
 -- ТЕЛЕПОРТ-ВЫСТРЕЛ ЧЕРЕЗ СТЕНЫ. На время выстрела персонаж окажется
 -- за спиной/над целью (для сервера), потом вернётся. Требует аимлока:
 -- камера должна смотреть на цель, иначе сервер может отклонить выстрел.
@@ -310,8 +323,9 @@ G.BS.GhostHold     = tonumber(G.BS.GhostHold) or 0.12
 -- Сдвиг времени выстрела в ремоуте (аргумент №5) вперёд, чтобы
 -- сервер считал, что WEAPON_COOLDOWN уже прошёл.
 G.BS.ShotTimeHack = G.BS.ShotTimeHack == true
--- ПОДСВЕТКА ТЕКУЩЕЙ ЦЕЛИ (кто выбран аимом).
-G.BS.TargetMark  = G.BS.TargetMark ~= false
+-- ПОДСВЕТКА ТЕКУЩЕЙ ЦЕЛИ ОТКЛЮЧЕНА по умолчанию: пользователь просил
+-- убрать подсветку тела. Флаги оставлены для совместимости.
+G.BS.TargetMark  = false
 G.BS.TargetMarkColor = safeColor(G.BS.TargetMarkColor, Color3.new(1, 1, 1))
 -- ТОЧКА ПРИЦЕЛИВАНИЯ: метка там, куда реально уходит патрон.
 -- (точка прицеливания удалена вместе с HUD/AIM-мусором)
@@ -338,14 +352,9 @@ G.BS.AimFOVShow    = G.BS.AimFOVShow ~= false
 G.BS.AimFOVColor   = safeColor(G.BS.AimFOVColor, Color3.fromRGB(255, 255, 255))
 G.BS.AimFOVThick   = tonumber(G.BS.AimFOVThick) or 2
 G.BS.AimFOVAlpha   = tonumber(G.BS.AimFOVAlpha) or 0.35
--- v11.31: выбор только видимых целей (без прострела) — для честной игры
--- и для случаев, когда сервер не принимает выстрелы через стены.
-G.BS.AimVisibleOnly = G.BS.AimVisibleOnly == true
--- v11.31: настройки метки цели (размер/толщина/пульс/имя).
-G.BS.AimMarkSize   = tonumber(G.BS.AimMarkSize) or 9
-G.BS.AimMarkThick  = tonumber(G.BS.AimMarkThick) or 2
-G.BS.AimMarkPulse  = G.BS.AimMarkPulse ~= false
-G.BS.AimMarkName   = G.BS.AimMarkName ~= false
+-- v11.32: «только видимые цели» удалено — прострел должен работать
+-- всегда, без скрытого отбрасывания целей за стеной.
+-- Уголки метки цели (жёлтые полоски) больше не рисуются.
 -- ОТКУДА СЧИТЫВАЕТСЯ НАПРАВЛЕНИЕ ВЫСТРЕЛА:
 --   "camera" (по умолчанию) — от камеры, как стреляет сама игра;
 --   "head"   — от головы персонажа;
@@ -480,32 +489,28 @@ G.BS.SpoofBack   = tonumber(G.BS.SpoofBack) or 0
 
 -- МИГРАЦИЯ НАСТРОЕК: getgenv() живёт между запусками, и старые
 -- значения перебивали новые дефолты.
-if G.BS.CfgV ~= 36 then
+if G.BS.CfgV ~= 37 then
     -- Старые сохранённые 1/2..34 означали «мгновенно», потому что код
     -- трактовал всё >= 1 как instant. Новая шкала: 1 = плавно,
     -- 35 = мгновенно. Один раз переводим старый дефолт в 35.
     if (tonumber(G.BS.AimLockSpeed) or 1) <= 35 then
         local oldSpeed = tonumber(G.BS.AimLockSpeed) or 1
-        -- 1 была «мгновенно» по старой шкале; 2..34 тоже были мгновенны.
         if oldSpeed >= 1 and oldSpeed < 35 then
-            -- сохраняем выбор пользователя: старые значения >1 были
-            -- бессмысленны (всё равно instant), поэтому ставим максимум.
             G.BS.AimLockSpeed = 35
         end
     end
-    G.BS.CfgV      = 36
-    -- АИМЛОК РАБОТАЕТ ВСЕГДА, а не только пока зажата ЛКМ
-    -- (жалоба: «аймлок не работает, только когда я стреляю»).
+    G.BS.CfgV      = 37
+    -- АИМЛОК РАБОТАЕТ ВСЕГДА, а не только пока зажата ЛКМ.
     G.BS.AimLockFireOnly = false
-    G.BS.AimLockTurn     = true    -- ПОВ: камера доворачивается на цель
+    G.BS.AimLockTurn     = true
     G.BS.AimLock   = true
     G.BS.BulletSwap = true
-    G.BS.AimLockSpeed = 35     -- мгновенный доворот (иначе отстаёт на ходу)
+    G.BS.AimLockSpeed = 35
     G.BS.LockHold      = 0.6
     G.BS.LockHoldOnFire = true
     G.BS.SyncTarget    = true
     G.BS.AimLockListTarget = false
-    G.BS.SpinSpeed = 50        -- оборотов/с по формуле спина
+    G.BS.SpinSpeed = 50
     G.BS.DanceOn   = false
     G.BS.Spin      = false
     G.BS.Sway      = false
@@ -517,31 +522,54 @@ if G.BS.CfgV ~= 36 then
     G.BS.ShowUnknown = false
     G.BS.MaxDist = 0
     G.BS.Hud        = false
-    G.BS.AimFOV     = 300      -- круг аима (ПОВ), px
+    G.BS.AimFOV     = 300
     G.BS.AimFOVShow = true
     G.BS.AimChain  = true
     G.BS.AimFreePart = true
     G.BS.NoCooldown = false
     G.BS.ShowStatus = true
-    G.BS.HitMark    = true
     G.BS.EventsOn   = false
     G.BS.JumpBoostV2 = false
     G.BS.JumpPowerOn = false
     G.BS.GhostShot = true
     G.BS.ShotTimeHack = false
-    G.BS.TargetMark = true
-    G.BS.AimMaxDist   = 290    -- Config.Combat.BULLET_RANGE = 300
+    G.BS.AimMaxDist   = 290
     G.BS.AimLead   = 0.08
-    -- SHOT_ANGLE_SLACK_DEG = 3: взгляд и патрон должны совпадать.
-    -- Для прострела камера обязана вестись на цель за стеной — false.
     G.BS.AimLockNoWall = false
     G.BS.MeleeAim  = true
     G.BS.WallPenetrate = true
-    G.BS.OriginSlack = 13     -- SHOT_ORIGIN_SLACK = 14
+    G.BS.OriginSlack = 13
     G.BS.SpoofBack = 0
     G.BS.SilentShot = false
-    G.BS.Hitbox    = false   -- расширитель удалён
+    G.BS.Hitbox    = false
     G.BS.RapidFire = false
+    -- v11.32: чистая графика и безопасные дефолты.
+    G.BS.Boxes         = true
+    G.BS.BoxPad        = 4
+    G.BS.BoxAlpha      = 0
+    G.BS.BoxThick      = 2
+    G.BS.CornerBoxes   = false
+    G.BS.BodyHighlight = false
+    G.BS.ClueESP       = false
+    G.BS.LowHPWarn     = false
+    G.BS.TargetMark    = false
+    G.BS.HideDead      = true
+    G.BS.MarkAim       = true
+    G.BS.SkelOnlyTarget = false
+    G.BS.SkelMinDist   = 12
+    G.BS.CoinMagnet    = true
+    G.BS.CoinAuto      = true
+    G.BS.CoinLearn     = true
+    G.BS.CoinBlink     = false
+    G.BS.CoinMagnetRadius = 300
+    G.BS.CoinMagnetPower  = 0.55
+    G.BS.SpeedBoost    = false
+    G.BS.SpeedBoostMul = 1.6
+    G.BS.AmmoAuto      = true
+    G.BS.AmmoAutoTP    = false
+    G.BS.AmmoBringCrate = true
+    -- 0 = пополнять ТОЛЬКО когда патроны закончились (0 шт).
+    G.BS.AmmoLowPct    = 0
 end
 
 if G.BS_Stop then pcall(function() G.BS_Stop() end) end
@@ -1298,26 +1326,6 @@ local function screen()
 end
 screen()
 
-local function makeHighlight()
-    local ok, h = pcall(function()
-        return Instance.new("Highlight")
-    end)
-    if not ok or not h then return nil end
-    h.Adornee      = nil
-    h.FillColor    = Color3.new(1, 1, 1)
-    -- ВАЖНО: раньше заливка была ПОЛНОСТЬЮ прозрачной (1), а цвет роли
-    -- писался только в FillColor, то есть в невидимую заливку. При
-    -- этом OutlineColor — то, что реально видно — вообще не менялся
-    -- и оставался БЕЛЫМ. Из-за этого сам игрок по роли не красился:
-    -- красились только коробка (у неё свой color) и текст.
-    h.FillTransparency = tonumber(G.BS.FillTransparency) or 0.7
-    h.OutlineColor = Color3.new(1, 1, 1)
-    h.OutlineTransparency = 0
-    h.DepthMode    = Enum.HighlightDepthMode.AlwaysOnTop
-    h.Parent       = screen()
-    return h
-end
-
 local function makeBillboard()
     local ok, gui = pcall(function()
         local g = Instance.new("BillboardGui")
@@ -1349,133 +1357,106 @@ local function makeBox()
     if not DRAW_OK then return nil end
     local b = {}
     b.lines = {}
-    -- 12 РЁБЕР: 4 нижних + 4 верхних + 4 вертикальных.
-    -- Раньше тут создавалось только 4 линии, а drawBox рисовал ими 12
-    -- рёбер в цикле — линии затирали друг друга, и оставались лишь
-    -- 4 вертикальные стойки. Отсюда «нет полосок сверху».
-    for i = 1, 12 do
+    -- 4 линии = 4 стороны прямоугольника. 3D-коробка (12 рёбер)
+    -- убрана по просьбе: на ближней дистанции она разваливалась,
+    -- пересекалась с моделью и закрывала игрока.
+    for i = 1, 4 do
         local ok, ln = pcall(function() return Drawing.new("Line") end)
         if not ok or not ln then return nil end
         ln.Visible   = false
-        ln.Thickness = G.BS.BoxThick
+        ln.Thickness = tonumber(G.BS.BoxThick) or 2
         ln.Color     = Color3.new(1, 1, 1)
         b.lines[i] = ln
     end
     return b
 end
 
+-- ПЛОСКИЙ ПРЯМОУГОЛЬНИК вокруг модели. Считается по ЭКРАННЫМ точкам
+-- (низ персонажа + голова), поэтому коробка всегда точно облегает
+-- модель на любой дистанции и не «разваливается».
 local function drawBox(b, root, cam)
     if not b or not b.lines then return end
-    local pos, onScreen = workspace.CurrentCamera:WorldToViewportPoint(root.Position)
-    if not onScreen or pos.Z <= 0 then
-        for i = 1, #b.lines do b.lines[i].Visible = false end
+    local camera = cam or workspace.CurrentCamera
+    if not camera or not root or not root.Parent then
+        for i = 1, #b.lines do if b.lines[i] then b.lines[i].Visible = false end end
         return
     end
-    local function project(x, y, z)
-        local v = workspace.CurrentCamera:WorldToViewportPoint(
-            root.Position + Vector3.new(x, y, z))
-        return v
+    local base = root.Position
+    local pBot = camera:WorldToViewportPoint(base)
+    if pBot.Z <= 0 then
+        for i = 1, #b.lines do if b.lines[i] then b.lines[i].Visible = false end end
+        return
     end
-    local s = 1.5
-    local h = 2.75
-    local d = 1.0
-    local p1 = project(-s, -h, -d)
-    local p2 = project( s, -h, -d)
-    local p3 = project( s, -h,  d)
-    local p4 = project(-s, -h,  d)
-    local p5 = project(-s,  h, -d)
-    local p6 = project( s,  h, -d)
-    local p7 = project( s,  h,  d)
-    local p8 = project(-s,  h,  d)
-    local corners = { p1, p2, p3, p4, p5, p6, p7, p8 }
+    -- Верхняя точка: голова, а если её нет — корень + 2.2.
+    local topPos = base + Vector3.new(0, 2.2, 0)
+    local ch = root.Parent
+    local head = ch and ch:FindFirstChild("Head")
+    if head and head:IsA("BasePart") and head.Parent then
+        topPos = head.Position + Vector3.new(0, 0.55, 0)
+    end
+    local pTop = camera:WorldToViewportPoint(topPos)
+    if pTop.Z <= 0 then
+        for i = 1, #b.lines do if b.lines[i] then b.lines[i].Visible = false end end
+        return
+    end
+    -- Ширина: разница X между головой и корнем + запас по бокам.
+    local minX = math.min(pTop.X, pBot.X) - 16
+    local maxX = math.max(pTop.X, pBot.X) + 16
+    local minY = math.min(pTop.Y, pBot.Y) - 4
+    local maxY = math.max(pTop.Y, pBot.Y) + 4
+    local pad = tonumber(G.BS.BoxPad) or 4
+    if pad < 0 then pad = 0 elseif pad > 60 then pad = 60 end
+    minX = minX - pad
+    maxX = maxX + pad
+    minY = minY - pad
+    maxY = maxY + pad
+    if maxX - minX < 6 then
+        local mid = (minX + maxX) * 0.5
+        minX, maxX = mid - 3, mid + 3
+    end
+    if maxY - minY < 10 then
+        local mid = (minY + maxY) * 0.5
+        minY, maxY = mid - 5, mid + 5
+    end
 
     -- Затухание по дистанции: ближние яркие, дальние почти прозрачные.
     local fade = 0
     if G.BS.DistFade then
-        local camera = cam or workspace.CurrentCamera
-        local cpos = camera and camera.CFrame and camera.CFrame.Position
+        local cpos = camera.CFrame and camera.CFrame.Position
         if cpos then
-            local dist = (root.Position - cpos).Magnitude
+            local dist = (base - cpos).Magnitude
             fade = math.clamp((dist - 70) / 180, 0, 0.85)
         end
     end
+    local alpha = tonumber(G.BS.BoxAlpha) or 0
+    if alpha < 0 then alpha = 0 elseif alpha > 0.9 then alpha = 0.9 end
+    local trans = math.clamp(fade + alpha, 0, 1)
+    local col = b.color or Color3.new(1, 1, 1)
+    local thick = tonumber(G.BS.BoxThick) or 2
 
-    -- 2D-КОРОБКА: прямоугольник по экранному bounding box. Дешевле 3D
-    -- и лучше читается на расстоянии.
-    if G.BS.Box2D then
-        local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
-        for _, p in ipairs(corners) do
-            if p.X < minX then minX = p.X end
-            if p.X > maxX then maxX = p.X end
-            if p.Y < minY then minY = p.Y end
-            if p.Y > maxY then maxY = p.Y end
-        end
-        local pts = {
-            Vector2.new(minX, minY), Vector2.new(maxX, minY),
-            Vector2.new(maxX, maxY), Vector2.new(minX, maxY),
-        }
-        for i = 1, 4 do
-            local ln = b.lines[i]
-            if ln then
-                ln.From = pts[i]
-                ln.To = pts[i % 4 + 1]
-                ln.Color = b.color or Color3.new(1, 1, 1)
-                ln.Thickness = G.BS.BoxThick
-                ln.Transparency = fade
-                ln.Visible = true
-            end
-        end
-        for i = 5, 12 do
-            if b.lines[i] then b.lines[i].Visible = false end
-        end
-        return
-    end
-
-    -- РОЛЕВОЙ СТИЛЬ: ромб для вампиров (если включён CornerBoxes).
-    -- Строим ромб по экранному bounding box всех 8 углов, иначе
-    -- вершины брались только с верхней грани и ромб «слипался» сверху.
+    local pts
     if b.corner then
-        local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
-        for _, p in ipairs(corners) do
-            if p.X < minX then minX = p.X end
-            if p.X > maxX then maxX = p.X end
-            if p.Y < minY then minY = p.Y end
-            if p.Y > maxY then maxY = p.Y end
-        end
+        -- Ромб для вампиров (стиль CornerBoxes).
         local top = Vector2.new((minX + maxX) * 0.5, minY)
         local right = Vector2.new(maxX, (minY + maxY) * 0.5)
         local bottom = Vector2.new((minX + maxX) * 0.5, maxY)
         local left = Vector2.new(minX, (minY + maxY) * 0.5)
-        local dia = { top, right, bottom, left }
-        for i = 1, 4 do
-            local ln = b.lines[i]
-            if ln then
-                ln.From = dia[i]
-                ln.To = dia[i % 4 + 1]
-                ln.Color = b.color or Color3.new(1, 1, 1)
-                ln.Thickness = G.BS.BoxThick
-                ln.Transparency = fade
-                ln.Visible = true
-            end
-        end
-        for i = 5, 12 do
-            if b.lines[i] then b.lines[i].Visible = false end
-        end
-        return
+        pts = { top, right, bottom, left }
+    else
+        pts = {
+            Vector2.new(minX, minY), Vector2.new(maxX, minY),
+            Vector2.new(maxX, maxY), Vector2.new(minX, maxY),
+        }
     end
-
-    local idx = { {1,2},{2,3},{3,4},{4,1},{5,6},{6,7},{7,8},{8,5},{1,5},{2,6},{3,7},{4,8} }
-    for i = 1, 12 do
-        local a = corners[idx[i][1]]
-        local b2 = corners[idx[i][2]]
+    for i = 1, 4 do
         local ln = b.lines[i]
         if ln then
-            ln.From = a
-            ln.To   = b2
+            ln.From = pts[i]
+            ln.To = pts[i % 4 + 1]
+            ln.Color = col
+            ln.Thickness = thick
+            ln.Transparency = trans
             ln.Visible = true
-            ln.Color  = b.color or Color3.new(1, 1, 1)
-            ln.Thickness = G.BS.BoxThick
-            ln.Transparency = fade
         end
     end
 end
@@ -1553,13 +1534,11 @@ for i = 1, VMAX do
 end
 
 local aimLine = vLine()
-local crossLines = { vLine(), vLine(), vLine(), vLine() }
+local crossLines = {}   -- ПРИЦЕЛ УДАЛЁН (v11.32): лишние линии в центре экрана
 
 
 local crateHL = {}
 local coinHL = {}
-local clueHL = {}
-local lastClueScan = 0
 local lastHealth = {}
 local kills = 0
 
@@ -1608,86 +1587,8 @@ local function vHideText(t)
     if t then t.Visible = false end
 end
 
--- УЛИКИ / КРОВЬ / ПРЕДМЕТЫ. Скан workspace раз в 3 секунды, чтобы не
--- ронять FPS на больших картах. Подсвечиваем только объекты с
--- «говорящими» именами, не трогаем персонажей и уже обработанные
--- ящики/монеты.
-local CLUE_WORDS = {
-    "blood", "clue", "evidence", "forensic", "corpse", "body",
-    "footprint", "fingerprint", "weaponpickup", "itempickup",
-    "droppeditem", "dropped", "loot",
-}
-local function isClueName(name)
-    local n = string.lower(tostring(name or ""))
-    if n == "" or #n > 48 then return false end
-    for i = 1, #CLUE_WORDS do
-        if string.find(n, CLUE_WORDS[i], 1, true) then return true end
-    end
-    return false
-end
-
-local function clearClues()
-    for obj, h in pairs(clueHL) do
-        pcall(function() h:Destroy() end)
-        clueHL[obj] = nil
-    end
-end
-
-local function scanClues(now)
-    if now - lastClueScan < 3 then return end
-    lastClueScan = now
-    local seen = {}
-    local n = 0
-    local ok, list = pcall(function() return workspace:GetDescendants() end)
-    if not ok or not list then return end
-    local maxScan = math.min(#list, 5000)
-    for i = 1, maxScan do
-        if n >= 40 then break end
-        local obj = list[i]
-        if (obj:IsA("Model") or obj:IsA("BasePart")) and isClueName(obj.Name) then
-            local isChar = false
-            for _, plr in ipairs(Players:GetPlayers()) do
-                local ch = plr.Character
-                if ch and (obj == ch or obj:IsDescendantOf(ch)) then
-                    isChar = true
-                    break
-                end
-            end
-            if not isChar then
-                n = n + 1
-                seen[obj] = true
-            end
-        end
-    end
-    for obj, h in pairs(clueHL) do
-        if not seen[obj] or not obj.Parent then
-            pcall(function() h:Destroy() end)
-            clueHL[obj] = nil
-        end
-    end
-    local col = safeColor(G.BS.ClueColor, Color3.new(0.6, 1, 0.2))
-    for obj in pairs(seen) do
-        local h = clueHL[obj]
-        if not h or not h.Parent then
-            local ok2, nh = pcall(function() return Instance.new("Highlight") end)
-            if ok2 and nh then
-                nh.FillColor = col
-                nh.OutlineColor = col
-                nh.FillTransparency = 0.6
-                nh.Adornee = obj
-                nh.Parent = obj
-                clueHL[obj] = nh
-                h = nh
-            end
-        end
-        if h then
-            h.Enabled = true
-            h.FillColor = col
-            h.OutlineColor = col
-        end
-    end
-end
-
+-- ПОДСВЕТКА УЛИК УДАЛЕНА (v11.32) по просьбе: лишние зелёные шары
+-- по всей карте мешали читать ESP.
 
 function VIS.resetKills() kills = 0 end
 function VIS.addKill() kills = kills + 1 end
@@ -1718,7 +1619,7 @@ function VIS.destroy()
     rm(minimapBg); rm(minimapBorder); rm(minimapSelf)
     rm(tracerLine)
     tracerFrom, tracerTo, tracerT0 = nil, nil, 0
-    for _, tbl in pairs({ crateHL, coinHL, clueHL }) do
+    for _, tbl in pairs({ crateHL, coinHL }) do
         for _, h in pairs(tbl) do
             pcall(function() h:Destroy() end)
         end
@@ -1731,7 +1632,6 @@ function VIS.destroy()
     minimapDots = {}
     crateHL = {}
     coinHL = {}
-    clueHL = {}
     lastHealth = {}
 end
 
@@ -1761,6 +1661,14 @@ function VIS.spawnTracer(from, to)
     tracerT0 = os.clock()
 end
 
+-- ОТКУДА ИДЁТ ЛИНИЯ НА ЭКРАНЕ: центр / низ / верх. Настройки были
+-- объявлены, но на отрисовку не влияли — теперь работают.
+local function screenOrigin(kind, cx, cy, vp)
+    if kind == "Низ экрана" then return Vector2.new(cx, vp.Y) end
+    if kind == "Верх экрана" then return Vector2.new(cx, 0) end
+    return Vector2.new(cx, cy)
+end
+
 function VIS.update(cam, myRoot, by, locked)
     local vp = cam.ViewportSize
     local cx, cy = vp.X * 0.5, vp.Y * 0.5
@@ -1772,29 +1680,8 @@ function VIS.update(cam, myRoot, by, locked)
     -- Без Drawing визуалы рисовать нечем.
     if not VDRAW then return end
 
-    -- 1) ПРИЦЕЛ
-    if G.BS.Crosshair then
-        local gap = tonumber(G.BS.CrosshairGap) or 4
-        local len = tonumber(G.BS.CrosshairLen) or 10
-        -- Отдача: после выстрела прицел на короткое время разъезжается.
-        if G.BS.RecoilCrosshair and G.BS.LastShotAt then
-            local age = nowT - G.BS.LastShotAt
-            if age >= 0 and age < 0.25 then
-                gap = gap + (1 - age / 0.25) * (tonumber(G.BS.RecoilAmount) or 8)
-            end
-        end
-        local col = safeColor(G.BS.CrosshairColor, Color3.new(1, 1, 1))
-        if G.BS.CrosshairHitFlash and type(hitMarkAt) == "number"
-           and hitMarkAt > 0 and (nowT - hitMarkAt) < 0.12 then
-            col = safeColor(G.BS.HitMarkColor, Color3.new(1, 0, 0))
-        end
-        vSetLine(crossLines[1], Vector2.new(cx - gap - len, cy), Vector2.new(cx - gap, cy), col, 1)
-        vSetLine(crossLines[2], Vector2.new(cx + gap, cy), Vector2.new(cx + gap + len, cy), col, 1)
-        vSetLine(crossLines[3], Vector2.new(cx, cy - gap - len), Vector2.new(cx, cy - gap), col, 1)
-        vSetLine(crossLines[4], Vector2.new(cx, cy + gap), Vector2.new(cx, cy + gap + len), col, 1)
-    else
-        for i = 1, 4 do vHideLine(crossLines[i]) end
-    end
+    -- 1) ПРИЦЕЛ УДАЛЁН (v11.32) по просьбе: в центре экрана больше нет
+    -- ни «3 жёлтых полосок», ни вспышки при попадании.
 
     -- 2) ЛИНИЯ К ЦЕЛИ (трейсер)
     -- locked — это Player (так его возвращает pickTarget), а не часть.
@@ -1809,8 +1696,15 @@ function VIS.update(cam, myRoot, by, locked)
     if G.BS.AimLine and lockedPart and myRoot then
         local sp = vProj(cam, lockedPart.Position)
         if sp and sp.Z > 0 then
-            vSetLine(aimLine, Vector2.new(cx, cy), Vector2.new(sp.X, sp.Y),
-                safeColor(G.BS.AimLineColor, Color3.new(1, 0, 0)), 1)
+            vSetLine(aimLine,
+                screenOrigin(G.BS.AimLineFrom, cx, cy, vp),
+                Vector2.new(sp.X, sp.Y),
+                safeColor(G.BS.AimLineColor, Color3.new(1, 0, 0)),
+                tonumber(G.BS.AimLineThick) or 1)
+            if aimLine then
+                aimLine.Transparency = math.clamp(
+                    tonumber(G.BS.AimLineAlpha) or 1, 0, 1)
+            end
         else
             vHideLine(aimLine)
         end
@@ -1830,7 +1724,8 @@ function VIS.update(cam, myRoot, by, locked)
                     tracerLine.Transparency = math.clamp(age / life, 0, 1)
                 end
                 vSetLine(tracerLine, Vector2.new(a.X, a.Y), Vector2.new(b.X, b.Y),
-                    safeColor(G.BS.ShotTracerColor, Color3.new(1, 0.4, 0)), 2)
+                    safeColor(G.BS.ShotTracerColor, Color3.new(1, 0.4, 0)),
+                    tonumber(G.BS.ShotTracerThick) or 2)
             else
                 vHideLine(tracerLine)
             end
@@ -1863,9 +1758,9 @@ function VIS.update(cam, myRoot, by, locked)
     G.BS.AliveCount = alive
     G.BS.Kills = kills
 
-    -- 5) ИГРОКИ: скелет, HP, стрелки, chams
+    -- 5) ИГРОКИ: скелет, HP, стрелки
     local idx = 0
-    for _, e in pairs(by) do
+    for tPlr, e in pairs(by) do
         idx = idx + 1
         if idx > VMAX then break end
         local ch = e.char
@@ -1877,8 +1772,27 @@ function VIS.update(cam, myRoot, by, locked)
         elseif role == "hunter" then color = safeColor(G.BS.HunterColor, Color3.new(0, 0.7, 1))
         else color = safeColor(G.BS.PlayerColor, Color3.new(1, 1, 1)) end
 
-        -- СКЕЛЕТ
+        -- СКЕЛЕТ. Раньше он рисовался ВСЕГДА, и когда стоишь за спиной
+        -- у игрока, получалась каша из линий. Теперь:
+        --  - рисуется только дальше G.BS.SkelMinDist (по умолч. 12 st);
+        --  - по желанию — только у цели аима;
+        --  - мёртвые не рисуются.
+        local skelOn = false
         if G.BS.Skeleton and ch and ch.Parent then
+            local humS = ch:FindFirstChildOfClass("Humanoid")
+            local alive = (not humS) or humS.Health > 0
+            local far = true
+            if root and cam and cam.CFrame then
+                far = (root.Position - cam.CFrame.Position).Magnitude
+                    >= (tonumber(G.BS.SkelMinDist) or 12)
+            end
+            local isTarget = true
+            if G.BS.SkelOnlyTarget == true then
+                isTarget = (locked == tPlr)
+            end
+            skelOn = alive and far and isTarget
+        end
+        if skelOn then
             local parts = {
                 ch:FindFirstChild("Head"),
                 ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso"),
@@ -1894,6 +1808,7 @@ function VIS.update(cam, myRoot, by, locked)
                 pts[i] = sp and Vector2.new(sp.X, sp.Y) or nil
             end
             local links = {{1,2},{2,3},{2,4},{2,5},{3,6},{3,7}}
+            local thick = tonumber(G.BS.SkeletonThick) or 1
             for i = 1, 6 do
                 local l = p.skeleton[i]
                 if not l then
@@ -1903,7 +1818,7 @@ function VIS.update(cam, myRoot, by, locked)
                 local a = pts[links[i][1]]
                 local b = pts[links[i][2]]
                 if a and b then
-                    vSetLine(l, a, b, color, tonumber(G.BS.SkeletonThick) or 1)
+                    vSetLine(l, a, b, color, thick)
                 else
                     vHideLine(l)
                 end
@@ -1986,14 +1901,19 @@ function VIS.update(cam, myRoot, by, locked)
             vHideSquare(p.headBox)
         end
 
-        -- ЛИНИЯ ОТ НИЗА ЭКРАНА (snapline)
+        -- ЛИНИЯ ОТ КРАЯ ЭКРАНА (snapline). Откуда идёт и насколько
+        -- прозрачная — из настроек.
         if G.BS.Snaplines and root and root.Parent then
             local sp = vProj(cam, root.Position + Vector3.new(0, 2, 0))
             if sp and sp.Z > 0 then
                 vSetLine(p.snap,
-                    Vector2.new(vp.X * 0.5, vp.Y),
+                    screenOrigin(G.BS.SnapFrom, vp.X * 0.5, vp.Y * 0.5, vp),
                     Vector2.new(sp.X, sp.Y),
                     color, tonumber(G.BS.SnapThick) or 1)
+                if p.snap then
+                    p.snap.Transparency = math.clamp(
+                        tonumber(G.BS.SnapAlpha) or 1, 0, 1)
+                end
             else
                 vHideLine(p.snap)
             end
@@ -2164,12 +2084,7 @@ function VIS.update(cam, myRoot, by, locked)
         for _, h in pairs(coinHL) do if h then h.Enabled = false end end
     end
 
-    -- 8) УЛИКИ / КРОВЬ / ПРЕДМЕТЫ
-    if G.BS.ClueESP then
-        scanClues(nowT)
-    elseif next(clueHL) ~= nil then
-        clearClues()
-    end
+    -- 8) ПОДСВЕТКА УЛИК УДАЛЕНА (v11.32) по просьбе.
 
     -- ЦИФРЫ УРОНА
     for i = #dmgNums, 1, -1 do
@@ -2271,7 +2186,6 @@ local applyRole
 local function remove(plr)
     local e = by[plr]
     if not e then return end
-    if e.hl then pcall(function() e.hl:Destroy() end) end
     if e.gui then pcall(function() e.gui:Destroy() end) end
     destroyBox(e.box)
     by[plr] = nil
@@ -2281,13 +2195,8 @@ end
 local function add(plr)
     local ch = plr.Character
     if not ch then return end
-    local hl = makeHighlight()
-    if not hl then return end
     local gui, lbl = makeBillboard()
-    if not gui or not lbl then
-        pcall(function() hl:Destroy() end)
-        return
-    end
+    if not gui or not lbl then return end
     lbl.Size                  = UDim2.new(1, 0, 0, 40)
     lbl.BackgroundTransparency = 1
     lbl.TextSize               = 13
@@ -2297,10 +2206,9 @@ local function add(plr)
     lbl.Visible                = false
     lbl.Parent                 = gui
 
-    hl.Adornee = ch
     gui.Adornee = ch
     by[plr] = {
-        char = ch, hl = hl, gui = gui, lbl = lbl,
+        char = ch, gui = gui, lbl = lbl,
         role = nil, conf = 0, votes = 0, lastStable = nil, box = nil,
         special = nil, status = nil, src = nil, manual = nil,
     }
@@ -2476,8 +2384,8 @@ end
 local Overlay = nil
 local FOVSegs  = {}
 local FOV_N    = 48
-local MarkLines = {}
-local NameLabel = nil
+-- MarkLines/NameLabel удалены (v11.32): жёлтые уголки метки цели и
+-- подпись под ними больше не рисуются.
 
 local function mkSeg(parent)
     local s = Instance.new("Frame")
@@ -2501,18 +2409,8 @@ local function ensureOverlay()
     Overlay.DisplayOrder   = 1
     Overlay.Parent         = game:GetService("CoreGui")
     for i = 1, FOV_N do FOVSegs[i] = mkSeg(Overlay) end
-    for i = 1, 4 do MarkLines[i] = mkSeg(Overlay) end
-    NameLabel = Instance.new("TextLabel")
-    NameLabel.BackgroundTransparency = 1
-    NameLabel.Size                   = UDim2.new(0, 320, 0, 22)
-    NameLabel.AnchorPoint            = Vector2.new(0.5, 1)
-    NameLabel.TextSize               = 13
-    NameLabel.Font                   = Enum.Font.Gotham
-    NameLabel.TextStrokeTransparency = 0.4
-    NameLabel.Text                   = ""
-    NameLabel.Visible                = false
-    NameLabel.ZIndex                 = 62
-    NameLabel.Parent                 = Overlay
+    -- УГОЛКИ МЕТКИ ЦЕЛИ УДАЛЕНЫ (v11.32): это были «3 жёлтые полоски»
+    -- в центре экрана. Цель аима теперь помечается звездой в подписи ESP.
     return Overlay
 end
 
@@ -2534,10 +2432,6 @@ local function hideOverlay()
     for i = 1, FOV_N do
         if FOVSegs[i] then FOVSegs[i].Visible = false end
     end
-    for i = 1, 4 do
-        if MarkLines[i] then MarkLines[i].Visible = false end
-    end
-    if NameLabel then NameLabel.Visible = false end
 end
 
 local function drawFOV()
@@ -2579,56 +2473,11 @@ local function drawFOV()
     end
 end
 
+-- МЕТКА ЦЕЛИ УДАЛЕНА (v11.32): жёлтые уголки вокруг головы и подпись
+-- под ними больше не рисуются. Кто выбран аимом — видно по звезде
+-- в подписи ESP (G.BS.MarkAim) и по линии к цели.
 local function drawTarget(plr)
-    ensureOverlay()
-    if not plr then
-        for i = 1, 4 do
-            if MarkLines[i] then MarkLines[i].Visible = false end
-        end
-        if NameLabel then NameLabel.Visible = false end
-        return
-    end
-    local ch = plr.Character
-    local root = ch and ch:FindFirstChild("HumanoidRootPart")
-    local cam = workspace.CurrentCamera
-    if not root or not root.Parent or not cam then
-        for i = 1, 4 do
-            if MarkLines[i] then MarkLines[i].Visible = false end
-        end
-        if NameLabel then NameLabel.Visible = false end
-        return
-    end
-    local head = ch:FindFirstChild("Head") or root
-    local sp   = cam:WorldToViewportPoint(head.Position)
-    if sp.Z <= 0 then
-        for i = 1, 4 do
-            if MarkLines[i] then MarkLines[i].Visible = false end
-        end
-        if NameLabel then NameLabel.Visible = false end
-        return
-    end
-    -- v11.31: размер/толщина/пульс метки настраиваются. Пульс делает
-    -- захват цели заметнее, не мешая прицеливанию.
-    local s = tonumber(G.BS.AimMarkSize) or 9
-    if G.BS.AimMarkPulse then
-        s = s * (0.88 + 0.12 * math.sin(os.clock() * 7))
-    end
-    local thick = math.clamp(tonumber(G.BS.AimMarkThick) or 2, 1, 5)
-    local function mark(i, fx, fy, tx, ty)
-        placeSeg(MarkLines[i],
-            Vector2.new(sp.X + fx * s, sp.Y + fy * s),
-            Vector2.new(sp.X + tx * s, sp.Y + ty * s),
-            thick, G.BS.AimMarkColor)
-    end
-    mark(1, -1, -1, 0, -1)
-    mark(2, 0, -1, 1, -1)
-    mark(3, -1, 0, -1, 1)
-    mark(4, 1, 0, 0, 1)
-    if NameLabel then
-        NameLabel.Position = UDim2.new(0, sp.X, 0, sp.Y - 14)
-        NameLabel.TextColor3 = G.BS.AimMarkColor
-        NameLabel.Visible = G.BS.AimMarkName ~= false
-    end
+    return
 end
 
 -- ============================================================
@@ -4334,8 +4183,10 @@ end
 -- направлению движения - тогда ускорение видно сразу.
 -- Отдельно есть СИЛА ПРЫЖКА: множитель JumpPower/JumpHeight (высота),
 -- ползунком до 10 x. База берётся от естественного значения игры.
+-- v11.32: вернулся и СПИД БУСТ (постоянное ускорение WalkSpeed) —
+-- пользователь попросил вернуть его, раньше он был только в коде.
 local speedState = { base = nil, hum = nil, jumpHum = nil, jumpConn = nil,
-                     active = false, conn = nil,
+                     active = false, conn = nil, boosted = false,
                      jumpBasePower = nil, jumpBaseHeight = nil,
                      jumpApplied = false }
 
@@ -4446,7 +4297,27 @@ function speedState.hookJump()
             pcall(function() hum.WalkSpeed = base end)
             speedState.active = false
             G.BS._jumpUntil = 0
+        elseif G.BS.SpeedBoost then
+            -- СПИД БУСТ: постоянное ускорение через WalkSpeed. База —
+            -- естественная скорость персонажа; ветка буста её не
+            -- перезаписывает, иначе множитель накапливался бы.
+            local base = speedState.base
+            if not base or base < 1 then
+                base = tonumber(hum.WalkSpeed) or 16
+                if base < 1 then base = 16 end
+                speedState.base = base
+            end
+            local mul = tonumber(G.BS.SpeedBoostMul) or 1.6
+            if mul < 1.1 then mul = 1.1 elseif mul > 3 then mul = 3 end
+            pcall(function() hum.WalkSpeed = base * mul end)
+            speedState.boosted = true
         else
+            -- буст выключили — один раз вернуть естественную скорость
+            if speedState.boosted then
+                speedState.boosted = false
+                local base = speedState.base or 16
+                pcall(function() hum.WalkSpeed = base end)
+            end
             -- пока рывка нет — запоминаем актуальную базовую скорость
             local ws = tonumber(hum.WalkSpeed) or 0
             if ws >= 1 then speedState.base = ws end
@@ -4577,50 +4448,11 @@ local function playerStatus(plr)
 end
 
 -- ============================================================
---  ХИТМАРКЕР: подтверждение попадания
+--  ХИТМАРКЕР: УДАЛЁН (v11.32) по просьбе — лишняя вспышка в центре
+--  экрана. Функция оставлена как заглушка, чтобы не ломать вызовы.
 -- ============================================================
--- Урон приходит с сервера (DamagePopup / CombatFeed) - значит можно
--- показать метку в центре экрана в момент реального попадания. Раньше
--- приходилось считать проценты по логу; теперь видно сразу, попал
--- конкретный выстрел или нет.
 updateHitMark = function(now)
-    if not G.BS.HitMark then
-        for i = 1, #hitLines do hitLines[i].Visible = false end
-        return
-    end
-    if #hitLines == 0 then
-        if not DRAW_OK then return end
-        for i = 1, 4 do
-            local ok, d = pcall(function() return Drawing.new("Line") end)
-            if not ok or not d then return end
-            d.Thickness = 2
-            d.Visible = false
-            hitLines[i] = d
-        end
-    end
-    local cam = workspace.CurrentCamera
-    if not cam then return end
-    local age = now - hitMarkAt
-    local life = tonumber(G.BS.HitMarkLife) or 0.25
-    if hitMarkAt <= 0 or age > life then
-        for i = 1, #hitLines do hitLines[i].Visible = false end
-        return
-    end
-    local vp = cam.ViewportSize
-    local cx, cy = vp.X * 0.5, vp.Y * 0.5
-    local k = 1 - age / life
-    local r0, r1 = 4 + (1 - k) * 4, 12 + (1 - k) * 8
-    local col = safeColor(G.BS.HitMarkColor, Color3.new(1, 0.25, 0.25))
-    for i = 1, 4 do
-        local sx = (i == 1 or i == 4) and 1 or -1
-        local sy = (i == 1 or i == 2) and 1 or -1
-        local l = hitLines[i]
-        l.From = Vector2.new(cx + sx * r0, cy + sy * r0)
-        l.To   = Vector2.new(cx + sx * r1, cy + sy * r1)
-        l.Color = col
-        l.Transparency = (1 - k) * 0.4
-        l.Visible = true
-    end
+    return
 end
 
 -- ============================================================
@@ -4675,10 +4507,11 @@ G.BS.AmmoAutoTP   = G.BS.AmmoAutoTP == true
 G.BS.AmmoRange    = tonumber(G.BS.AmmoRange) or 25
 G.BS.AmmoSearch   = tonumber(G.BS.AmmoSearch) or 600
 G.BS.AmmoEvery    = tonumber(G.BS.AmmoEvery) or 4
--- ПОРОГ АВТО-ПОПОЛНЕНИЯ: не дёргаемся из-за 1 патрона. 0.5 = 50% и
--- ниже. 0 = старое поведение (пополнять при любом недоборе).
+-- ПОРОГ АВТО-ПОПОЛНЕНИЯ. 0 = пополнять ТОЛЬКО когда патроны кончились
+-- (0 шт) — именно это просил пользователь: раньше терял 1 патрон и
+-- персонажа бесконечно телепортировало к ящику. 0.5 = 50% и ниже.
 G.BS.AmmoLowPct   = tonumber(G.BS.AmmoLowPct)
-if G.BS.AmmoLowPct == nil then G.BS.AmmoLowPct = 0.5 end
+if G.BS.AmmoLowPct == nil then G.BS.AmmoLowPct = 0 end
 if G.BS.AmmoLowPct < 0 then G.BS.AmmoLowPct = 0 end
 if G.BS.AmmoLowPct > 1 then G.BS.AmmoLowPct = 1 end
 -- ЯЩИК КО МНЕ: вместо телепорта игрока к ящику временно подвозим
@@ -4695,6 +4528,9 @@ local SUPPLY = {
     -- -1e9, а не 0: os.clock() в начале процесса может быть < 1,
     -- и первый вызов вернул бы пустой кэш (тест это поймал).
     cratesAt = -1e9,
+    -- Если последнее пополнение не помогло — пауза до этого момента
+    -- (os.clock). Без неё персонаж телепортировался к ящику по кругу.
+    failUntil = 0,
 }
 
 local function supplyList()
@@ -5093,6 +4929,17 @@ function SUPPLY.refill(opts)
     end
     SUPPLY.busy = false
 
+    -- ПАУЗА ПОСЛЕ НЕУДАЧИ. Если патроны не добавились, авто-пополнение
+    -- не дёргает персонажа ещё 25 секунд. Без этого он телепортировался
+    -- к ящику по кругу (пользователь жаловался именно на это).
+    local gained = type(after) == "number" and type(before) == "number"
+        and after > before
+    if gained then
+        SUPPLY.failUntil = 0
+    else
+        SUPPLY.failUntil = os.clock() + 25
+    end
+
     if not opts.silent then
         if not okRun then
             notify("патроны: ошибка взаимодействия — [BS AMMO] в консоли", 5)
@@ -5139,15 +4986,26 @@ function SUPPLY.autoTick(now)
     if known and cur >= max then
         return
     end
-    -- ПОРОГ: не дёргаемся из-за 1 патрона. 0.5 = пополнять только когда
-    -- осталось <= 50%. 0 = старое поведение (при любом недоборе).
+    -- ПОРОГ. 0 = пополнять ТОЛЬКО когда патроны КОНЧИЛИСЬ (0 шт).
+    -- Раньше стояло 0.5, но в сохранённом конфиге оставался 0, а при 0
+    -- срабатывало на ЛЮБОЙ недобор: потерял 1 патрон — персонаж
+    -- телепортировался к ящику, ящик не помогал, и так по кругу.
+    -- 0.5 = пополнять при 50% и ниже (как раньше по умолчанию).
     local lowPct = tonumber(G.BS.AmmoLowPct)
-    if lowPct == nil then lowPct = 0.5 end
+    if lowPct == nil then lowPct = 0 end
     if lowPct < 0 then lowPct = 0 end
     if lowPct > 1 then lowPct = 1 end
-    if known and lowPct > 0 and cur > max * lowPct then
-        return
+    if known then
+        if lowPct <= 0 then
+            -- только когда патронов не осталось совсем
+            if cur > 0 then return end
+        elseif cur > max * lowPct then
+            return
+        end
     end
+    -- ПАУЗА ПОСЛЕ НЕУДАЧИ. Если пополнение не сработало — не дёргаемся
+    -- ещё 25 секунд, иначе персонаж улетал к ящику бесконечно.
+    if SUPPLY.failUntil and now < SUPPLY.failUntil then return end
     local near = supplyNearest(tonumber(G.BS.AmmoRange) or 25)
     if near then
         SUPPLY.lastAuto = now
@@ -5638,11 +5496,9 @@ local function buildList(cam, myRoot)
                 local q = pickPartOf(ch)
                 if q then
                     local d = (q.Position - myRoot.Position).Magnitude
-                    local visibleOK = true
-                    if G.BS.AimVisibleOnly then
-                        visibleOK = visiblePart(ch, q, cam.CFrame.Position)
-                    end
-                    if visibleOK and (maxD <= 0 or d <= maxD) then
+                    -- «Только видимые цели» УДАЛЁН (v11.32): прострел
+                    -- работает всегда, цели за стеной не отбрасываются.
+                    if (maxD <= 0 or d <= maxD) then
                         local scr = 1e9
                         pcall(function()
                             local sp = cam:WorldToViewportPoint(q.Position)
@@ -7271,7 +7127,7 @@ local function scan()
     -- чистим тех, кто ушёл или умер
     for plr, e in pairs(by) do
         if not plr.Parent or not plr.Character or not plr.Character.Parent
-           or (e and e.hl and not e.hl.Parent) then
+           or (e and e.gui and not e.gui.Parent) then
             remove(plr)
         end
     end
@@ -7383,12 +7239,19 @@ local conn = RunService.RenderStepped:Connect(function()
         myRoot = me and me:FindFirstChild("HumanoidRootPart")
     end)
 
+    -- ---------- ЦЕЛЬ АИМА (считаем ДО ESP: нужна звезда в подписи) ----
+    if G.BS.BulletSwap or G.BS.AimLock then
+        locked = pickTarget(cam)
+    else
+        locked = nil
+    end
+
     -- ---------- ESP ----------
     for plr, e in pairs(by) do
         local ch = e.char
         -- ВАЖНО: обращение к уничтоженному Instance в Luau
         -- бросает ошибку и роняет ВЕСЬ кадр. Проверяем Parent.
-        if ch and ch.Parent and e.hl and e.hl.Parent and e.gui and e.gui.Parent then
+        if ch and ch.Parent and e.gui and e.gui.Parent then
             local role = e.role
             local vis, color
             if role == "vampire" then
@@ -7406,28 +7269,30 @@ local conn = RunService.RenderStepped:Connect(function()
                 if d > G.BS.MaxDist then vis = false end
             end
 
-            -- v11.31: низкое HP пульсирует. Порог и цвет настраиваются;
-            -- это не отдельная подсветка, а перекраска уже существующей,
-            -- поэтому лишних Highlight на персонаже не появляется.
+            -- МЁРТВЫЕ ПРЯЧЕМ (по умолчанию). Раньше подпись и коробка
+            -- висели на экране после смерти игрока — «ESP остаётся».
             local humNow = ch:FindFirstChildOfClass("Humanoid")
-            if G.BS.LowHPWarn and vis and humNow and (humNow.MaxHealth or 0) > 0
+            if humNow then
+                if humNow.Health <= 0 and G.BS.HideDead then vis = false end
+            else
+                vis = false
+            end
+
+            -- НИЗКОЕ HP: пульсирует цвет подписи и коробки. Подсветки
+            -- тела больше нет, поэтому лишних Highlight не появляется.
+            if G.BS.LowHPWarn and humNow and (humNow.MaxHealth or 0) > 0
                and (humNow.Health / humNow.MaxHealth * 100) <= (tonumber(G.BS.LowHPThreshold) or 30) then
                 local pulse = 0.15 + 0.35 * (0.5 + 0.5 * math.sin(now * 7))
                 color = safeColor(G.BS.LowHPColor, Color3.new(1, 0, 0))
                     :Lerp(Color3.new(1, 1, 1), pulse)
             end
 
-            if e.hl.FillColor ~= color then e.hl.FillColor = color end
-            -- Красим И контур: именно он виден (заливка полупрозрачная).
-            if e.hl.OutlineColor ~= color then e.hl.OutlineColor = color end
-            local fillT = tonumber(G.BS.FillTransparency) or 0.7
-            if e.hl.FillTransparency ~= fillT then e.hl.FillTransparency = fillT end
-            local bodyOn = vis and G.BS.BodyHighlight and true or false
-            if e.hl.Enabled ~= bodyOn then e.hl.Enabled = bodyOn end
             if e.gui.Enabled ~= vis then e.gui.Enabled = vis end
 
             if vis then
                 local parts = {}
+                -- ЗВЕЗДА у цели аима: понятно, в кого целится скрипт.
+                if G.BS.MarkAim and locked == plr then parts[#parts + 1] = "★" end
                 if G.BS.RoleIcons then
                     if role == "vampire" then parts[#parts + 1] = "V"
                     elseif role == "hunter" then parts[#parts + 1] = "H"
@@ -7446,7 +7311,12 @@ local conn = RunService.RenderStepped:Connect(function()
                         (root.Position - myRoot.Position).Magnitude + 0.5) .. " st"
                 end
                 if G.BS.ShowHP and humNow then
-                    parts[#parts + 1] = "HP " .. math.floor(humNow.Health + 0.5)
+                    if G.BS.HPPercent and (humNow.MaxHealth or 0) > 0 then
+                        parts[#parts + 1] = string.format("HP %d%%",
+                            math.floor(humNow.Health / humNow.MaxHealth * 100 + 0.5))
+                    else
+                        parts[#parts + 1] = "HP " .. math.floor(humNow.Health + 0.5)
+                    end
                 end
                 -- v11.31: скорость цели — по ней видно бегущего/стоящего.
                 if G.BS.ShowSpeed and root then
@@ -7501,20 +7371,6 @@ local conn = RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- ---------- МЕТКА ЦЕЛИ ----------
-    -- Показываем и при выключенном клиент-айме, если работает аимлок:
-    -- цель у них общая (bulletListTarget), и метка не должна пропадать.
-    if G.BS.BulletSwap or G.BS.AimLock then
-        locked = pickTarget(cam)
-        drawTarget(locked)
-        if NameLabel and locked then
-            NameLabel.Text = locked.DisplayName
-        end
-    else
-        locked = nil
-        drawTarget(nil)
-    end
-
     -- ДОПОЛНИТЕЛЬНЫЕ ВИЗУАЛЫ (трейсеры, скелет, HP, стрелки, chams...)
     if G.BS.VIS and G.BS.VIS.update then
         pcall(G.BS.VIS.update, cam, myRoot, by, locked)
@@ -7532,7 +7388,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.31",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.32",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -7604,6 +7460,14 @@ TB.CreateToggle({ Name = "Дистанция", Flag = "BS_ShowDist",
     CurrentValue = G.BS.ShowDist, Callback = function(v) G.BS.ShowDist = v end })
 TB.CreateToggle({ Name = "HP", Flag = "BS_ShowHP",
     CurrentValue = G.BS.ShowHP, Callback = function(v) G.BS.ShowHP = v end })
+-- v11.32: HP ещё и в процентах, и прятать мёртвых (иначе ESP «висит»
+-- на экране после смерти игрока).
+TB.CreateToggle({ Name = "HP в процентах", Flag = "BS_HPPercent",
+    CurrentValue = G.BS.HPPercent == true,
+    Callback = function(v) G.BS.HPPercent = v end })
+TB.CreateToggle({ Name = "Прятать мёртвых", Flag = "BS_HideDead",
+    CurrentValue = G.BS.HideDead ~= false,
+    Callback = function(v) G.BS.HideDead = v end })
 -- v11.31: новые строки подписи.
 TB.CreateToggle({ Name = "Скорость цели", Flag = "BS_ShowSpeed",
     CurrentValue = G.BS.ShowSpeed == true,
@@ -7611,6 +7475,9 @@ TB.CreateToggle({ Name = "Скорость цели", Flag = "BS_ShowSpeed",
 TB.CreateToggle({ Name = "Цвет ника по HP", Flag = "BS_NameHPColor",
     CurrentValue = G.BS.NameHPColor == true,
     Callback = function(v) G.BS.NameHPColor = v end })
+TB.CreateToggle({ Name = "Цель аима: звезда в подписи", Flag = "BS_MarkAim",
+    CurrentValue = G.BS.MarkAim ~= false,
+    Callback = function(v) G.BS.MarkAim = v end })
 TB.CreateToggle({ Name = "Статус (сбит / раскрыт)", Flag = "BS_ShowStatus",
     CurrentValue = G.BS.ShowStatus ~= false,
     Callback = function(v) G.BS.ShowStatus = v end })
@@ -7623,29 +7490,23 @@ TB.CreateToggle({ Name = "Коробки игроков", Flag = "BS_Boxes",
             notify("в этом исполнителе нет Drawing — коробки выключены", 4)
         end
     end })
-TB.CreateToggle({ Name = "2D-коробки (плоские)", Flag = "BS_Box2D",
-    CurrentValue = G.BS.Box2D == true,
-    Callback = function(v) G.BS.Box2D = v end })
+-- Коробки теперь ВСЕГДА плоские (3D-коробка убрана по просьбе).
 TB.CreateSlider({ Name = "Толщина коробки", Flag = "BS_BoxThick",
     Range = {1, 6}, Increment = 1, CurrentValue = G.BS.BoxThick,
     Callback = function(v) G.BS.BoxThick = v end })
+TB.CreateSlider({ Name = "Отступ коробки от модели", Flag = "BS_BoxPad",
+    Range = {0, 40}, Increment = 1, CurrentValue = G.BS.BoxPad or 4,
+    Suffix = " px", Callback = function(v) G.BS.BoxPad = v end })
+TB.CreateSlider({ Name = "Прозрачность коробки", Flag = "BS_BoxAlpha",
+    Range = {0, 90}, Increment = 5,
+    CurrentValue = math.floor((tonumber(G.BS.BoxAlpha) or 0) * 100 + 0.5),
+    Suffix = " %", Callback = function(v) G.BS.BoxAlpha = v / 100 end })
 TB.CreateToggle({ Name = "Ромб для вампиров", Flag = "BS_CornerBoxes",
     CurrentValue = G.BS.CornerBoxes == true,
     Callback = function(v) G.BS.CornerBoxes = v end })
 TB.CreateSlider({ Name = "Размер текста ESP", Flag = "BS_LabelSize",
     Range = {9, 24}, Increment = 1, CurrentValue = G.BS.LabelSize or 13,
     Suffix = " px", Callback = function(v) G.BS.LabelSize = v end })
-TB.CreateSection("Подсветка тела")
--- Это существующий Highlight на персонаже (e.hl), а не второй слой.
--- Отдельной «Chams» больше нет: она вешала второй Highlight и тело
--- краснело вдвое.
-TB.CreateToggle({ Name = "Подсветка тела (chams)", Flag = "BS_BodyHighlight",
-    CurrentValue = G.BS.BodyHighlight ~= false,
-    Callback = function(v) G.BS.BodyHighlight = v end })
-TB.CreateSlider({ Name = "Прозрачность подсветки тела", Flag = "BS_FillTransparency",
-    Range = {0, 1}, Increment = 0.05, CurrentValue = G.BS.FillTransparency or 0.7,
-    Callback = function(v) G.BS.FillTransparency = v end })
-
 TB.CreateSection("Визуалы игроков")
 TB.CreateToggle({ Name = "Линии от низа экрана (snaplines)", Flag = "BS_Snaplines",
     CurrentValue = G.BS.Snaplines ~= false,
@@ -7653,18 +7514,43 @@ TB.CreateToggle({ Name = "Линии от низа экрана (snaplines)", Fl
 TB.CreateSlider({ Name = "Толщина линий", Flag = "BS_SnapThick",
     Range = {1, 4}, Increment = 1, CurrentValue = G.BS.SnapThick or 1,
     Callback = function(v) G.BS.SnapThick = v end })
+TB.CreateDropdown({
+    Name = "Линии от: откуда",
+    Flag = "BS_SnapFromPick",
+    Options = TRACER_ORIGINS,
+    CurrentOption = { G.BS.SnapFrom },
+    MultipleOptions = false,
+    Callback = function(selected)
+        local picked = selected
+        if type(picked) == "table" then picked = picked[1] end
+        if type(picked) == "string" then G.BS.SnapFrom = picked end
+    end,
+})
+TB.CreateSlider({ Name = "Прозрачность линий", Flag = "BS_SnapAlpha",
+    Range = {0, 10}, Increment = 1,
+    CurrentValue = math.floor((tonumber(G.BS.SnapAlpha) or 1) * 10 + 0.5),
+    Suffix = " /10", Callback = function(v) G.BS.SnapAlpha = v / 10 end })
 TB.CreateToggle({ Name = "Аура под вампирами", Flag = "BS_VampAura",
     CurrentValue = G.BS.VampAura ~= false,
     Callback = function(v) G.BS.VampAura = v end })
 TB.CreateToggle({ Name = "Линии между вампирами", Flag = "BS_VampLinks",
     CurrentValue = G.BS.VampLinks == true,
     Callback = function(v) G.BS.VampLinks = v end })
+-- СКЕЛЕТ. Раньше он рисовался всегда и вблизи превращался в кашу из
+-- линий (особенно когда стоишь за спиной у игрока). Теперь можно
+-- ограничить дистанцию и рисовать его только у цели аима.
 TB.CreateToggle({ Name = "Скелет ESP", Flag = "BS_Skeleton",
     CurrentValue = G.BS.Skeleton == true,
     Callback = function(v) G.BS.Skeleton = v end })
 TB.CreateSlider({ Name = "Толщина скелета", Flag = "BS_SkeletonThick",
     Range = {1, 4}, Increment = 1, CurrentValue = G.BS.SkeletonThick or 1,
     Callback = function(v) G.BS.SkeletonThick = v end })
+TB.CreateSlider({ Name = "Скелет: ближе не показывать", Flag = "BS_SkelMinDist",
+    Range = {0, 60}, Increment = 2, CurrentValue = G.BS.SkelMinDist or 12,
+    Suffix = " st", Callback = function(v) G.BS.SkelMinDist = v end })
+TB.CreateToggle({ Name = "Скелет только у цели аима", Flag = "BS_SkelOnlyTarget",
+    CurrentValue = G.BS.SkelOnlyTarget == true,
+    Callback = function(v) G.BS.SkelOnlyTarget = v end })
 TB.CreateToggle({ Name = "Полоска HP над головой", Flag = "BS_HealthBars",
     CurrentValue = G.BS.HealthBars ~= false,
     Callback = function(v) G.BS.HealthBars = v end })
@@ -7713,11 +7599,33 @@ TB.CreateColorPicker({ Name = "Цвет трейсера выстрела", Flag
 TB.CreateSlider({ Name = "Время трейсера выстрела", Flag = "BS_ShotTracerTime",
     Range = {0.05, 1}, Increment = 0.05, CurrentValue = G.BS.ShotTracerTime or 0.25,
     Suffix = " c", Callback = function(v) G.BS.ShotTracerTime = v end })
+TB.CreateSlider({ Name = "Толщина трейсера выстрела", Flag = "BS_ShotTracerThick",
+    Range = {1, 5}, Increment = 1, CurrentValue = G.BS.ShotTracerThick or 2,
+    Suffix = " px", Callback = function(v) G.BS.ShotTracerThick = v end })
 TB.CreateToggle({ Name = "Линия к цели (трейсер)", Flag = "BS_AimLine",
     CurrentValue = G.BS.AimLine ~= false,
     Callback = function(v) G.BS.AimLine = v end })
 TB.CreateColorPicker({ Name = "Цвет линии к цели", Flag = "BS_AimLineColor",
     Color = G.BS.AimLineColor, Callback = function(c) G.BS.AimLineColor = c end })
+TB.CreateSlider({ Name = "Толщина линии к цели", Flag = "BS_AimLineThick",
+    Range = {1, 5}, Increment = 1, CurrentValue = G.BS.AimLineThick or 1,
+    Suffix = " px", Callback = function(v) G.BS.AimLineThick = v end })
+TB.CreateSlider({ Name = "Прозрачность линии к цели", Flag = "BS_AimLineAlpha",
+    Range = {0, 10}, Increment = 1,
+    CurrentValue = math.floor((tonumber(G.BS.AimLineAlpha) or 1) * 10 + 0.5),
+    Suffix = " /10", Callback = function(v) G.BS.AimLineAlpha = v / 10 end })
+TB.CreateDropdown({
+    Name = "Линия к цели: откуда",
+    Flag = "BS_AimLineFromPick",
+    Options = TRACER_ORIGINS,
+    CurrentOption = { G.BS.AimLineFrom },
+    MultipleOptions = false,
+    Callback = function(selected)
+        local picked = selected
+        if type(picked) == "table" then picked = picked[1] end
+        if type(picked) == "string" then G.BS.AimLineFrom = picked end
+    end,
+})
 
 TB.CreateSection("Объекты")
 TB.CreateToggle({ Name = "Подсветка ящиков", Flag = "BS_CrateESP",
@@ -7730,11 +7638,7 @@ TB.CreateToggle({ Name = "Подсветка монет", Flag = "BS_CoinESP",
     Callback = function(v) G.BS.CoinESP = v end })
 TB.CreateColorPicker({ Name = "Цвет монет", Flag = "BS_CoinColor",
     Color = G.BS.CoinColor, Callback = function(c) G.BS.CoinColor = c end })
-TB.CreateToggle({ Name = "Подсветка улик / крови", Flag = "BS_ClueESP",
-    CurrentValue = G.BS.ClueESP == true,
-    Callback = function(v) G.BS.ClueESP = v end })
-TB.CreateColorPicker({ Name = "Цвет улик", Flag = "BS_ClueColor",
-    Color = G.BS.ClueColor, Callback = function(c) G.BS.ClueColor = c end })
+-- «Подсветка улик / крови» УДАЛЕНА (v11.32) по просьбе.
 TB.CreateToggle({ Name = "Иконки ролей в ESP", Flag = "BS_RoleIcons",
     CurrentValue = G.BS.RoleIcons ~= false,
     Callback = function(v) G.BS.RoleIcons = v end })
@@ -7797,12 +7701,8 @@ AI.CreateToggle({
         if v then bindAimLockStep() end
     end,
 })
--- v11.31: «только видимые» — не целиться в того, кто за стеной.
--- По умолчанию выключено: прострел стен работает через телепорт.
-AI.CreateToggle({ Name = "Только видимые цели (без прострела)",
-    Flag = "BS_AimVisibleOnly",
-    CurrentValue = G.BS.AimVisibleOnly == true,
-    Callback = function(v) G.BS.AimVisibleOnly = v end })
+-- «Только видимые цели» УДАЛЁН (v11.32): прострел должен работать
+-- всегда, без скрытого отбрасывания целей за стеной.
 -- Тумблер «камера доворачивается» УДАЛЁН по просьбе: аимлок всегда
 -- доводит камеру (G.BS.AimLockTurn = true). Если понадобится тихий аим
 -- без поворота камеры - из консоли:
@@ -7914,6 +7814,7 @@ AI.CreateToggle({ Name = "Свободная часть тела (не в сте
     Callback = function(v) G.BS.AimFreePart = v end })
 
 AI.CreateSection("Метка цели")
+-- Осталась только тонкая рамка вокруг текущей цели (без заливки).
 AI.CreateToggle({ Name = "Подсветка текущей цели", Flag = "BS_TargetMark",
     CurrentValue = G.BS.TargetMark,
     Callback = function(v)
@@ -7923,50 +7824,11 @@ AI.CreateToggle({ Name = "Подсветка текущей цели", Flag = "B
 AI.CreateColorPicker({ Name = "Цвет подсветки цели", Flag = "BS_TargetMarkColor",
     Color = G.BS.TargetMarkColor,
     Callback = function(c) G.BS.TargetMarkColor = c end })
--- v11.31: настройки самой метки (уголки вокруг головы).
-AI.CreateColorPicker({ Name = "Цвет уголков метки", Flag = "BS_AimMarkColor",
-    Color = G.BS.AimMarkColor,
-    Callback = function(c) G.BS.AimMarkColor = c end })
-AI.CreateSlider({ Name = "Размер метки", Flag = "BS_AimMarkSize",
-    Range = {5, 20}, Increment = 1, CurrentValue = G.BS.AimMarkSize or 9,
-    Suffix = " px", Callback = function(v) G.BS.AimMarkSize = v end })
-AI.CreateSlider({ Name = "Толщина метки", Flag = "BS_AimMarkThick",
-    Range = {1, 5}, Increment = 1, CurrentValue = G.BS.AimMarkThick or 2,
-    Callback = function(v) G.BS.AimMarkThick = v end })
-AI.CreateToggle({ Name = "Пульс метки", Flag = "BS_AimMarkPulse",
-    CurrentValue = G.BS.AimMarkPulse ~= false,
-    Callback = function(v) G.BS.AimMarkPulse = v end })
-AI.CreateToggle({ Name = "Имя цели над меткой", Flag = "BS_AimMarkName",
-    CurrentValue = G.BS.AimMarkName ~= false,
-    Callback = function(v) G.BS.AimMarkName = v end })
+-- Жёлтые уголки метки УДАЛЕНЫ (v11.32) — это были «3 жёлтые полоски».
+-- Кто выбран целью — видно по звезде в подписи ESP и по линии к цели.
 
-AI.CreateSection("Прицел и хитмаркер")
-AI.CreateToggle({ Name = "Свой прицел (crosshair)", Flag = "BS_Crosshair",
-    CurrentValue = G.BS.Crosshair ~= false,
-    Callback = function(v) G.BS.Crosshair = v end })
-AI.CreateSlider({ Name = "Зазор прицела", Flag = "BS_CrosshairGap",
-    Range = {0, 20}, Increment = 1, CurrentValue = G.BS.CrosshairGap or 4,
-    Suffix = " px", Callback = function(v) G.BS.CrosshairGap = v end })
-AI.CreateSlider({ Name = "Длина прицела", Flag = "BS_CrosshairLen",
-    Range = {4, 40}, Increment = 1, CurrentValue = G.BS.CrosshairLen or 10,
-    Suffix = " px", Callback = function(v) G.BS.CrosshairLen = v end })
-AI.CreateColorPicker({ Name = "Цвет прицела", Flag = "BS_CrosshairColor",
-    Color = G.BS.CrosshairColor, Callback = function(c) G.BS.CrosshairColor = c end })
-AI.CreateToggle({ Name = "Отдача прицела при выстреле", Flag = "BS_RecoilCrosshair",
-    CurrentValue = G.BS.RecoilCrosshair ~= false,
-    Callback = function(v) G.BS.RecoilCrosshair = v end })
-AI.CreateSlider({ Name = "Сила отдачи прицела", Flag = "BS_RecoilAmount",
-    Range = {0, 24}, Increment = 1, CurrentValue = G.BS.RecoilAmount or 8,
-    Suffix = " px", Callback = function(v) G.BS.RecoilAmount = v end })
-AI.CreateToggle({ Name = "Вспышка прицела при попадании", Flag = "BS_CrosshairHitFlash",
-    CurrentValue = G.BS.CrosshairHitFlash ~= false,
-    Callback = function(v) G.BS.CrosshairHitFlash = v end })
-AI.CreateToggle({ Name = "Хитмаркер при попадании", Flag = "BS_HitMark",
-    CurrentValue = G.BS.HitMark,
-    Callback = function(v) G.BS.HitMark = v end })
-AI.CreateColorPicker({ Name = "Цвет хитмаркера", Flag = "BS_HitMarkColor",
-    Color = G.BS.HitMarkColor,
-    Callback = function(c) G.BS.HitMarkColor = c end })
+-- ПРИЦЕЛ и ХИТМАРКЕР УДАЛЕНЫ (v11.32) по просьбе: в центре экрана
+-- больше нет ни прицела, ни вспышки при попадании.
 
 -- Выбор цели, приоритет и часть тела теперь в секции «Выбор цели»
 -- выше; радиус захвата живёт в «Макс. дистанция аима».
@@ -8023,11 +7885,11 @@ PL.CreateToggle({
     Callback = function(v) G.BS.AmmoBringCrate = v end,
 })
 PL.CreateSlider({
-    Name = "Порог автопополнения",
-    Flag = "BS_AmmoLowPct",
+    Name = "Порог автопополнения (0 = только когда кончились)",
+    Flag = "BS_AmmoLowPct2",
     Range = { 0, 100 },
     Increment = 5,
-    CurrentValue = math.floor((tonumber(G.BS.AmmoLowPct) or 0.5) * 100 + 0.5),
+    CurrentValue = math.floor((tonumber(G.BS.AmmoLowPct) or 0) * 100 + 0.5),
     Suffix = " %",
     Callback = function(v) G.BS.AmmoLowPct = v / 100 end,
 })
@@ -8040,6 +7902,9 @@ PL.CreateButton({
 })
 
 PL.CreateSection("Монеты")
+-- Магнит и авто-сбор работают ВСЕГДА (тумблер «Авто-сбор монет»
+-- удалён по просьбе). Телепорт-сбор к серверной позиции монеты —
+-- отдельный риск-тумблер, по умолчанию выключен.
 PL.CreateToggle({ Name = "Магнит монет (тащит к игроку)", Flag = "BS_CoinMagnet",
     CurrentValue = G.BS.CoinMagnet ~= false,
     Callback = function(v) G.BS.CoinMagnet = v end })
@@ -8051,12 +7916,20 @@ PL.CreateSlider({ Name = "Скорость притяжения", Flag = "BS_Coi
     Range = {0.1, 1}, Increment = 0.05,
     CurrentValue = tonumber(G.BS.CoinMagnetPower) or 0.45,
     Callback = function(v) G.BS.CoinMagnetPower = v end })
-PL.CreateToggle({ Name = "Авто-сбор монет (prompt / ремоут)", Flag = "BS_CoinAuto",
-    CurrentValue = G.BS.CoinAuto ~= false,
-    Callback = function(v) G.BS.CoinAuto = v end })
 PL.CreateToggle({ Name = "Сбор телепортом к монете (риск)", Flag = "BS_CoinBlink",
     CurrentValue = G.BS.CoinBlink ~= false,
     Callback = function(v) G.BS.CoinBlink = v end })
+
+-- v11.32: вернулся СПИД БУСТ (ускорение). Раньше он был только в коде
+-- и не выводился в меню, поэтому его и не было «в списке».
+PL.CreateSection("Скорость")
+PL.CreateToggle({ Name = "Спид буст (ускорение бега)", Flag = "BS_SpeedBoost",
+    CurrentValue = G.BS.SpeedBoost == true,
+    Callback = function(v) G.BS.SpeedBoost = v end })
+PL.CreateSlider({ Name = "Множитель скорости", Flag = "BS_SpeedBoostMul",
+    Range = {1.1, 3}, Increment = 0.1,
+    CurrentValue = tonumber(G.BS.SpeedBoostMul) or 1.6,
+    Suffix = " x", Callback = function(v) G.BS.SpeedBoostMul = v end })
 
 PL.CreateSection("Танец")
 dance.toggle = PL.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
@@ -8269,7 +8142,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.31 остановлен")
+    print("[BS HUB] v11.32 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -8377,7 +8250,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.31 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.32 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
