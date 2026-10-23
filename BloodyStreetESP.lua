@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.42
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.43
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -230,26 +230,23 @@ G.BS.JumpBoostMul  = tonumber(G.BS.JumpBoostMul) or 1.7
 G.BS.JumpBoostTime = tonumber(G.BS.JumpBoostTime) or 0.8
 G.BS.JumpPowerOn   = false
 G.BS.JumpPowerMul  = tonumber(G.BS.JumpPowerMul) or 1.5
--- СКОРОСТЬ ТОЛЬКО В СПИД-ГЛИТЧЕ (v11.42): буст бега убран по просьбе —
--- осталась одна механика: прыжок + разгон (WalkSpeed x N) и подброс
--- вверх при уходе в небо. База запоминается автоматически.
--- СПИД ГЛИТЧ (v11.36): прыжок + разгон. Прыгнул — персонаж разгоняется
--- (WalkSpeed x N) и пока летит вверх, его подбрасывает (с удержанием
--- прыжка улетаешь вверх). Через SpeedGlitchHold разгон затухает.
+-- СКОРОСТЬ ТОЛЬКО В СПИД-ГЛИТЧЕ (v11.43): подброс вверх и
+-- длительность разгона УДАЛЕНЫ по просьбе. Осталась одна механика:
+-- прыжок + разгон (WalkSpeed x N), база запоминается автоматически.
+-- Разгон держится фиксированное время (1.2 с) после прыжка.
 G.BS.SpeedGlitch     = G.BS.SpeedGlitch == true
 G.BS.SpeedGlitchMul  = math.clamp(tonumber(G.BS.SpeedGlitchMul) or 2.5, 1.1, 6)
-G.BS.SpeedGlitchLift = tonumber(G.BS.SpeedGlitchLift) or 30
-G.BS.SpeedGlitchHold = tonumber(G.BS.SpeedGlitchHold) or 1.2
 -- ДОПОЛНИТЕЛЬНЫЕ ВИЗУАЛЫ (модуль G.BS.VIS): трейсеры, скелет, HP,
 -- Прицел и хитмаркер УДАЛЕНЫ по просьбе. Остались только трейсеры
 -- и информативные ESP-элементы.
-G.BS.ShotTracer       = G.BS.ShotTracer ~= false
-G.BS.ShotTracerColor  = safeColor(G.BS.ShotTracerColor, Color3.new(1, 0.4, 0))
-G.BS.ShotTracerTime   = tonumber(G.BS.ShotTracerTime) or 0.25
-G.BS.ShotTracerThick  = math.clamp(tonumber(G.BS.ShotTracerThick) or 2, 1, 5)
+-- v11.43: ТРЕЙСЕР ВЫСТРЕЛА УДАЛЁН по просьбе (не работал). Флаг
+-- принудительно false — даже если в сохранёнке остался true.
+-- Цвет/время/толщина трейсера больше нигде не используются.
+G.BS.ShotTracer       = false
 G.BS.AimLine       = G.BS.AimLine ~= false
 G.BS.AimLineColor  = safeColor(G.BS.AimLineColor, Color3.new(1, 0, 0))
-G.BS.AimLineThick  = math.clamp(tonumber(G.BS.AimLineThick) or 3, 3, 8)
+-- v11.43: минимальная толщина 1 px — стрелки можно делать тоньше.
+G.BS.AimLineThick  = math.clamp(tonumber(G.BS.AimLineThick) or 2, 1, 6)
 G.BS.AimLineAlpha  = math.clamp(tonumber(G.BS.AimLineAlpha) or 1, 0, 1)
 G.BS.SnapFrom      = pickOpt(G.BS.SnapFrom, TRACER_ORIGINS, "Низ экрана")
 G.BS.AimLineFrom   = pickOpt(G.BS.AimLineFrom, TRACER_ORIGINS, "Центр")
@@ -263,9 +260,8 @@ G.BS.OffArrows     = G.BS.OffArrows ~= false
 -- НОВЫЕ ESP-ВИЗУАЛЫ: стрелки к игрокам (snaplines).
 G.BS.Snaplines     = G.BS.Snaplines ~= false
 G.BS.SnapThick     = tonumber(G.BS.SnapThick) or 1
--- v11.39: линии к игрокам стали СТРЕЛКАМИ. Толщина своя: старые
--- сохранённые 1 px не должны перебивать новый красивый дефолт.
-G.BS.SnapArrowThick = math.clamp(tonumber(G.BS.SnapArrowThick) or 3, 2, 8)
+-- v11.43: тоньше и регулируемее — минимум 1 px, дефолт 2 px.
+G.BS.SnapArrowThick = math.clamp(tonumber(G.BS.SnapArrowThick) or 2, 1, 6)
 -- v11.39: КОЛЬЦО ПОД ИГРОКОМ И АУРА ВАМПИРА УДАЛЕНЫ по просьбе.
 -- На близкой дистанции кольцо радиусом 2–4 студа занимало пол-экрана
 -- и выглядело как огромный красный круг. Принудительно выключаем, даже
@@ -311,11 +307,9 @@ G.BS.PingSpeed     = false
 G.BS.DistFade      = G.BS.DistFade or false
 G.BS.HPBarText     = G.BS.HPBarText ~= false
 -- Подсветка улик и пульс низкого HP удалены вместе с подсветкой тела.
+-- v11.43: ПУЛЬС НИЗКОГО HP УДАЛЁН по просьбе.
 G.BS.ClueESP       = false
 G.BS.ClueColor     = safeColor(G.BS.ClueColor, Color3.new(0.6, 1, 0.2))
-G.BS.LowHPWarn     = false
-G.BS.LowHPThreshold = 30
-G.BS.LowHPColor    = safeColor(G.BS.LowHPColor, Color3.new(1, 0, 0))
 -- МОНЕТЫ (Workspace.CoinPickups). Магнит двигает монеты к игроку.
 -- АВТО-ОБУЧЕНИЕ: пока ремоут сбора не выучен, скрипт сам запоминает
 -- первый FireServer с монетой, когда монета рядом. Ручная кнопка не нужна.
@@ -469,6 +463,11 @@ G.BS.MeleeAim        = G.BS.MeleeAim ~= false
 -- выстрел отклоняется. Поэтому при включённом простреле камера ВЕДЁТСЯ
 -- сквозь стены: AimLockNoWall = false. Отдельного тумблера нет.
 G.BS.AimLockNoWall   = false
+-- v11.43: «ЦЕЛИТЬСЯ ТОЛЬКО В ВИДИМЫХ» — тумблер в разделе аимлока.
+-- true = цель за стеной НЕ выбирается (список целей отбрасывает её)
+-- и камера не доводится сквозь стену. При включении вместе с ним
+-- включается и AimLockNoWall; при выключении — оба выключаются.
+G.BS.AimVisibleOnly  = G.BS.AimVisibleOnly == true
 -- ПРОСТРЕЛ СТЕН. Сервер разрешает увести точку вылета на
 -- Config.Combat.SHOT_ORIGIN_SLACK = 14 студов. Ставим её за стеной.
 G.BS.WallPenetrate   = G.BS.WallPenetrate ~= false
@@ -601,7 +600,7 @@ if G.BS.CfgV ~= 39 then
     G.BS.CornerBoxes   = false
     G.BS.BodyHighlight = false
     G.BS.ClueESP       = false
-    G.BS.LowHPWarn     = false
+    -- v11.43: G.BS.LowHPWarn (пульс низкого HP) удалён.
     -- v11.33/v11.34: подсветка цели — тонкая обводка + кольцо захвата
     -- с засечками + табличка с подробностями.
     G.BS.TargetMark       = true
@@ -636,8 +635,7 @@ if G.BS.CfgV ~= 39 then
     G.BS.CoinFarmRange   = 700
     G.BS.SpeedGlitch     = false
     G.BS.SpeedGlitchMul  = 2.5
-    G.BS.SpeedGlitchLift = 30
-    G.BS.SpeedGlitchHold = 1.2
+    -- v11.43: SpeedGlitchLift / SpeedGlitchHold удалены.
     -- v11.33: магнит монет убран из меню и выключен.
     G.BS.CoinMagnet    = false
     G.BS.CoinAuto      = true
@@ -647,8 +645,6 @@ if G.BS.CfgV ~= 39 then
     G.BS.CoinMagnetPower  = 0.55
     G.BS.SpeedGlitch     = false
     G.BS.SpeedGlitchMul  = 2.5
-    G.BS.SpeedGlitchLift = 30
-    G.BS.SpeedGlitchHold = 1.2
     G.BS.AmmoAuto      = true
     G.BS.AmmoAutoTP    = false
     G.BS.AmmoBringCrate = true
@@ -2036,26 +2032,30 @@ local function drawArrowParts(glow, out, shaft, h1, h2, from, to, color, thick, 
     local len = math.sqrt(dx * dx + dy * dy)
     if len < 6 then hideAll() return end
     local ux, uy = dx / len, dy / len
-    local head = math.clamp(len * 0.18, 18, 38)
+    -- v11.43: наконечник и свечение зависят от толщины — на 1–2 px
+    -- стрелка становится ЛЁГКОЙ и узкой, на 6 px остаётся заметной.
+    local t = math.clamp(tonumber(thick) or 2, 1, 6)
+    local hs = math.clamp(t / 3, 0.5, 1.5)
+    local head = math.clamp(len * 0.18, 16, 34) * hs
     local shaftTo = Vector2.new(to.X - ux * head * 0.85, to.Y - uy * head * 0.85)
-    -- свечение под линией
-    vSetLine(glow, from, shaftTo, color, thick + 8)
-    if glow then glow.Transparency = 0.82 end
+    -- свечение под линией (раньше +8 px — слишком широко)
+    vSetLine(glow, from, shaftTo, color, t + 4)
+    if glow then glow.Transparency = 0.85 end
     -- тёмная обводка, чтобы стрелка читалась на любом фоне
-    vSetLine(out, from, shaftTo, Color3.new(0, 0, 0), thick + 3)
+    vSetLine(out, from, shaftTo, Color3.new(0, 0, 0), t + 2)
     if out then out.Transparency = 0.5 end
     -- сам ствол
-    vSetLine(shaft, from, shaftTo, color, thick)
+    vSetLine(shaft, from, shaftTo, color, t)
     if shaft then shaft.Transparency = alpha end
     -- наконечник
     local ang = math.atan2(uy, ux)
     local s1, s2 = ang + math.rad(25), ang - math.rad(25)
     vSetLine(h1, to,
         Vector2.new(to.X - math.cos(s1) * head, to.Y - math.sin(s1) * head),
-        color, thick + 1)
+        color, math.max(t, 1))
     vSetLine(h2, to,
         Vector2.new(to.X - math.cos(s2) * head, to.Y - math.sin(s2) * head),
-        color, thick + 1)
+        color, math.max(t, 1))
     if h1 then h1.Transparency = alpha end
     if h2 then h2.Transparency = alpha end
 end
@@ -2080,16 +2080,18 @@ local function hideAimArrow()
     vHideLine(aimH1); vHideLine(aimH2)
 end
 
--- Короткая стрелка у КРАЯ ЭКРАНА (цель за кадром).
+-- Короткая стрелка у КРАЯ ЭКРАНА (цель за кадром). v11.43: меньше
+-- и пропорциональнее толщине.
 local function drawEdgeArrow(p, tip, ux, uy, color, thick, alpha)
-    local len = 30 + thick * 4
+    local t = math.clamp(tonumber(thick) or 2, 1, 6)
+    local len = 22 + t * 3
     local from = Vector2.new(tip.X - ux * len, tip.Y - uy * len)
-    vSetLine(p.arrowOut, from, tip, Color3.new(0, 0, 0), thick + 3)
+    vSetLine(p.arrowOut, from, tip, Color3.new(0, 0, 0), t + 2)
     if p.arrowOut then p.arrowOut.Transparency = 0.5 end
-    vSetLine(p.arrow, from, tip, color, thick)
+    vSetLine(p.arrow, from, tip, color, t)
     if p.arrow then p.arrow.Transparency = alpha end
     local ang = math.atan2(uy, ux)
-    local hl = 13 + thick * 2
+    local hl = math.clamp(len * 0.4, 6, 16)
     local s1, s2 = ang + math.rad(28), ang - math.rad(28)
     vSetLine(p.arrowH1, tip,
         Vector2.new(tip.X - math.cos(s1) * hl, tip.Y - math.sin(s1) * hl),
@@ -2138,7 +2140,7 @@ function VIS.update(cam, myRoot, by, locked)
                 screenOrigin(G.BS.AimLineFrom, cx, cy, vp),
                 Vector2.new(sp.X, sp.Y),
                 safeColor(G.BS.AimLineColor, Color3.new(1, 0, 0)),
-                math.max(tonumber(G.BS.AimLineThick) or 3, 3),
+                math.clamp(tonumber(G.BS.AimLineThick) or 2, 1, 6),
                 math.clamp(tonumber(G.BS.AimLineAlpha) or 1, 0, 1))
         else
             hideAimArrow()
@@ -4988,10 +4990,9 @@ function speedState.hookJump()
             speedState.active = false
             G.BS._jumpUntil = 0
         elseif G.BS.SpeedGlitch and now < (speedState.glitchUntil or 0) then
-            -- СПИД ГЛИТЧ (v11.36): прыгнул — пошёл разгон (WalkSpeed x N).
-            -- Пока персонаж ещё взлетает, его ещё и подбрасывает, поэтому
-            -- с удержанием прыжка улетаешь вверх («летим»). Через
-            -- G.BS.SpeedGlitchHold разгон сам затухает.
+            -- СПИД ГЛИТЧ (v11.43): прыгнул — пошёл разгон (WalkSpeed x N).
+            -- Подброс вверх и настройка длительности УДАЛЕНЫ по просьбе:
+            -- разгон держится фиксированное время после прыжка.
             local base = speedState.base
             if not base or base < 1 then
                 base = tonumber(hum.WalkSpeed) or 16
@@ -5002,23 +5003,6 @@ function speedState.hookJump()
             if mul < 1.1 then mul = 1.1 elseif mul > 6 then mul = 6 end
             pcall(function() hum.WalkSpeed = base * mul end)
             speedState.boosted = true
-            -- ПОДБРОС ВВЕРХ, пока идёт подъём.
-            local lift = tonumber(G.BS.SpeedGlitchLift) or 0
-            if lift > 0 then
-                local st2 = nil
-                pcall(function() st2 = hum:GetState() end)
-                if st2 == Enum.HumanoidStateType.Jumping then
-                    local chr = hum.Parent
-                    local hrp2 = chr and chr:FindFirstChild("HumanoidRootPart")
-                    if hrp2 and hrp2.Parent then
-                        local v = hrp2.AssemblyLinearVelocity
-                        pcall(function()
-                            hrp2.AssemblyLinearVelocity = Vector3.new(
-                                v.X, v.Y + lift * 0.016, v.Z)
-                        end)
-                    end
-                end
-            end
         else
             -- буст выключили — один раз вернуть естественную скорость
             if speedState.boosted then
@@ -5073,9 +5057,9 @@ function speedState.hookJump()
             -- СПИД ГЛИТЧ (v11.36): прыжок сам запускает разгон. Работает
             -- независимо от старого рывка JumpBoostV2.
             if G.BS.SpeedGlitch then
-                local hold = tonumber(G.BS.SpeedGlitchHold) or 1.2
-                if hold < 0.2 then hold = 0.2 elseif hold > 6 then hold = 6 end
-                speedState.glitchUntil = os.clock() + hold
+                -- v11.43: длительность разгона убрана по просьбе —
+                -- фиксированное время после прыжка.
+                speedState.glitchUntil = os.clock() + 1.2
                 local baseG = speedState.base
                 if not baseG or baseG < 1 then
                     baseG = tonumber(hum.WalkSpeed) or 16
@@ -6247,6 +6231,23 @@ local function buildList(cam, myRoot)
                     -- «Только видимые цели» УДАЛЁН (v11.32): прострел
                     -- работает всегда, цели за стеной не отбрасываются.
                     if (maxD <= 0 or d <= maxD) then
+                        -- v11.43: «Только видимые цели» (тумблер в
+                        -- аимлоке) — цель за стеной не попадает в список.
+                        local visOK = true
+                        if G.BS.AimVisibleOnly then
+                            pcall(function()
+                                WALLRAY.FilterDescendantsInstances =
+                                    { LP.Character, ch }
+                                local dirQ = q.Position - myRoot.Position
+                                if dirQ.Magnitude > 1 then
+                                    local h = workspace:Raycast(
+                                        myRoot.Position, dirQ, WALLRAY)
+                                    if h and not h.Instance:IsDescendantOf(ch)
+                                       then visOK = false end
+                                end
+                            end)
+                        end
+                        if visOK then
                         local scr = 1e9
                         pcall(function()
                             local sp = cam:WorldToViewportPoint(q.Position)
@@ -6259,6 +6260,7 @@ local function buildList(cam, myRoot)
                             part = q, char = ch, player = plr,
                             dist = d, screen = scr, hp = hum.Health,
                         }
+                        end -- visOK
                     end
                 end
             end
@@ -6798,8 +6800,9 @@ local function aimLockTick(dt, now)
     end
 
     -- НЕ ДОВОДИМ КАМЕРУ СКВОЗЬ СТЕНЫ (по просьбе): если между нами и
-    -- целью стена - взгляд остаётся твоим.
-    if G.BS.AimLockNoWall then
+    -- целью стена - взгляд остаётся твоим. v11.43: то же самое делает
+    -- тумблер «Целиться только в видимых» (AimVisibleOnly).
+    if G.BS.AimLockNoWall or G.BS.AimVisibleOnly then
         local blocked = false
         pcall(function()
             AIMLOCKRAY.FilterDescendantsInstances = { LP.Character, tgt.Parent }
@@ -8040,14 +8043,7 @@ local conn = RunService.RenderStepped:Connect(function()
                 vis = false
             end
 
-            -- НИЗКОЕ HP: пульсирует цвет подписи и коробки. Подсветки
-            -- тела больше нет, поэтому лишних Highlight не появляется.
-            if G.BS.LowHPWarn and humNow and (humNow.MaxHealth or 0) > 0
-               and (humNow.Health / humNow.MaxHealth * 100) <= (tonumber(G.BS.LowHPThreshold) or 30) then
-                local pulse = 0.15 + 0.35 * (0.5 + 0.5 * math.sin(now * 7))
-                color = safeColor(G.BS.LowHPColor, Color3.new(1, 0, 0))
-                    :Lerp(Color3.new(1, 1, 1), pulse)
-            end
+            -- ПУЛЬС НИЗКОГО HP УДАЛЁН (v11.43) по просьбе.
 
             -- ВАЖНО: VIS.update рисует HP, скелет, стрелки и рамку головы
             -- отдельно от подписи. Передаём ему видимость, иначе у скрытых
@@ -8162,7 +8158,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.42",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.43",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -8310,8 +8306,8 @@ TB.CreateToggle({ Name = "Стрелки к игрокам (snaplines)", Flag = 
     CurrentValue = G.BS.Snaplines ~= false,
     Callback = function(v) G.BS.Snaplines = v end })
 TB.CreateSlider({ Name = "Толщина стрелок", Flag = "BS_SnapArrowThick",
-    Range = {2, 8}, Increment = 1,
-    CurrentValue = tonumber(G.BS.SnapArrowThick) or 3,
+    Range = {1, 6}, Increment = 1,
+    CurrentValue = math.clamp(tonumber(G.BS.SnapArrowThick) or 2, 1, 6),
     Suffix = " px", Callback = function(v) G.BS.SnapArrowThick = v end })
 TB.CreateDropdown({
     Name = "Стрелки от: откуда",
@@ -8378,37 +8374,20 @@ TB.CreateColorPicker({ Name = "Цвет цифр урона", Flag = "BS_DmgNumC
 TB.CreateToggle({ Name = "Стрелки к целям за экраном", Flag = "BS_OffArrows",
     CurrentValue = G.BS.OffArrows ~= false,
     Callback = function(v) G.BS.OffArrows = v end })
--- v11.31: пульс низкого HP. Перекрашивает существующую подсветку,
--- поэтому не создаёт второй Highlight.
-TB.CreateToggle({ Name = "Пульс низкого HP", Flag = "BS_LowHPWarn",
-    CurrentValue = G.BS.LowHPWarn == true,
-    Callback = function(v) G.BS.LowHPWarn = v end })
-TB.CreateSlider({ Name = "Порог низкого HP", Flag = "BS_LowHPThreshold",
-    Range = {5, 50}, Increment = 5, CurrentValue = G.BS.LowHPThreshold or 30,
-    Suffix = " %", Callback = function(v) G.BS.LowHPThreshold = v end })
-TB.CreateColorPicker({ Name = "Цвет низкого HP", Flag = "BS_LowHPColor",
-    Color = G.BS.LowHPColor, Callback = function(c) G.BS.LowHPColor = c end })
+-- v11.43: «Пульс низкого HP» (вместе с порогом и цветом) УДАЛЁН по
+-- просьбе.
 
-TB.CreateSection("Трейсеры")
-TB.CreateToggle({ Name = "Трейсер выстрела", Flag = "BS_ShotTracer",
-    CurrentValue = G.BS.ShotTracer ~= false,
-    Callback = function(v) G.BS.ShotTracer = v end })
-TB.CreateColorPicker({ Name = "Цвет трейсера выстрела", Flag = "BS_ShotTracerColor",
-    Color = G.BS.ShotTracerColor, Callback = function(c) G.BS.ShotTracerColor = c end })
-TB.CreateSlider({ Name = "Время трейсера выстрела", Flag = "BS_ShotTracerTime",
-    Range = {0.05, 1}, Increment = 0.05, CurrentValue = G.BS.ShotTracerTime or 0.25,
-    Suffix = " c", Callback = function(v) G.BS.ShotTracerTime = v end })
-TB.CreateSlider({ Name = "Толщина трейсера выстрела", Flag = "BS_ShotTracerThick",
-    Range = {1, 5}, Increment = 1, CurrentValue = G.BS.ShotTracerThick or 2,
-    Suffix = " px", Callback = function(v) G.BS.ShotTracerThick = v end })
+TB.CreateSection("Стрелка к цели")
+-- v11.43: «Трейсер выстрела» (цвет/время/толщина) УДАЛЁН по просьбе —
+-- не работал. Осталась только стрелка к цели.
 TB.CreateToggle({ Name = "Стрелка к цели (трейсер)", Flag = "BS_AimLine",
     CurrentValue = G.BS.AimLine ~= false,
     Callback = function(v) G.BS.AimLine = v end })
 TB.CreateColorPicker({ Name = "Цвет стрелки к цели", Flag = "BS_AimLineColor",
     Color = G.BS.AimLineColor, Callback = function(c) G.BS.AimLineColor = c end })
 TB.CreateSlider({ Name = "Толщина стрелки к цели", Flag = "BS_AimLineThick",
-    Range = {3, 8}, Increment = 1,
-    CurrentValue = math.max(tonumber(G.BS.AimLineThick) or 3, 3),
+    Range = {1, 6}, Increment = 1,
+    CurrentValue = math.clamp(tonumber(G.BS.AimLineThick) or 2, 1, 6),
     Suffix = " px", Callback = function(v) G.BS.AimLineThick = v end })
 TB.CreateSlider({ Name = "Прозрачность линии к цели", Flag = "BS_AimLineAlpha",
     Range = {0, 10}, Increment = 1,
@@ -8500,8 +8479,20 @@ AI.CreateToggle({
         if v then bindAimLockStep() end
     end,
 })
--- «Только видимые цели» УДАЛЁН (v11.32): прострел должен работать
--- всегда, без скрытого отбрасывания целей за стеной.
+-- v11.43: кнопка «целиться только в видимых» — цель за стеной не
+-- выбирается и камера не доводится сквозь стену (не через стенки).
+-- Флага нет — как и у двух тумблеров выше, чтобы сохранёнка Rayfield
+-- не перебивала значение.
+AI.CreateToggle({
+    Name = "Целиться только в видимых (не через стены)",
+    CurrentValue = G.BS.AimVisibleOnly == true,
+    Callback = function(v)
+        G.BS.AimVisibleOnly = v
+        G.BS.AimLockNoWall = v
+        if v then pcall(computeBulletPreShot) end
+    end,
+})
+-- «Только видимые цели» восстановлен как этот тумблер (v11.43).
 -- Тумблер «камера доворачивается» УДАЛЁН по просьбе: аимлок всегда
 -- доводит камеру (G.BS.AimLockTurn = true). Если понадобится тихий аим
 -- без поворота камеры - из консоли:
@@ -8762,14 +8753,8 @@ PL.CreateSlider({ Name = "Множитель разгона", Flag = "BS_SpeedGl
     Range = {1.2, 6}, Increment = 0.1,
     CurrentValue = tonumber(G.BS.SpeedGlitchMul) or 2.5,
     Suffix = " x", Callback = function(v) G.BS.SpeedGlitchMul = v end })
-PL.CreateSlider({ Name = "Подброс вверх на прыжке", Flag = "BS_SpeedGlitchLift",
-    Range = {0, 80}, Increment = 5,
-    CurrentValue = tonumber(G.BS.SpeedGlitchLift) or 30,
-    Callback = function(v) G.BS.SpeedGlitchLift = v end })
-PL.CreateSlider({ Name = "Длительность разгона", Flag = "BS_SpeedGlitchHold",
-    Range = {0.2, 5}, Increment = 0.1,
-    CurrentValue = tonumber(G.BS.SpeedGlitchHold) or 1.2,
-    Suffix = " c", Callback = function(v) G.BS.SpeedGlitchHold = v end })
+-- v11.43: «Подброс вверх на прыжке» и «Длительность разгона» УДАЛЕНЫ
+-- по просьбе. Остался только множитель разгона.
 
 PL.CreateSection("Танец")
 dance.toggle = PL.CreateToggle({ Name = "Танцевать", Flag = "BS_DanceOn",
@@ -8997,7 +8982,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.42 остановлен")
+    print("[BS HUB] v11.43 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -9105,7 +9090,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.42 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.43 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
