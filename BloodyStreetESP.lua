@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.44
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.45
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -188,7 +188,11 @@ G.BS.BulletWideAim   = G.BS.BulletWideAim ~= false
 G.BS.AimTargets      = pickOpt(G.BS.AimTargets, AIM_TARGETS, AIM_TARGETS[1])
 G.BS.AimPriority     = pickOpt(G.BS.AimPriority, AIM_PRIORITY, AIM_PRIORITY[1])
 -- АИМ ПО ЧАСТЯМ ТЕЛА: голова/корпус -> ноги -> руки.
-G.BS.AimPart         = pickOpt(G.BS.AimPart, AIM_PART, AIM_PART[1])
+-- "" = «Любая ближайшая» — сохраняем пустую строку, иначе pickOpt
+-- сбрасывал выбор на Head при каждой перезагрузке скрипта.
+if G.BS.AimPart ~= "" then
+    G.BS.AimPart       = pickOpt(G.BS.AimPart, AIM_PART, AIM_PART[1])
+end
 G.BS.AimChain        = G.BS.AimChain ~= false
 -- «СВОБОДНЫЕ» части тела: целимся в ту часть, до которой есть
 -- прямая видимость. Голова/корпус перекрыты -> ноги -> руки.
@@ -1915,6 +1919,7 @@ local crossLines = {}   -- ПРИЦЕЛ УДАЛЁН (v11.32): лишние ли
 
 local crateHL = {}
 local coinHL = {}
+local hlSweepT = 0
 local lastHealth = {}
 local kills = 0
 
@@ -2626,6 +2631,24 @@ function VIS.update(cam, myRoot, by, locked)
     end
 
     -- 6) ПОДСВЕТКА ЯЩИКОВ
+    -- ЧИСТКА УМЕРШИХ ЗАПИСЕЙ: ящики и монеты создаются/удаляются
+    -- постоянно, а crateHL/coinHL помнят каждый ключ вечно — таблица
+    -- росла всю сессию (утечка памяти). Раз в 5 c выкидываем записи
+    -- с уничтоженным носителем или Highlight.
+    local hlNow = os.clock()
+    if hlNow - hlSweepT > 5 then
+        hlSweepT = hlNow
+        for k, h in pairs(coinHL) do
+            if (not k.Parent) or (not h) or (not h.Parent) then
+                coinHL[k] = nil
+            end
+        end
+        for k, h in pairs(crateHL) do
+            if (not k.Parent) or (not h) or (not h.Parent) then
+                crateHL[k] = nil
+            end
+        end
+    end
     if G.BS.CrateESP then
         local folder = workspace:FindFirstChild("SupplyCaches")
         if folder then
@@ -6213,6 +6236,32 @@ local function refineFreePart(ch, from, cur)
 end
 
 local function pickPartOf(ch)
+    if G.BS.AimPart == "" then
+        -- «Любая ближайшая»: раньше пустая строка просто падала в
+        -- общий приоритетный список. Теперь реально берём часть,
+        -- БЛИЖЕ ВСЕГО к центру экрана (к прицелу).
+        local cam = workspace.CurrentCamera
+        if cam then
+            local vp = cam.ViewportSize
+            local cx, cy = vp.X * 0.5, vp.Y * 0.5
+            local best, bestD = nil, math.huge
+            for _, nm in ipairs(AIM_PART) do
+                local p = ch:FindFirstChild(nm)
+                if partUsable(p) then
+                    local sp = cam:WorldToViewportPoint(p.Position)
+                    local d = (Vector2.new(sp.X, sp.Y)
+                        - Vector2.new(cx, cy)).Magnitude
+                    if d < bestD then best, bestD = p, d end
+                end
+            end
+            if best then return best end
+        end
+        for _, nm in ipairs(AIM_PART) do
+            local q = ch:FindFirstChild(nm)
+            if partUsable(q) then return q end
+        end
+        return nil
+    end
     if not G.BS.AimChain then
         -- старый режим: только выбранная часть, иначе список AIM_PART
         local p = ch:FindFirstChild(G.BS.AimPart)
@@ -7243,13 +7292,15 @@ local function ncFireWeapon(...)
     if G.BS.ShotTimeHack then
         local step = tonumber(G.BS.ShotTimeStep)
         if step == nil then step = 0.55 end
-        local last = NC.lastShotT or 0
         for i = n, 1, -1 do
             local t = typeof(out[i])
             if t == "number" and i >= 2 and out[i] > 1000 then
-                -- похоже на os.time/workspace:GetServerTimeNow (секунды)
-                NC.lastShotT = last
+                -- похоже на os.time/workspace:GetServerTimeNow (секунды).
+                -- Сначала двигаем время вперёд, потом ЗАПОМИНАЕМ его:
+                -- раньше тут присваивалось NC.lastShotT = NC.lastShotT
+                -- (no-op) и бухгалтерия времени выстрела не велась.
                 out[i] = out[i] + step
+                NC.lastShotT = out[i]
                 bits[#bits + 1] = "время выстрела #" .. tostring(i)
                 break
             end
@@ -8189,7 +8240,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.44",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.45",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -9013,7 +9064,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.44 остановлен")
+    print("[BS HUB] v11.45 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -9123,7 +9174,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.44 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.45 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
