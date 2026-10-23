@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.50
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.51
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -142,6 +142,8 @@ G.BS.BloodESP    = G.BS.BloodESP    == true
 G.BS.GroundRing  = G.BS.GroundRing  ~= false
 G.BS.MoveVec     = G.BS.MoveVec     == true
 G.BS.HPGradient  = G.BS.HPGradient  ~= false
+-- v11.51: авто-заход в очередь матча после конца раунда.
+G.BS.AutoMatch   = G.BS.AutoMatch   == true
 G.BS.ShowHP      = G.BS.ShowHP      ~= false
 G.BS.Boxes       = G.BS.Boxes       ~= false
 G.BS.BoxThick    = G.BS.BoxThick    or 2
@@ -3820,6 +3822,33 @@ if Remotes then
                             task.delay(1.5, function()
                                 if tok == summaryToken then pcall(ROLES.summary) end
                             end)
+                            -- v11.51: АВТО-МАТЧ. После конца раунда сами встаём
+                            -- в очередь (QuickMatch) — AFK-фарм/фарм XP без
+                            -- единого клика. Троттлинг 10 c, задержка 2 c.
+                            if G.BS.AutoMatch
+                               and (G.BS.RoundPhase == "Lobby"
+                                    or G.BS.RoundPhase == "Ending") then
+                                local nowAM = os.clock()
+                                if nowAM - (G.BS._qmAt or 0) > 10 then
+                                    G.BS._qmAt = nowAM
+                                    task.delay(2, function()
+                                        if STOPPED or not G.BS.AutoMatch then return end
+                                        pcall(function()
+                                            local rm = Remotes
+                                                and Remotes:FindFirstChild("QuickMatch")
+                                            if not rm then
+                                                local bs = game:GetService("ReplicatedStorage")
+                                                    :FindFirstChild("BloodyStreet")
+                                                rm = bs and bs:FindFirstChild("Remotes")
+                                                    and bs:FindFirstChild("Remotes")
+                                                    :FindFirstChild("QuickMatch")
+                                            end
+                                            if rm then rm:FireServer() end
+                                        end)
+                                    end)
+                                    addEvent("авто-матч: встал в очередь")
+                                end
+                            end
                             -- ТАНЕЦ: новый раунд может снести анимацию.
                             -- Перезапускаем танец на старте раунда.
                             if G.BS.DanceOn
@@ -3837,6 +3866,13 @@ if Remotes then
                                 end
                             end
                         end
+                    end
+                    -- v11.51: ГОЛОСОВАНИЕ (SuddenDeath/VoteState): печатаем
+                    -- формат — по нему сделаем авто-голос (CastVote).
+                    if r.Name == "VoteState" and i == 1 then
+                        local v = args[i]
+                        print("[BS VOTE] VoteState: "
+                            .. (type(v) == "table" and "{таблица}" or tostring(v)))
                     end
                     -- RoleAssigned
                     if r.Name == "RoleAssigned" and i == 1 then
@@ -8699,7 +8735,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.50",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.51",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -9290,6 +9326,13 @@ PL.CreateToggle({ Name = "AFK фарм монет", Flag = "BS_CoinFarm",
         end
         notify(v and "AFK-фарм монет: включён" or "AFK-фарм монет: выключен", 3)
     end })
+-- v11.51: сам встаёт в очередь нового матча после конца раунда.
+PL.CreateToggle({ Name = "Авто-заход в матч", Flag = "BS_AutoMatch",
+    CurrentValue = G.BS.AutoMatch == true,
+    Callback = function(v)
+        G.BS.AutoMatch = v
+        notify(v and "Авто-матч: включён" or "Авто-матч: выключен", 3)
+    end })
 PL.CreateSlider({ Name = "Пауза между попытками", Flag = "BS_CoinFarmGap",
     Range = {0.2, 5}, Increment = 0.1,
     CurrentValue = tonumber(G.BS.CoinFarmGap) or 1.0,
@@ -9556,7 +9599,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.50 остановлен")
+    print("[BS HUB] v11.51 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -9803,7 +9846,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.50 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.51 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
