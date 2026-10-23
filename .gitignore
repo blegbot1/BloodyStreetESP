@@ -3,3 +3,9 @@ __pycache__/
 .DS_Store
 Thumbs.db
 *.bak
+
+# локальный мусор — на GitHub не нужен
+*_backup.lua
+COMMIT_MSG.txt
+BS_Dump.lua
+bs_diff_*.txt
