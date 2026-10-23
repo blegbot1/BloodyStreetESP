@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.49
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.50
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -138,6 +138,10 @@ G.BS.ShowDist    = G.BS.ShowDist    ~= false
 G.BS.ShowStats   = G.BS.ShowStats   ~= false
 G.BS.WorldESP    = G.BS.WorldESP    ~= false
 G.BS.BloodESP    = G.BS.BloodESP    == true
+-- v11.50: кольцо под целью (вкл), вектор движения (выкл), градиент HP.
+G.BS.GroundRing  = G.BS.GroundRing  ~= false
+G.BS.MoveVec     = G.BS.MoveVec     == true
+G.BS.HPGradient  = G.BS.HPGradient  ~= false
 G.BS.ShowHP      = G.BS.ShowHP      ~= false
 G.BS.Boxes       = G.BS.Boxes       ~= false
 G.BS.BoxThick    = G.BS.BoxThick    or 2
@@ -2049,6 +2053,13 @@ for i = 1, VMAX do
         arrowOut = vLine(),
         arrowH1 = vLine(),
         arrowH2 = vLine(),
+        -- v11.50: вектор движения цели (обводка + линия + усы) и
+        -- кольцо-подсветка под ногами цели.
+        moveOut = vLine(),
+        moveVec = vLine(),
+        moveH1 = vLine(),
+        moveH2 = vLine(),
+        groundRing = vCircle(),
         aura = {},
         auraOn = false,
     }
@@ -2154,6 +2165,8 @@ function VIS.destroy()
         rm(p.hpBg); rm(p.hpBorder); rm(p.hpFg); rm(p.hpText); rm(p.arrow); rm(p.headBox)
         rm(p.snap); rm(p.snapGlow); rm(p.snapOut); rm(p.snapH1); rm(p.snapH2)
         rm(p.arrowOut); rm(p.arrowH1); rm(p.arrowH2)
+        rm(p.moveOut); rm(p.moveVec); rm(p.moveH1); rm(p.moveH2)
+        rm(p.groundRing)
     end
     for i = 1, #dmgNums do rm(dmgNums[i].obj) end
     for i = 1, #soundArrows do rm(soundArrows[i]) end
@@ -2590,7 +2603,18 @@ function VIS.update(cam, myRoot, by, locked)
                     end
                     if p.hpFg then
                         local barCol
-                        if hpPct > 0.5 then
+                        if G.BS.HPGradient ~= false then
+                            -- v11.50: плавный градиент зелёный-жёлтый-красный.
+                            if hpPct > 0.5 then
+                                local k = (hpPct - 0.5) * 2
+                                barCol = Color3.fromRGB(80, 220, 110):Lerp(
+                                    Color3.fromRGB(255, 205, 70), 1 - k)
+                            else
+                                local k = hpPct * 2
+                                barCol = Color3.fromRGB(255, 205, 70):Lerp(
+                                    Color3.fromRGB(255, 80, 80), 1 - k)
+                            end
+                        elseif hpPct > 0.5 then
                             barCol = Color3.fromRGB(80, 220, 110)
                         elseif hpPct > 0.25 then
                             barCol = Color3.fromRGB(255, 205, 70)
@@ -2631,6 +2655,69 @@ function VIS.update(cam, myRoot, by, locked)
         else
             vHideSquare(p.hpBg); vHideSquare(p.hpBorder)
             vHideSquare(p.hpFg); vHideText(p.hpText)
+        end
+
+        -- v11.50: КОЛЬЦО ПОД ЦЕЛЬЮ + ВЕКТОР ДВИЖЕНИЯ. Кольцо — светящийся
+        -- «пьедестал» под ногами (цель читается даже в толпе), вектор —
+        -- линия по скорости цели (путь за 0.45 c) с усами: видно, куда
+        -- враг бежит, до того как он туда прибежит.
+        do
+            local mvRoot = (show and ch and ch.Parent)
+                and ch:FindFirstChild("HumanoidRootPart") or nil
+            local spRing, spRing2
+            if mvRoot then
+                local feet = mvRoot.Position - Vector3.new(0, 2.7, 0)
+                spRing = vProj(cam, feet)
+                spRing2 = vProj(cam, feet + cam.CFrame.RightVector * 1.9)
+            end
+            if G.BS.GroundRing and p.groundRing then
+                if spRing and spRing.Z > 0 and spRing2 and spRing2.Z > 0 then
+                    local rr = math.abs(spRing2.X - spRing.X)
+                    if rr >= 4 then
+                        p.groundRing.Position = Vector2.new(spRing.X, spRing.Y)
+                        p.groundRing.Radius = rr
+                        p.groundRing.Color = color
+                        p.groundRing.Thickness = 2
+                        p.groundRing.Transparency = 0.35
+                        p.groundRing.Visible = true
+                    else
+                        p.groundRing.Visible = false
+                    end
+                else
+                    p.groundRing.Visible = false
+                end
+            end
+            local spA, spB
+            if G.BS.MoveVec and mvRoot then
+                local vel = mvRoot.AssemblyLinearVelocity
+                if vel and vel.Magnitude > 4 then
+                    spA = vProj(cam, mvRoot.Position)
+                    spB = vProj(cam, mvRoot.Position + vel * 0.45)
+                end
+            end
+            if spA and spB and spA.Z > 0 and spB.Z > 0 then
+                local a2 = Vector2.new(spA.X, spA.Y)
+                local b2 = Vector2.new(spB.X, spB.Y)
+                vSetLine(p.moveOut, a2, b2, Color3.new(0, 0, 0), 4)
+                if p.moveOut then p.moveOut.Transparency = 0.6 end
+                vSetLine(p.moveVec, a2, b2, color, 2)
+                local dx, dy = b2.X - a2.X, b2.Y - a2.Y
+                local len = math.sqrt(dx * dx + dy * dy)
+                if len > 6 then
+                    local ux, uy = dx / len, dy / len
+                    vSetLine(p.moveH1, b2, Vector2.new(
+                        b2.X - (ux * 7 - uy * 4), b2.Y - (uy * 7 + ux * 4)),
+                        color, 1)
+                    vSetLine(p.moveH2, b2, Vector2.new(
+                        b2.X - (ux * 7 + uy * 4), b2.Y - (uy * 7 - ux * 4)),
+                        color, 1)
+                else
+                    vHideLine(p.moveH1); vHideLine(p.moveH2)
+                end
+            else
+                vHideLine(p.moveOut); vHideLine(p.moveVec)
+                vHideLine(p.moveH1); vHideLine(p.moveH2)
+            end
         end
 
         -- РАМКА ВОКРУГ ГОЛОВЫ
@@ -2749,6 +2836,9 @@ function VIS.update(cam, myRoot, by, locked)
             vHideSquare(pOld.headBox)
             hideSnapArrow(pOld)
             hideEdgeArrow(pOld)
+            vHideLine(pOld.moveOut); vHideLine(pOld.moveVec)
+            vHideLine(pOld.moveH1); vHideLine(pOld.moveH2)
+            if pOld.groundRing then pOld.groundRing.Visible = false end
             if pOld.skeleton then
                 for i = 1, #pOld.skeleton do vHideLine(pOld.skeleton[i]) end
             end
@@ -8609,7 +8699,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.49",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.50",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -8705,6 +8795,16 @@ TB.CreateToggle({ Name = "Прятать мёртвых", Flag = "BS_HideDead",
 TB.CreateToggle({ Name = "Скорость цели", Flag = "BS_ShowSpeed",
     CurrentValue = G.BS.ShowSpeed == true,
     Callback = function(v) G.BS.ShowSpeed = v end })
+-- v11.50: красивые визуалы.
+TB.CreateToggle({ Name = "Кольцо под целью", Flag = "BS_GroundRing",
+    CurrentValue = G.BS.GroundRing ~= false,
+    Callback = function(v) G.BS.GroundRing = v end })
+TB.CreateToggle({ Name = "Вектор движения цели", Flag = "BS_MoveVec",
+    CurrentValue = G.BS.MoveVec == true,
+    Callback = function(v) G.BS.MoveVec = v end })
+TB.CreateToggle({ Name = "Градиент полоски HP", Flag = "BS_HPGradient",
+    CurrentValue = G.BS.HPGradient ~= false,
+    Callback = function(v) G.BS.HPGradient = v end })
 TB.CreateToggle({ Name = "Цвет ника по HP", Flag = "BS_NameHPColor",
     CurrentValue = G.BS.NameHPColor == true,
     Callback = function(v) G.BS.NameHPColor = v end })
@@ -9456,7 +9556,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.49 остановлен")
+    print("[BS HUB] v11.50 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -9703,7 +9803,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.49 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.50 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
