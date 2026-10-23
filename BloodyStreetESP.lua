@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.47
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.48
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -926,13 +926,16 @@ function COIN.collectOne(coin, bypassGate)
         args = { coin }
         n = 1
     end
+    local prevGate = COIN.gate[coin]
     COIN.gate[coin] = now
     -- v11.47: раньше #args рвался на nil-аргументах (обрезанный
     -- FireServer), а ошибка отправки проглатывалась и считалась
     -- успехом. Теперь гейт откатывается, возврат — честный.
+    -- v11.48: откат к ПРЕДЫДУЩЕМУ гейту — при bypassGate пришли от
+    -- fireCoinPrompts со своим свежим гейтом, его стирать нельзя.
     local okFire = pcall(function() remote:FireServer(table.unpack(args, 1, n)) end)
     if not okFire then
-        COIN.gate[coin] = nil
+        COIN.gate[coin] = prevGate
         return false
     end
     return true
@@ -6608,8 +6611,11 @@ local function findGhostSpot(aimPos, srcPos, bestChar)
 end
 
 local function computeBulletPreShot()
+    -- v11.48: ранние выходы раньше оставляли устаревший bulletListTarget
+    -- (маркер цели при Disarmed/респавне жил своей жизнью).
+    bulletListTarget = nil
     -- Считаем цель, если нужна ХОТЬ ОДНА функция: подмена патрона ИЛИ
-    -- аимлок. Раньше аимлок зависел от клиент-аима и молчал, если тот
+    -- аимлок. Раньше аимлок зависел от клиент-айма и молчал, если тот
     -- выключен (жалоба: «аим не целится»).
     if not (G.BS.BulletSwap or G.BS.AimLock) then bulletPreShot = nil return end
     -- ОБЕЗОРУЖЕН (модуль Disarm, атрибут DisarmedUntil): стрелять
@@ -7181,7 +7187,8 @@ local MELEE_RANGE = 18
 local function ncMeleeDir(...)
     local pre = bulletPreShot
     if not (pre and pre.part and pre.part.Parent and pre.dir) then return nil end
-    if pre.dist > MELEE_RANGE then return nil end
+    -- v11.48: pre.dist не гарантирован — nil ронял хук и ломал удары.
+    if not pre.dist or pre.dist > MELEE_RANGE then return nil end
     local n = select("#", ...)
     if n < 1 then return nil end
 
@@ -7344,9 +7351,11 @@ local function ncFireWeapon(...)
     -- так попадание точное: нет ошибки из-за того, что камера смещена
     -- назад/в сторону от ствола. Именно из-за этой разницы пуля уходила
     -- мимо головы.
-    local aimDir, aimDist = pre.dir, pre.dist
+    -- v11.48: pre.dist/pre.pos бывают nil при нераспознанной сигнатуре —
+    -- роняло подмену выстрела прямо в namecall-хуке.
+    local aimDir, aimDist = pre.dir, pre.dist or 1
     local aimPoint = pre.pos
-    if posIdx and typeof(out[posIdx]) == "Vector3" then
+    if posIdx and pre.pos and typeof(out[posIdx]) == "Vector3" then
         local v = pre.pos - out[posIdx]
         if v.Magnitude > 0.001 then
             aimDir  = v.Unit
@@ -7465,7 +7474,7 @@ local function ncFireWeapon(...)
             -- Нет отдельного аргумента направления — не трогаем origin,
             -- иначе выстрел уйдёт в неизвестном направлении.
             local back = tonumber(G.BS.SpoofBack) or 0
-            if back > 0 then
+            if back > 0 and pre.pos then
                 if back > 100 then back = 100 end
                 out[posIdx] = pre.pos - aimDir * back
                 replaced = true
@@ -7835,9 +7844,20 @@ local function ncWrapper(self, ...)
                             -- только потом отправляем FireWeapon. Иначе
                             -- сервер видит старую позицию и отклоняет шот.
                             task.spawn(function()
+                                -- v11.48: стоп в окне удержания — выстрел не
+                                -- уходит, флаги сбрасываем: раньше один стоп
+                                -- навсегда вешал ghostBusy/_tpBusy и глушил
+                                -- прострел и телепорт-сбор монет.
+                                if STOPPED then
+                                    NC.ghostBusy = false
+                                    G.BS._tpBusy = false
+                                    return
+                                end
                                 local okBody, errBody = pcall(function()
                                     root.CFrame = pre.ghostCFrame
                                     task.wait(hold)
+                                    -- v11.48: и после каждого yield.
+                                    if STOPPED then error("stopped", 0) end
                                     -- Камеру ставим ПОСЛЕ ожидания, прямо перед
                                     -- выстрелом: иначе CameraModule успевал
                                     -- вернуть её назад за эти 0.12 c.
@@ -7881,7 +7901,7 @@ local function ncWrapper(self, ...)
                                 end
                                 NC.ghostBusy = false
                                 G.BS._tpBusy = false
-                                if not okBody then
+                                if not okBody and errBody ~= "stopped" then
                                     print("[BS BULLET] прострел: ошибка: "
                                         .. tostring(errBody))
                                 end
@@ -8459,7 +8479,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.47",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.48",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -9296,7 +9316,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.47 остановлен")
+    print("[BS HUB] v11.48 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -9363,7 +9383,7 @@ task.spawn(function()
             if rm then break end
             task.wait(3)
         end
-        if rm and not STOPPED then
+        if rm and rm:IsA("RemoteEvent") and not STOPPED then
             netConns[#netConns + 1] = rm.OnClientEvent:Connect(function()
                 pcall(function() rm:FireServer() end)
             end)
@@ -9502,7 +9522,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.47 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.48 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
