@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.46
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.47
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -800,6 +800,9 @@ local COIN = {
     -- v11.46: единый кулдаун сбора. Раньше scan + collectAll + magnet
     -- жали одну монету до 3 раз за тик (тройной FireServer).
     gate = setmetatable({}, { __mode = "k" }),
+    -- v11.47: метка времени последнего МАГНИТНОГО притяжения монеты —
+    -- чтобы не принять своё же PivotTo за серверный сброс позиции.
+    pulled = setmetatable({}, { __mode = "k" }),
 }
 G.BS.Coins = COIN
 
@@ -858,17 +861,37 @@ function COIN.findRemote()
     return found
 end
 
-function COIN.collectOne(coin)
+-- v11.47: coinPart объявлена ЗДЕСЬ, до COIN.scan — раньше scan звал её
+-- выше по тексту до объявления (nil-глобаль под pcall), и скан монет
+-- не работал вообще.
+local function coinPart(coin)
+    if coin:IsA("BasePart") then return coin end
+    local p = coin.PrimaryPart
+    if p and p.Parent then return p end
+    local ok, found = pcall(function()
+        return coin:FindFirstChildWhichIsA("BasePart", true)
+    end)
+    if ok then return found end
+    return nil
+end
+COIN.coinPart = coinPart
+
+function COIN.collectOne(coin, bypassGate)
     if not coin or not coin.Parent then return false end
     -- v11.46: единый кулдаун. Раньше scan/collectAll/magnet жали одну
     -- монету до 3 раз за тик — тройной FireServer.
-    local gateT = COIN.gate[coin]
+    -- v11.47: bypassGate — для fireCoinPrompts (он гейтится сам), а
+    -- гейт ставится только перед РЕАЛЬНОЙ отправкой: раньше ранние
+    -- выходы (нет ремоута / argIdx==0) блокировали монету на 0.8 c
+    -- впустую, глуша промпт-фолбэк.
     local now = os.clock()
-    if gateT and now - gateT < 0.8 then return false end
-    COIN.gate[coin] = now
+    if not bypassGate then
+        local gateT = COIN.gate[coin]
+        if gateT and now - gateT < 0.8 then return false end
+    end
     local remote = COIN.remote or COIN.findRemote()
     if not remote then return false end
-    local args
+    local args, n
     if COIN.args and COIN.argIdx == 0 then
         -- v11.46: при argIdx==0 мы НЕ ЗНАЕМ, какой аргумент — монета.
         -- Раньше replay-ились СТАРЫЕ аргументы для любой монеты (спам
@@ -898,10 +921,20 @@ function COIN.collectOne(coin)
                 args[i] = COIN.args[i]
             end
         end
+        n = COIN.args.n
     else
         args = { coin }
+        n = 1
     end
-    pcall(function() remote:FireServer(table.unpack(args, 1, #args)) end)
+    COIN.gate[coin] = now
+    -- v11.47: раньше #args рвался на nil-аргументах (обрезанный
+    -- FireServer), а ошибка отправки проглатывалась и считалась
+    -- успехом. Теперь гейт откатывается, возврат — честный.
+    local okFire = pcall(function() remote:FireServer(table.unpack(args, 1, n)) end)
+    if not okFire then
+        COIN.gate[coin] = nil
+        return false
+    end
     return true
 end
 
@@ -963,11 +996,33 @@ end
 -- во время фарма. Ремоут кэшируем и перепроверяем: папка BloodyStreet
 -- появляется не сразу, поиск повторяем не чаще раза в 5 с.
 
--- v11.46: если состояние готовности читается клиентом (BoolValue
--- ReadyState в BloodyStreet или на игроке) — вернём true/false,
--- иначе nil (неизвестно). Нужно, чтобы повторное нажатие-переключатель
--- не снимало уже выставленную готовность.
+-- v11.46/v11.47: состояние готовности. Дамп игры показал, что
+-- ReadyState — это RemoteEvent (Remotes.ReadyState), а не BoolValue:
+-- слушаем OnClientEvent и кэшируем последнее boolean-значение;
+-- BoolValue в BloodyStreet/на игроке — запасной путь. nil = неизвестно
+-- (тогда кнопку жмём по расписанию раз в 10 c).
+COIN.readyEvVal = nil
+function COIN.hookReadyState()
+    if STOPPED then return end
+    pcall(function()
+        local rs = game:GetService("ReplicatedStorage")
+        local bs = rs and rs:FindFirstChild("BloodyStreet")
+        local rm = bs and bs:FindFirstChild("Remotes")
+        local ev = rm and rm:FindFirstChild("ReadyState")
+        if ev and ev:IsA("RemoteEvent") then
+            if G.BS._readyConn then
+                pcall(function() G.BS._readyConn:Disconnect() end)
+            end
+            G.BS._readyConn = ev.OnClientEvent:Connect(function(v)
+                if type(v) == "boolean" then COIN.readyEvVal = v end
+            end)
+        end
+    end)
+end
+COIN.hookReadyState()
+
 local function coinReadReadyState()
+    if COIN.readyEvVal ~= nil then return COIN.readyEvVal end
     local st
     pcall(function()
         local rs = game:GetService("ReplicatedStorage")
@@ -1030,17 +1085,8 @@ end
 -- ============================================================
 --  МАГНИТ МОНЕТ: монеты летят к игроку
 -- ============================================================
-local function coinPart(coin)
-    if coin:IsA("BasePart") then return coin end
-    local p = coin.PrimaryPart
-    if p and p.Parent then return p end
-    local ok, found = pcall(function()
-        return coin:FindFirstChildWhichIsA("BasePart", true)
-    end)
-    if ok then return found end
-    return nil
-end
-COIN.coinPart = coinPart
+-- coinPart перенесена выше, к COIN.collectOne (v11.47): COIN.scan
+-- звал её до старой позиции объявления — скан был мёртв.
 
 local function coinPivot(coin)
     if coin:IsA("Model") then
@@ -1059,8 +1105,11 @@ end
 -- проверяем и env, и _G, и кэшируем результат, чтобы не искать каждый
 -- кадр. Если функции нет — остаётся InputHoldBegin/InputHoldEnd.
 local function coinFn(name)
+    -- v11.47: кэшируем только НАЙДЕННОЕ. Раньше промах запоминался
+    -- навсегда (fns[name]=false), и функция исполнителя, появившаяся
+    -- позже первого запроса, больше не находилась.
     local cached = COIN.fns and COIN.fns[name]
-    if cached ~= nil then return cached or nil end
+    if cached ~= nil then return cached end
     local f
     if type(getgenv) == "function" then
         local ok, env = pcall(getgenv)
@@ -1071,7 +1120,7 @@ local function coinFn(name)
         if ok and type(g) == "function" then f = g end
     end
     if not COIN.fns then COIN.fns = {} end
-    COIN.fns[name] = f or false
+    if f then COIN.fns[name] = f end
     return f
 end
 
@@ -1099,15 +1148,17 @@ local function fireCoinPrompts(coin)
     local fired = false
     local fpp = coinFn("fireproximityprompt")
     if prompt then
-        fired = true
+        -- v11.47: попытка считается успешной, только если хоть один
+        -- путь реально отработал (раньше fired=true ставился за само
+        -- существование prompt — счётчик фарма рос из воздуха).
         if fpp then
-            local ok = pcall(fpp, prompt)
-            if not ok then pcall(fpp, prompt, 1) end
+            if pcall(fpp, prompt) then fired = true
+            elseif pcall(fpp, prompt, 1) then fired = true end
         end
         -- Ручной путь: InputHoldBegin/End. Он нужен и как запасной, и
         -- для prompt'ов с HoldDuration > 0 (executor-функция у многих
         -- исполнителей отпускает prompt мгновенно, но сервер ждёт hold).
-        pcall(function()
+        local okHold = pcall(function()
             if prompt.Enabled then
                 prompt:InputHoldBegin()
                 local hold = tonumber(prompt.HoldDuration) or 0
@@ -1116,11 +1167,11 @@ local function fireCoinPrompts(coin)
                 end)
             end
         end)
+        if okHold then fired = true end
     end
     local fcd = coinFn("fireclickdetector")
     if click and fcd then
-        pcall(fcd, click, 0)
-        fired = true
+        if pcall(fcd, click, 0) then fired = true end
     end
     -- TouchTransmitter: некоторые игры собирают монету по касанию.
     local part = coinPart(coin)
@@ -1128,18 +1179,21 @@ local function fireCoinPrompts(coin)
     if part and ft then
         local myRoot = LP and LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
         if myRoot then
-            pcall(ft, part, myRoot, 0)
+            local okTouch = pcall(ft, part, myRoot, 0)
             task.delay(0.12, function()
                 if part.Parent then pcall(ft, part, myRoot, 1) end
             end)
-            fired = true
+            if okTouch then fired = true end
         end
     end
     -- Ремоут — только если он реально есть/выучен. Иначе findRemote
     -- каждую секунду обходил бы ReplicatedStorage без пользы.
+    -- v11.47: bypass-гейт: монета уже закрыта нашим гейтом выше,
+    -- иначе collectOne всегда видел свежий гейт и не слал ничего
+    -- (гейт-дедлок v11.46 — remote-ветка была недостижима).
     if (COIN.remote and COIN.remote.Parent) or COIN.learned then
-        pcall(function() COIN.collectOne(coin) end)
-        fired = true
+        local okR, sent = pcall(COIN.collectOne, coin, true)
+        if okR and sent then fired = true end
     end
     return fired
 end
@@ -1180,9 +1234,14 @@ function COIN.collectAll(now)
                 take = (now - st.at) >= gap
             end
             if take then
-                COIN.farmState[coin] = { at = now, pos = pos }
+                -- v11.47: пауза gap отсчитывается от РЕАЛЬНОЙ попытки:
+                -- раньше холостой вызов (заблокирован гейтом) тоже
+                -- отодвигал следующую попытку на gap.
+                local prevAt = st and st.at or 0
+                COIN.farmState[coin] = { at = prevAt, pos = pos }
                 local ok, fired = pcall(fireCoinPrompts, coin)
                 if ok and fired then
+                    COIN.farmState[coin] = { at = now, pos = pos }
                     n = n + 1
                     COIN.farmCount = (COIN.farmCount or 0) + 1
                     local c = COIN.farmCount
@@ -1229,7 +1288,14 @@ function COIN.blinkCollect(coin, now)
     end
     local dist = (origin - root.Position).Magnitude
     if dist > radius + 30 then return false end
-    if now - (COIN.blinkAt or 0) < 0.75 then return false end
+    -- v11.47: 1.1 c = 0.22 (репликация) + 0.8 (гейт монеты) + запас:
+    -- раньше блинк уходил чаще окна гейта и жал промпты вхолостую
+    -- (пустой телепорт туда-обратно, «НЕ собралась» в логе).
+    if now - (COIN.blinkAt or 0) < 1.1 then return false end
+    -- v11.47: не телепортируемся к монете с горячим гейтом —
+    -- fireCoinPrompts на месте всё равно вернёт false.
+    local gateB = COIN.gate[coin]
+    if gateB and now - gateB < 0.8 then return false end
     -- Если у монеты нет ни prompt, ни click, ни touch и ремоут не выучен,
     -- телепорт всё равно ничего не даст — не дёргаем персонажа зря.
     local prompt, click = coinPromptAndClick(coin)
@@ -1394,6 +1460,7 @@ function COIN.magnetTick(now)
     local power = math.clamp(tonumber(G.BS.CoinMagnetPower) or 0.45, 0.1, 1)
     local rp = root.Position
     local bestCoin, bestDist
+    local magnetHoled = false
     for i = 1, #COIN.magnetList do
         local coin = COIN.magnetList[i]
         -- После удаления монеты в списке остаётся дырка (nil), пока
@@ -1411,10 +1478,19 @@ function COIN.magnetTick(now)
                 -- исходную позицию, иначе скрипт бежит туда, где монеты
                 -- уже нет, и фарм стоит.
                 local o0 = COIN.origin[coin]
+                -- v11.47: смещение >3 st сразу после МАГНИТНОГО PivotTo —
+                -- это наше притяжение, а не серверный сброс. Раньше origin
+                -- перезаписывался позицией у игрока: сервер отклонял
+                -- промпты, и монета становилась несобираемой до сброса.
+                -- Помеченные обновляем не раньше чем через 5 c.
                 if o0 and (part.Position - o0).Magnitude > 3 then
-                    local cf0 = coinPivot(coin)
-                    COIN.origin[coin] = cf0 and cf0.Position or part.Position
-                    COIN.originCF[coin] = cf0
+                    local pAt = COIN.pulled[coin]
+                    if not pAt or (now and (now - pAt) > 5) then
+                        local cf0 = coinPivot(coin)
+                        COIN.origin[coin] = cf0 and cf0.Position or part.Position
+                        COIN.originCF[coin] = cf0
+                        COIN.pulled[coin] = nil
+                    end
                 end
                 local serverPos = COIN.origin[coin]
                 local serverDist = (serverPos - rp).Magnitude
@@ -1436,6 +1512,8 @@ function COIN.magnetTick(now)
                         math.cos(i * 1.7) * 1.2)
                     local cf = coinPivot(coin)
                     if cf then
+                        -- v11.47: метка притяжения — см. защиту origin выше.
+                        COIN.pulled[coin] = os.clock()
                         -- Сохраняем вращение монеты: иначе она резко
                         -- поворачивается в ноль и выглядит сломанно.
                         local target = CFrame.new(goal) * (cf - cf.Position)
@@ -1461,8 +1539,20 @@ function COIN.magnetTick(now)
                 COIN.tryAt[coin] = nil
                 COIN.firedLog[coin] = nil
                 COIN.promptCheck[coin] = nil
+                magnetHoled = true
             end
         end
+    end
+    -- v11.47: дырка в массиве обрывала #magnetList на произвольном
+    -- месте — монеты после первой удалённой выпадали из магнита до
+    -- пересборки списка. Уплотняем сразу после прохода.
+    if magnetHoled then
+        local keep = {}
+        for i = 1, #COIN.magnetList do
+            local c = COIN.magnetList[i]
+            if c and c.Parent then keep[#keep + 1] = c end
+        end
+        COIN.magnetList = keep
     end
 
     -- AFK-ФАРМ (v11.36): скрипт сам бегает/телепортируется к монетам и
@@ -1896,8 +1986,14 @@ do
 local VIS = {}
 local VDRAW
 do
-    local ok = pcall(function() return Drawing.new("Line") end)
+    -- v11.47: пробный объект уничтожаем — раньше одна линия утекала
+    -- при каждом запуске скрипта.
+    local ok, probe = pcall(function() return Drawing.new("Line") end)
     VDRAW = ok
+    if ok and probe then
+        pcall(function() probe.Visible = false end)
+        pcall(function() probe:Remove() end)
+    end
 end
 
 local function vLine()
@@ -2185,10 +2281,10 @@ local function drawEdgeArrow(p, tip, ux, uy, color, thick, alpha)
     local s1, s2 = ang + math.rad(28), ang - math.rad(28)
     vSetLine(p.arrowH1, tip,
         Vector2.new(tip.X - math.cos(s1) * hl, tip.Y - math.sin(s1) * hl),
-        color, thick + 1)
+        color, t + 1)
     vSetLine(p.arrowH2, tip,
         Vector2.new(tip.X - math.cos(s2) * hl, tip.Y - math.sin(s2) * hl),
-        color, thick + 1)
+        color, t + 1)
     if p.arrowH1 then p.arrowH1.Transparency = alpha end
     if p.arrowH2 then p.arrowH2.Transparency = alpha end
 end
@@ -2278,7 +2374,9 @@ function VIS.update(cam, myRoot, by, locked)
                 -- ВАЖНО: у Drawing Circle нет свойства Size, только Radius.
                 targetRing.Radius = r * k
                 targetRing.Color = ringCol
-                targetRing.Thickness = tonumber(G.BS.TargetRingThick) or 1
+                -- v11.47: кламп — значение живёт в getgenv и могло быть
+                -- 0/отрицательным при ручной правке (кольцо исчезало).
+                targetRing.Thickness = math.max(1, tonumber(G.BS.TargetRingThick) or 1)
                 targetRing.Filled = false
                 targetRing.Transparency = 0.2
                 targetRing.Visible = true
@@ -2401,8 +2499,10 @@ function VIS.update(cam, myRoot, by, locked)
                 ch:FindFirstChild("LowerTorso") or ch:FindFirstChild("Torso"),
                 ch:FindFirstChild("LeftUpperArm") or ch:FindFirstChild("Left Arm"),
                 ch:FindFirstChild("RightUpperArm") or ch:FindFirstChild("Right Arm"),
-                ch:FindFirstChild("LeftUpperLeg") or ch:FindFirstChild("LeftLeg"),
-                ch:FindFirstChild("RightUpperLeg") or ch:FindFirstChild("RightLeg"),
+                -- v11.47: в R6 ноги называются "Left Leg"/"Right Leg"
+                -- (с пробелом) — старый fallback без пробела был мёртв.
+                ch:FindFirstChild("LeftUpperLeg") or ch:FindFirstChild("Left Leg") or ch:FindFirstChild("LeftLeg"),
+                ch:FindFirstChild("RightUpperLeg") or ch:FindFirstChild("Right Leg") or ch:FindFirstChild("RightLeg"),
             }
             local pts = {}
             for i = 1, 7 do
@@ -2412,7 +2512,7 @@ function VIS.update(cam, myRoot, by, locked)
                 pts[i] = (sp and sp.Z > 0) and Vector2.new(sp.X, sp.Y) or nil
             end
             local links = {{1,2},{2,3},{2,4},{2,5},{3,6},{3,7}}
-            local thick = tonumber(G.BS.SkeletonThick) or 1
+            local thick = math.max(1, tonumber(G.BS.SkeletonThick) or 1)
             for i = 1, 6 do
                 local l = p.skeleton[i]
                 if not l then
@@ -2852,7 +2952,15 @@ function VIS.update(cam, myRoot, by, locked)
 
     -- очистка данных ушедших игроков
     for plr in pairs(lastHealth) do
-        if not by[plr] then lastHealth[plr] = nil end
+        -- v11.47: чистим и hp-таблицы — они ключуются Player и держали
+        -- ссылки на ушедших игроков весь сеанс (тот же класс утечки,
+        -- что coinHL/crateHL до v11.45).
+        if not by[plr] then
+            lastHealth[plr] = nil
+            hpSmooth[plr] = nil
+            hpPrev[plr] = nil
+            hpFlash[plr] = nil
+        end
     end
 end
 
@@ -3863,6 +3971,10 @@ G.BS.ReadAmmo = (function()
             pcall(function()
                 vpY = workspace.CurrentCamera.ViewportSize.Y
             end)
+            -- v11.47: при проглоченной ошибке vpY=0 вырождал фильтр в
+            -- «весь экран» — счётчики сверху принимались за HUD патронов
+            -- и ReadAmmo врал. Без вьюпорта ветку пропускаем целиком.
+            if not (vpY and vpY > 0) then return nil end
             local bestY, bestCur, bestMax, bestName, bestLabel =
                 -1, nil, nil, nil, nil
             local okG, all = pcall(function() return pg:GetDescendants() end)
@@ -4145,6 +4257,10 @@ dance.fireEmote = function(name)
     dance.pendingEmote = tostring(name)
     dance.pendingAt = os.clock()
     local ok = pcall(function() rem:FireServer(name) end)
+    -- v11.47: упавший FireServer снимает ловушку сразу — иначе
+    -- следующая посторонняя анимация (удар/перезарядка) навсегда
+    -- становилась ID этого эмоута.
+    if not ok then dance.pendingEmote = nil end
     -- В ленту пишем только при смене эмоута, иначе повтор забивал бы
     -- события при каждом перезапуске.
     if dance.reportedEmote ~= tostring(name) then
@@ -5240,13 +5356,21 @@ end
 -- Берём из атрибутов, а «Сбит» - из модуля PlayerState
 -- (PlayerState.DOWNED / ALIVE / DEAD / GONE / BODYLESS).
 local PS_MOD = nil        -- require(ReplicatedStorage.BloodyStreet.PlayerState)
+local PS_RETRY_AT = 0
 local function loadPlayerState()
-    if PS_MOD ~= nil then return PS_MOD end
+    -- v11.47: транзиентная ошибка (папка игры ещё не реплицировалась
+    -- на джойне) раньше кэшировала false НАВСЕГДА — статусы «Сбит/
+    -- Пропал/Без тела» отключались до перезапуска. Кэшируем только
+    -- успех, неудачу перепроверяем раз в 10 c.
+    if PS_MOD ~= nil and PS_MOD ~= false then return PS_MOD end
+    if PS_MOD == false and os.clock() - PS_RETRY_AT < 10 then return PS_MOD end
+    PS_RETRY_AT = os.clock()
+    local m
     pcall(function()
-        PS_MOD = require(game:GetService("ReplicatedStorage")
+        m = require(game:GetService("ReplicatedStorage")
             .BloodyStreet.PlayerState)
     end)
-    if PS_MOD == nil then PS_MOD = false end
+    if m ~= nil then PS_MOD = m else PS_MOD = false end
     return PS_MOD
 end
 
@@ -6303,9 +6427,14 @@ local function pickPartOf(ch)
                 local p = ch:FindFirstChild(nm)
                 if partUsable(p) then
                     local sp = cam:WorldToViewportPoint(p.Position)
-                    local d = (Vector2.new(sp.X, sp.Y)
-                        - Vector2.new(cx, cy)).Magnitude
-                    if d < bestD then best, bestD = p, d end
+                    -- v11.47: часть ЗА камерой даёт зеркальную проекцию
+                    -- почти в центре экрана и выигрывала выбор — аим
+                    -- разворачивался на 180°. Пропускаем такие.
+                    if sp.Z > 0 then
+                        local d = (Vector2.new(sp.X, sp.Y)
+                            - Vector2.new(cx, cy)).Magnitude
+                        if d < bestD then best, bestD = p, d end
+                    end
                 end
             end
             if best then return best end
@@ -6367,9 +6496,12 @@ local function buildList(cam, myRoot)
                     if (maxD <= 0 or d <= maxD) then
                         -- v11.43: «Только видимые цели» (тумблер в
                         -- аимлоке) — цель за стеной не попадает в список.
-                        local visOK = true
+                        local visOK = not G.BS.AimVisibleOnly
                         if G.BS.AimVisibleOnly then
-                            pcall(function()
+                            -- v11.47: fail-closed. Раньше ошибка внутри
+                            -- pcall оставляла visOK=true — цель за стеной
+                            -- проходила в «только видимые».
+                            local okV = pcall(function()
                                 WALLRAY.FilterDescendantsInstances =
                                     { LP.Character, ch }
                                 local dirQ = q.Position - myRoot.Position
@@ -6380,6 +6512,7 @@ local function buildList(cam, myRoot)
                                        then visOK = false end
                                 end
                             end)
+                            if not okV then visOK = false end
                         end
                         if visOK then
                         local scr = 1e9
@@ -6425,6 +6558,13 @@ end
 -- бралась одна точка «4 студа за целью + 2.5 вверх»: если там была
 -- стена, персонаж оказывался внутри геометрии и выстрел не проходил.
 local GHOST_CACHE = { at = 0, char = nil, pos = nil, cf = nil }
+-- v11.47 (КРИТ): GetPartBoundsInRadius требует OverlapParams, а ему
+-- передавали RaycastParams — движок бросал "incorrect type", pcall
+-- глотал ошибку, и GhostShot был полностью мёртв (телепорт-выстрел
+-- не срабатывал никогда, работал только wallPast).
+local GHOST_OVERLAP = OverlapParams.new()
+GHOST_OVERLAP.FilterType = Enum.RaycastFilterType.Exclude
+GHOST_OVERLAP.MaxParts = 8
 local function findGhostSpot(aimPos, srcPos, bestChar)
     local toT = aimPos - srcPos
     local len = toT.Magnitude
@@ -6452,7 +6592,9 @@ local function findGhostSpot(aimPos, srcPos, bestChar)
             local hit = workspace:Raycast(cand, d, WALLRAY)
             if hit and hit.Distance < d.Magnitude - 0.8 then return false end
             -- 2) кандидат не должен быть внутри коллизии.
-            local overlap = workspace:GetPartBoundsInRadius(cand, 1.6, WALLRAY)
+            GHOST_OVERLAP.FilterDescendantsInstances =
+                { LP.Character, bestChar }
+            local overlap = workspace:GetPartBoundsInRadius(cand, 1.6, GHOST_OVERLAP)
             for _, p in ipairs(overlap) do
                 if p:IsA("BasePart") and p.CanCollide then return false end
             end
@@ -6529,9 +6671,9 @@ local function computeBulletPreShot()
             end
         end
     end
-    bulletListTarget = best
-
     if not best then
+        -- v11.47: старая цель не залипает при потере цели из списка.
+        bulletListTarget = nil
         bulletPreShot = nil
         return
     end
@@ -6574,6 +6716,10 @@ local function computeBulletPreShot()
         local refined = refineFreePart(bestChar, srcPos, best)
         if refined then best = refined end
     end
+    -- v11.47: фиксация части ПОСЛЕ refineFreePart — раньше хук
+    -- пересчитывал прицел от ДО-refine части (голова за укрытием),
+    -- и пуля при AimFreePart уходила обратно в стену.
+    bulletListTarget = best
 
     local aimPos = best.Position
     do
@@ -6778,7 +6924,13 @@ local function resolveLock(cam, now)
     -- старая цель ещё жива и не улетела с экрана?
     local stillThere = false
     if LOCK_TARGET and LOCK_TARGET.Parent then
-        local d = (LOCK_TARGET.Position - camPos).Magnitude
+        -- v11.47: дистанцию меряем от КОРНЯ, как buildList: от камеры
+        -- (она в 3-м лице отстоит на несколько студов) цель на границе
+        -- AimMaxDist срывала захват рывком.
+        local myR = LP and LP.Character
+            and LP.Character:FindFirstChild("HumanoidRootPart")
+        local lockOrg = (myR and myR.Position) or camPos
+        local d = (LOCK_TARGET.Position - lockOrg).Magnitude
         if G.BS.AimMaxDist <= 0 or d <= G.BS.AimMaxDist then
             stillThere = pointScore(LOCK_TARGET.Position) <= (LOCK_LAST_S or 0) + 40
         end
@@ -8307,7 +8459,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.46",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.47",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -9104,6 +9256,19 @@ G.BS_Stop = function()
     Overlay = nil
     TargetHL = nil
     G.BS.MyRole = "?"
+    -- v11.47: снимаем консольные точки входа — после остановки они
+    -- продолжали стрелять ремоутами «мёртвого» скрипта (CollectCoins,
+    -- RefillAmmo, LearnCoin...) и менять его состояние.
+    G.BS.ScanAll, G.BS.DeepScan, G.BS.ProbeWeapon = nil, nil, nil
+    G.BS.SetRole, G.BS.RoleSummary, G.BS.ResetRoles = nil, nil, nil
+    G.BS.CollectCoins, G.BS.CoinScan, G.BS.LearnCoin = nil, nil, nil
+    G.BS.RefillAmmo, G.BS.ScanSupply = nil, nil
+    G.BS.Supply, G.BS.Coins, G.BS.VIS, G.BS.Economy = nil, nil, nil, nil
+    G.BS.CoinLearn = false
+    if G.BS._readyConn then
+        pcall(function() G.BS._readyConn:Disconnect() end)
+        G.BS._readyConn = nil
+    end
     -- BulletSwap НЕ трогаем: getgenv() живёт между запусками, и если
     -- выставить false, то при повторном запуске клиент айм не включится.
     -- Снимаем __namecall, иначе он останется висеть и при повторном
@@ -9131,11 +9296,15 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.46 остановлен")
+    print("[BS HUB] v11.47 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
 task.spawn(function()
+    -- v11.47: если stop() успел отработать до запуска этого спавна —
+    -- ничего не привязываем (connChar, подключённый после остановки,
+    -- утекал навсегда).
+    if STOPPED then return end
     pcall(patchEnergy)
     pcall(installDamageHooks)
     pcall(installBulletHook)
@@ -9157,6 +9326,9 @@ task.spawn(function()
     end
     if G.BS.ScanOnStart then
         task.wait(2)
+        -- v11.47: стоп мог прийти во время wait — хвост спавна после
+        -- остановки ничего больше не делает.
+        if STOPPED then return end
         pcall(scanAll)
     end
     -- АВТОПРОВЕРКА ОРУЖИЯ: сама собирает дальность/разброс/урон и
@@ -9164,14 +9336,46 @@ task.spawn(function()
     -- [BS WEAPON] и пришли его.
     if G.BS.WeaponProbeOnStart then
         task.wait(3)
+        if STOPPED then return end
         pcall(probeWeapon)
     end
     -- ТАНЦЫ: ищем анимации игры (Animation-объекты + модули) и
     -- сразу печатаем список в консоль. Сам танец не включаем -
     -- включается галочкой или клавишей F7.
+    -- v11.47: привязки делаем только у живого скрипта — раньше хвост
+    -- спавна перепривязывал хоткей танца, прыжок и RenderStep «BS_AimLock»
+    -- ПОСЛЕ остановки (при реинжекте убивал аимлок нового инстанса).
+    if STOPPED then return end
     hookDanceKey()
     pcall(speedState.hookJump)
     bindAimLockStep()
+    -- v11.47: ReadyState мог не реплицироваться при загрузке — цепляем
+    -- слушатель ещё раз (старый аккуратно снимается сам).
+    pcall(COIN.hookReadyState)
+    -- v11.47: АНТИ-AFK. Сервер пингует активность (Remotes.AfkPing):
+    -- отвечаем на пинг и, пока идёт AFK-фарм, шлём свой раз в 20 c —
+    -- иначе фарм кикает за бездействие.
+    task.spawn(function()
+        local rm
+        for _ = 1, 10 do
+            if STOPPED then return end
+            rm = Remotes and Remotes:FindFirstChild("AfkPing")
+            if rm then break end
+            task.wait(3)
+        end
+        if rm and not STOPPED then
+            netConns[#netConns + 1] = rm.OnClientEvent:Connect(function()
+                pcall(function() rm:FireServer() end)
+            end)
+            print("[BS HUB] анти-AFK: AfkPing подключён")
+            while not STOPPED do
+                if G.BS.CoinFarm == true then
+                    pcall(function() rm:FireServer() end)
+                end
+                task.wait(20)
+            end
+        end
+    end)
     -- МОНЕТЫ: фоновая проверка и вызов ремоута игры.
     task.spawn(function()
         while not STOPPED do
@@ -9207,6 +9411,57 @@ task.spawn(function()
         G.BS.CoinLearn = true
         notify("Подбери одну монету руками — скрипт запомнит ремоут", 5)
     end
+    -- v11.47: РЕВИЗОР ЭКОНОМИКИ. Все конфиги экономики игры читаются
+    -- клиентом (ReplicatedStorage.BloodyStreet.Config.* и модули
+    -- Shop/Lootboxes/Rewards/DailyLogin/...). Печатает цены, награды,
+    -- лутбоксы и баланс — смотри, что можно обойти:
+    --   getgenv().BS.Economy()
+    G.BS.Economy = function()
+        local RS = game:GetService("ReplicatedStorage")
+        local root = RS:FindFirstChild("BloodyStreet")
+        if not root then print("[BS ECON] BloodyStreet ещё не реплицировался") return end
+        local function fmt(v)
+            if type(v) ~= "table" then return tostring(v) end
+            local parts = {}
+            for k2, v2 in pairs(v) do
+                if #parts >= 12 then parts[#parts + 1] = "..." break end
+                parts[#parts + 1] = tostring(k2) .. "="
+                    .. (type(v2) == "table" and "{...}" or tostring(v2))
+            end
+            return "{" .. table.concat(parts, ", ") .. "}"
+        end
+        local function dump(name, inst)
+            local ok, m = pcall(function() return require(inst) end)
+            if not ok or type(m) ~= "table" then
+                print("[BS ECON] " .. name .. ": не читается")
+                return
+            end
+            print("[BS ECON] === " .. name .. " ===")
+            local n = 0
+            for k, v in pairs(m) do
+                n = n + 1
+                if n <= 40 then print("  " .. tostring(k) .. " = " .. fmt(v)) end
+            end
+            if n > 40 then print("  ... всего ключей: " .. n) end
+        end
+        local cfg = root:FindFirstChild("Config")
+        if cfg then
+            for _, name in ipairs({ "Economy", "Progression", "RewardsPanel",
+                    "Season", "Match", "Combat", "Vampire", "Roles", "Loadout",
+                    "Detection", "QuickMatch", "FakeMatch", "Murder", "Mystery" }) do
+                local inst = cfg:FindFirstChild(name)
+                if inst then dump("Config." .. name, inst) end
+            end
+        end
+        for _, name in ipairs({ "Shop", "Lootboxes", "Rewards", "DailyLogin",
+                "DailyTasks", "GameModes", "Ballistics", "ToolCooldown", "Disarm" }) do
+            local inst = root:FindFirstChild(name)
+            if inst then dump(name, inst) end
+        end
+        print("[BS ECON] готово. Ищи: повторные клеймы (DailyLoginClaim /")
+        print("[BS ECON] RewardsAction / SeasonPassAction), цены без серверной")
+        print("[BS ECON] проверки, отрицательные значения, округления.")
+    end
     -- значения из сохранённого состояния -> состояние движка.
     -- ВАЖНО: делаем это ДО полного скана танцев, иначе require модулей
     -- мог задержать/подвесить задачу, и танец/спин не восстановились бы.
@@ -9227,6 +9482,9 @@ task.spawn(function()
         -- персонаж мог ещё не появиться - ждём и возобновляем
         task.spawn(function()
             task.wait(2)
+            -- v11.47: без проверки танец запускался ПОСЛЕ остановки
+            -- скрипта и продолжал слать EmotePlay на сервер.
+            if STOPPED then return end
             pcall(setDance, true)
         end)
     end
@@ -9235,13 +9493,16 @@ task.spawn(function()
     if G.BS.DanceAutoScan then
         task.spawn(function()
             task.wait(1)
+            -- v11.47: после stop() этот хвост дёргал уничтоженный
+            -- Rayfield-дропдаун и путал лог.
+            if STOPPED then return end
             pcall(scanDances, true)
             pcall(refreshDanceDropdown)
         end)
     end
 end)
 
-print("[BS HUB] v11.46 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.47 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
@@ -9254,6 +9515,8 @@ print("[BS HUB] v11.46 запущен | хуков=" .. #netConns
 -- «клиент айм» и прострел молча не работают — именно это надо видеть
 -- в логе, а не догадываться.
 task.delay(1, function()
+    -- v11.47: не печатаем диагностику уже остановленного скрипта.
+    if STOPPED then return end
     pcall(refreshHookTargets)
     local names = {}
     if Remotes then
