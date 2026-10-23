@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.48
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.49
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -134,6 +134,10 @@ G.BS.OnlyVamps   = G.BS.OnlyVamps   or false
 G.BS.ShowUnknown = false
 G.BS.Names       = G.BS.Names       ~= false
 G.BS.ShowDist    = G.BS.ShowDist    ~= false
+-- v11.49: монеты/уровень из leaderstats в подписи; ESP мира и крови.
+G.BS.ShowStats   = G.BS.ShowStats   ~= false
+G.BS.WorldESP    = G.BS.WorldESP    ~= false
+G.BS.BloodESP    = G.BS.BloodESP    == true
 G.BS.ShowHP      = G.BS.ShowHP      ~= false
 G.BS.Boxes       = G.BS.Boxes       ~= false
 G.BS.BoxThick    = G.BS.BoxThick    or 2
@@ -2072,6 +2076,9 @@ local crossLines = {}   -- ПРИЦЕЛ УДАЛЁН (v11.32): лишние ли
 
 local crateHL = {}
 local coinHL = {}
+-- v11.49: подсветка «мира» — сундуки/алтари/чёрный рынок/NPC/кровь.
+local worldHL = {}
+local worldScanAt = 0
 local hlSweepT = 0
 local lastHealth = {}
 local kills = 0
@@ -2157,7 +2164,7 @@ function VIS.destroy()
     rm(targetRing)
     for i = 1, 4 do rm(targetTicks[i]) end
     tracerFrom, tracerTo, tracerT0 = nil, nil, 0
-    for _, tbl in pairs({ crateHL, coinHL }) do
+    for _, tbl in pairs({ crateHL, coinHL, worldHL }) do
         for _, h in pairs(tbl) do
             pcall(function() h:Destroy() end)
         end
@@ -2866,6 +2873,108 @@ function VIS.update(cam, myRoot, by, locked)
         end
     else
         for _, h in pairs(coinHL) do if h then h.Enabled = false end end
+    end
+
+    -- v11.49: ESP МИРА. Сундуки (Workspace.Chest), алтари вампиров и
+    -- чёрный рынок в аренах, загадочный ящик/подарок, NPC. Кровь
+    -- (BloodPools/BloodTrails) — отдельным тумблером: по следу видно,
+    -- где прошёл раненый вампир. Скан лёгкий и не чаще раза в 2 c.
+    do
+        local worldOn = G.BS.WorldESP ~= false
+        local bloodOn = G.BS.BloodESP == true
+        local GOLD   = Color3.fromRGB(255, 170, 0)
+        local PURPLE = Color3.fromRGB(170, 80, 255)
+        local GRAY   = Color3.fromRGB(170, 170, 170)
+        local RED    = Color3.fromRGB(255, 45, 45)
+        if worldOn or bloodOn then
+            local wNow = os.clock()
+            if wNow - worldScanAt >= 2 then
+                worldScanAt = wNow
+                local seen = {}
+                local function paint(inst, col)
+                    if not (inst and inst.Parent) then return end
+                    seen[inst] = true
+                    local hl = worldHL[inst]
+                    if not hl or not hl.Parent then
+                        local ok, h = pcall(function()
+                            return Instance.new("Highlight") end)
+                        if ok and h then
+                            h.FillTransparency = 0.45
+                            h.Adornee = inst
+                            h.Parent = inst
+                            worldHL[inst] = h
+                            hl = h
+                        end
+                    end
+                    if hl then
+                        hl.Enabled = true
+                        hl.FillColor = col
+                        hl.OutlineColor = col
+                    end
+                end
+                if worldOn then
+                    pcall(function()
+                        local chF = workspace:FindFirstChild("Chest")
+                        if chF then
+                            for _, c in ipairs(chF:GetChildren()) do
+                                paint(c, GOLD)
+                            end
+                        end
+                        local npcF = workspace:FindFirstChild("NPCs")
+                        if npcF then
+                            for _, c in ipairs(npcF:GetChildren()) do
+                                if c:IsA("Model") then paint(c, GRAY) end
+                            end
+                        end
+                        local arenas = workspace:FindFirstChild("TutorialArenas")
+                        if arenas then
+                            for _, arena in ipairs(arenas:GetChildren()) do
+                                local bm = arena:FindFirstChild("BlackMarket")
+                                if bm then paint(bm, PURPLE) end
+                                local alts = arena:FindFirstChild("AltarSpawns")
+                                if alts then
+                                    for _, a in ipairs(alts:GetChildren()) do
+                                        paint(a, PURPLE)
+                                    end
+                                end
+                            end
+                        end
+                        for _, nm in ipairs({ "MysteriousBox", "CommunityGift" }) do
+                            local m = workspace:FindFirstChild(nm, true)
+                            if m then paint(m, GOLD) end
+                        end
+                    end)
+                end
+                if bloodOn then
+                    pcall(function()
+                        local nb = 0
+                        for _, fName in ipairs({ "BloodPools", "BloodTrails" }) do
+                            local f = workspace:FindFirstChild(fName)
+                            if f then
+                                for _, c in ipairs(f:GetChildren()) do
+                                    if nb >= 30 then break end
+                                    if c:IsA("BasePart") or c:IsA("Model") then
+                                        nb = nb + 1
+                                        paint(c, RED)
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                end
+                for k, h in pairs(worldHL) do
+                    if not seen[k] then
+                        if h then pcall(function() h:Destroy() end) end
+                        worldHL[k] = nil
+                    end
+                end
+            end
+        else
+            for k, h in pairs(worldHL) do
+                if h then pcall(function() h:Destroy() end) end
+                worldHL[k] = nil
+            end
+        end
     end
 
     -- 8) ПОДСВЕТКА УЛИК УДАЛЕНА (v11.32) по просьбе.
@@ -8386,6 +8495,27 @@ local conn = RunService.RenderStepped:Connect(function()
                     if tool then parts[#parts + 1] = "[" .. tool.Name .. "]" end
                 end
                 if G.BS.Names then parts[#parts + 1] = plr.DisplayName end
+                -- v11.49: МОНЕТЫ/УРОВЕНЬ из leaderstats (читаются у всех
+                -- игроков): до трёх значений, например [Coi=1200 Lvl=7].
+                if G.BS.ShowStats then
+                    local okLS, lsTxt = pcall(function()
+                        local ls = plr:FindFirstChild("leaderstats")
+                        if not ls then return nil end
+                        local sb, cnt = {}, 0
+                        for _, v in ipairs(ls:GetChildren()) do
+                            if v:IsA("ValueBase") and cnt < 3 then
+                                cnt = cnt + 1
+                                local num = tonumber(v.Value)
+                                sb[#sb + 1] = tostring(v.Name):sub(1, 3) .. "="
+                                    .. (num and string.format("%.0f", num)
+                                        or tostring(v.Value))
+                            end
+                        end
+                        if #sb > 0 then return "[" .. table.concat(sb, " ") .. "]" end
+                        return nil
+                    end)
+                    if okLS and lsTxt then parts[#parts + 1] = lsTxt end
+                end
                 if role == nil and G.BS.ShowUnknown then
                     parts[#parts + 1] = "[?]"
                 end
@@ -8479,7 +8609,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.48",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.49",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -8551,6 +8681,16 @@ TB.CreateToggle({ Name = "Ники", Flag = "BS_Names",
     CurrentValue = G.BS.Names, Callback = function(v) G.BS.Names = v end })
 TB.CreateToggle({ Name = "Дистанция", Flag = "BS_ShowDist",
     CurrentValue = G.BS.ShowDist, Callback = function(v) G.BS.ShowDist = v end })
+-- v11.49: монеты/уровень в подписи и ESP мира.
+TB.CreateToggle({ Name = "Монеты/уровень в подписи", Flag = "BS_ShowStats",
+    CurrentValue = G.BS.ShowStats ~= false,
+    Callback = function(v) G.BS.ShowStats = v end })
+TB.CreateToggle({ Name = "Сундуки/алтари/рынок/NPC", Flag = "BS_WorldESP",
+    CurrentValue = G.BS.WorldESP ~= false,
+    Callback = function(v) G.BS.WorldESP = v end })
+TB.CreateToggle({ Name = "Следы крови", Flag = "BS_BloodESP",
+    CurrentValue = G.BS.BloodESP == true,
+    Callback = function(v) G.BS.BloodESP = v end })
 TB.CreateToggle({ Name = "HP", Flag = "BS_ShowHP",
     CurrentValue = G.BS.ShowHP, Callback = function(v) G.BS.ShowHP = v end })
 -- v11.32: HP ещё и в процентах, и прятать мёртвых (иначе ESP «висит»
@@ -9316,7 +9456,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.48 остановлен")
+    print("[BS HUB] v11.49 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -9482,6 +9622,47 @@ task.spawn(function()
         print("[BS ECON] RewardsAction / SeasonPassAction), цены без серверной")
         print("[BS ECON] проверки, отрицательные значения, округления.")
     end
+    -- v11.49: ЗОНД РЕМОУТОВ — проверка «интересных» ремоутов из дампа.
+    -- Шлёт ОДИН вызов с твоими аргументами и 5 секунд печатает все
+    -- ответы сервера (OnClientEvent) по этому ремоуту:
+    --   getgenv().BS.Probe("RequestSpawn")
+    --   getgenv().BS.Probe("FakeMatchAction", "start")
+    --   getgenv().BS.Probe("RoleSeer", workspace["НИК"].Head)
+    -- НЕ зови ShopBuy/LootboxBuy/Admin* — их проверяют и логируют.
+    G.BS.Probe = function(remoteName, ...)
+        local RS = game:GetService("ReplicatedStorage")
+        local bs = RS:FindFirstChild("BloodyStreet")
+        local rm = bs and bs:FindFirstChild("Remotes")
+        local ev = rm and rm:FindFirstChild(tostring(remoteName or ""))
+        if not (ev and ev:IsA("RemoteEvent")) then
+            print("[BS PROBE] ремоут не найден: " .. tostring(remoteName))
+            return
+        end
+        local args = table.pack(...)
+        local parts = {}
+        for i = 1, math.min(args.n, 4) do
+            local v = args[i]
+            parts[#parts + 1] = typeof(v) == "Instance"
+                and tostring(v:GetFullName()) or tostring(v)
+        end
+        print("[BS PROBE] -> " .. ev.Name .. "(" .. table.concat(parts, ", ") .. ")")
+        local conn = ev.OnClientEvent:Connect(function(...)
+            local a = table.pack(...)
+            local ps = {}
+            for i = 1, math.min(a.n, 5) do
+                local v = a[i]
+                ps[#ps + 1] = type(v) == "table" and "{table}" or tostring(v)
+            end
+            print("[BS PROBE] <- " .. ev.Name .. ": " .. table.concat(ps, " | "))
+        end)
+        pcall(function()
+            ev:FireServer(table.unpack(args, 1, args.n))
+        end)
+        task.delay(5, function()
+            if conn then pcall(function() conn:Disconnect() end) end
+            print("[BS PROBE] окно " .. ev.Name .. " закрыто")
+        end)
+    end
     -- значения из сохранённого состояния -> состояние движка.
     -- ВАЖНО: делаем это ДО полного скана танцев, иначе require модулей
     -- мог задержать/подвесить задачу, и танец/спин не восстановились бы.
@@ -9522,7 +9703,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.48 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.49 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
