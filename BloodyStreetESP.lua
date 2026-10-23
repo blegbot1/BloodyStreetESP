@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.43
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.44
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -941,6 +941,37 @@ function COIN.autoTick(now)
     -- v11.36: сбор по всей карте.
     if G.BS.CoinFarm ~= false then
         pcall(COIN.collectAll, now)
+    end
+end
+
+-- READY-КНОПКА (v11.44): пока включён AFK-фарм монет, постоянно жмём
+-- ReadyToggle — в игре кнопка готовности, которую надо держать нажатой
+-- во время фарма. Ремоут кэшируем и перепроверяем: папка BloodyStreet
+-- появляется не сразу, поиск повторяем не чаще раза в 5 с.
+function COIN.readyTick(now)
+    if G.BS.CoinFarm ~= true then return end
+    if now - (COIN.readyAt or 0) < 1.0 then return end
+    COIN.readyAt = now
+    local r = COIN.readyRemote
+    if not (r and r.Parent) then
+        r = nil
+        if now - (COIN.readySearchAt or 0) >= 5 then
+            COIN.readySearchAt = now
+            pcall(function()
+                local rs = game:GetService("ReplicatedStorage")
+                local bs = rs:FindFirstChild("BloodyStreet")
+                local rm = bs and bs:FindFirstChild("Remotes")
+                r = rm and rm:FindFirstChild("ReadyToggle")
+            end)
+        end
+        COIN.readyRemote = r
+    end
+    if not r then return end
+    pcall(function() r:FireServer() end)
+    COIN.readyFires = (COIN.readyFires or 0) + 1
+    local c = COIN.readyFires
+    if c == 1 or c % 60 == 0 then
+        print("[BS COIN] ReadyToggle: нажато " .. c .. " раз")
     end
 end
 
@@ -8158,7 +8189,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.43",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.44",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -8982,7 +9013,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.43 остановлен")
+    print("[BS HUB] v11.44 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -9027,6 +9058,8 @@ task.spawn(function()
     task.spawn(function()
         while not STOPPED do
             pcall(function() G.BS.Coins.autoTick(os.clock()) end)
+            -- v11.44: при включённом AFK-фарме постоянно жмём ReadyToggle.
+            pcall(function() G.BS.Coins.readyTick(os.clock()) end)
             task.wait(0.5)
         end
     end)
@@ -9090,7 +9123,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.43 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.44 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
