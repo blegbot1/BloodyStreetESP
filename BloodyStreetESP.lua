@@ -1,5 +1,5 @@
 -- ============================================================
---  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.45
+--  BLOODY STREET - ESP + КЛИЕНТ АИМ + АИМЛОК + ИГРОК  v11.46
 --  GUI на Rayfield. Вкладки: ESP / AIM / ИГРОК. Самописного HUD нет.
 --
 --  ПАТРОНЫ (вкладка ИГРОК): пополнение из Workspace.SupplyCaches.
@@ -344,7 +344,8 @@ G.BS.CoinMagnetPower  = tonumber(G.BS.CoinMagnetPower) or 0.55
 -- за спиной/над целью (для сервера), потом вернётся. Требует аимлока:
 -- камера должна смотреть на цель, иначе сервер может отклонить выстрел.
 -- Прострел стен теперь ВСЕГДА включён: отдельного тумблера нет.
-G.BS.GhostShot     = true
+-- v11.46: уважаем сохранённое значение (раньше затиралось true каждый запуск).
+G.BS.GhostShot     = G.BS.GhostShot ~= false
 -- 0.12 c: даём серверу получить новый CFrame ДО выстрела, иначе он
 -- видит старую позицию и отклоняет выстрел («прострел не работает»).
 G.BS.GhostHold     = tonumber(G.BS.GhostHold) or 0.12
@@ -796,6 +797,9 @@ local COIN = {
     farmState = setmetatable({}, { __mode = "k" }),
     farmCount = 0,
     fns = {}, blinkBusy = false, blinkAt = 0,
+    -- v11.46: единый кулдаун сбора. Раньше scan + collectAll + magnet
+    -- жали одну монету до 3 раз за тик (тройной FireServer).
+    gate = setmetatable({}, { __mode = "k" }),
 }
 G.BS.Coins = COIN
 
@@ -856,15 +860,20 @@ end
 
 function COIN.collectOne(coin)
     if not coin or not coin.Parent then return false end
+    -- v11.46: единый кулдаун. Раньше scan/collectAll/magnet жали одну
+    -- монету до 3 раз за тик — тройной FireServer.
+    local gateT = COIN.gate[coin]
+    local now = os.clock()
+    if gateT and now - gateT < 0.8 then return false end
+    COIN.gate[coin] = now
     local remote = COIN.remote or COIN.findRemote()
     if not remote then return false end
     local args
     if COIN.args and COIN.argIdx == 0 then
-        -- игра сама определяет монету (например, по касанию) —
-        -- повторяем вызов с теми же аргументами, что запомнили.
-        local n = tonumber(COIN.args.n) or 0
-        pcall(function() remote:FireServer(table.unpack(COIN.args, 1, n)) end)
-        return true
+        -- v11.46: при argIdx==0 мы НЕ ЗНАЕМ, какой аргумент — монета.
+        -- Раньше replay-ились СТАРЫЕ аргументы для любой монеты (спам
+        -- старой точкой). Не шлём ничего — фолбэк соберёт prompt/touch.
+        return false
     elseif COIN.args and COIN.argIdx and COIN.argIdx > 0 and COIN.argIdx <= COIN.args.n then
         -- Model не имеет .Position: берём позицию пивота/части.
         -- ВАЖНО: для позиции используем СЕРВЕРНУЮ (origin), а не
@@ -938,12 +947,13 @@ function COIN.autoTick(now)
     -- AFK-фарм: сканируем чаще, чтобы успевать за сбрасываемыми
     -- монетами (иначе между монетами остаются пустые секунды).
     local every = tonumber(G.BS.CoinScanEvery) or 1.0
-    if G.BS.CoinFarm ~= false then every = math.min(every, 0.5) end
+    if G.BS.CoinFarm == true then every = math.min(every, 0.5) end
     if now - COIN.lastScan < every then return end
     COIN.lastScan = now
     pcall(COIN.scan)
     -- v11.36: сбор по всей карте.
-    if G.BS.CoinFarm ~= false then
+    -- v11.46: CoinFarm строго == true (nil больше не включает фарм).
+    if G.BS.CoinFarm == true then
         pcall(COIN.collectAll, now)
     end
 end
@@ -952,8 +962,43 @@ end
 -- ReadyToggle — в игре кнопка готовности, которую надо держать нажатой
 -- во время фарма. Ремоут кэшируем и перепроверяем: папка BloodyStreet
 -- появляется не сразу, поиск повторяем не чаще раза в 5 с.
+
+-- v11.46: если состояние готовности читается клиентом (BoolValue
+-- ReadyState в BloodyStreet или на игроке) — вернём true/false,
+-- иначе nil (неизвестно). Нужно, чтобы повторное нажатие-переключатель
+-- не снимало уже выставленную готовность.
+local function coinReadReadyState()
+    local st
+    pcall(function()
+        local rs = game:GetService("ReplicatedStorage")
+        local bs = rs and rs:FindFirstChild("BloodyStreet")
+        st = bs and bs:FindFirstChild("ReadyState", true)
+        if not st and LP then st = LP:FindFirstChild("ReadyState", true) end
+    end)
+    if st and st:IsA("BoolValue") then return st.Value end
+    return nil
+end
+
 function COIN.readyTick(now)
     if G.BS.CoinFarm ~= true then return end
+    -- v11.46: ReadyToggle — ТОГГЛЕР (подтверждено дампом: есть ReadyState).
+    -- Раньше жали каждую 1с без проверки — циклило ready вкл/выкл.
+    -- Теперь: edge-trigger при входе в фазу Lobby + живой персонаж,
+    -- повтор раз в 10с как подстраховка.
+    local ph = G.BS.RoundPhase
+    if ph ~= "Lobby" then
+        COIN._readyPhase = nil
+        return
+    end
+    local ch = LP and LP.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return end
+    if COIN._readyPhase ~= ph then
+        COIN._readyPhase = ph
+        COIN._readyLast = 0 -- жмём сразу при входе в Lobby
+    end
+    if now - (COIN._readyLast or 0) < 10 then return end
+    COIN._readyLast = now
     if now - (COIN.readyAt or 0) < 1.0 then return end
     COIN.readyAt = now
     local r = COIN.readyRemote
@@ -971,6 +1016,9 @@ function COIN.readyTick(now)
         COIN.readyRemote = r
     end
     if not r then return end
+    -- v11.46: если ReadyState читается и мы уже готовы — не жмём:
+    -- повторный FireServer переключателя снял бы готовность.
+    if coinReadReadyState() == true then return end
     pcall(function() r:FireServer() end)
     COIN.readyFires = (COIN.readyFires or 0) + 1
     local c = COIN.readyFires
@@ -1041,6 +1089,12 @@ end
 -- у исходной (серверной) позиции монеты: prompt проверяет дистанцию
 -- на сервере, а не на нашем клиенте.
 local function fireCoinPrompts(coin)
+    -- v11.46: единый кулдаун на монету — иначе collectAll + magnet
+    -- жали одни и те же промпты по несколько раз за тик.
+    local gT = COIN.gate[coin]
+    local gNow = os.clock()
+    if gT and gNow - gT < 0.8 then return false end
+    COIN.gate[coin] = gNow
     local prompt, click = coinPromptAndClick(coin)
     local fired = false
     local fpp = coinFn("fireproximityprompt")
@@ -7513,7 +7567,7 @@ local function ncWrapper(self, ...)
     -- валиден, и вызов сразу уходит в оригинал. Раньше NC.orig звали
     -- из task.spawn — там контекст namecall уже потерян, поэтому
     -- прострел молча не отправлялся.
-    if NC.passthrough then
+    if NC.passthrough and self == NC.fw then
         if NC.orig then return NC.orig(self, ...) end
         return
     end
@@ -7540,8 +7594,21 @@ local function ncWrapper(self, ...)
                 end
                 if not idx then
                     local n = string.lower(self.Name)
-                    if string.find(n, "coin", 1, true) or string.find(n, "pickup", 1, true)
-                       or string.find(n, "collect", 1, true) then
+                    -- v11.46: blacklist — не учим магазин/бонусы/админку
+                    -- как «сбор монет» (иначе ShopBuyCoin и т.п. ловились).
+                    local bad = string.find(n, "shop", 1, true)
+                        or string.find(n, "buy", 1, true)
+                        or string.find(n, "sell", 1, true)
+                        or string.find(n, "give", 1, true)
+                        or string.find(n, "daily", 1, true)
+                        or string.find(n, "gift", 1, true)
+                        or string.find(n, "pass", 1, true)
+                        or string.find(n, "admin", 1, true)
+                        or string.find(n, "equip", 1, true)
+                        or string.find(n, "unlock", 1, true)
+                        or string.find(n, "claim", 1, true)
+                    if not bad and (string.find(n, "coin", 1, true) or string.find(n, "pickup", 1, true)
+                       or string.find(n, "collect", 1, true)) then
                         idx, atype = 0, "remote-name"
                     end
                 end
@@ -8240,7 +8307,7 @@ local function buildGui()
 local Window = Rayfield:CreateWindow({
     Name = "Bloody Street",
     LoadingTitle = "BLOODY STREET",
-    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.45",
+    LoadingSubtitle = "ESP + Aim + Аимлок + Игрок + Патроны + Монеты v11.46",
     ConfigurationSaving = { Enabled = true },
 })
 
@@ -9064,7 +9131,7 @@ G.BS_Stop = function()
         NC.orig = nil
     end
     G.BS_Stop = nil
-    print("[BS HUB] v11.45 остановлен")
+    print("[BS HUB] v11.46 остановлен")
 end
 
 -- Пересканирование при старте: устанавливаем хуки и сталкин.
@@ -9174,7 +9241,7 @@ task.spawn(function()
     end
 end)
 
-print("[BS HUB] v11.45 запущен | хуков=" .. #netConns
+print("[BS HUB] v11.46 запущен | хуков=" .. #netConns
     .. " | клиент айм: " .. tostring(G.BS.BulletSwap)
     .. " | аимлок: " .. tostring(G.BS.AimLock)
     .. " | выбор цели: всегда"
